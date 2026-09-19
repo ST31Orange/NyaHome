@@ -1,0 +1,9 @@
+{
+	"id": "ambernyadesk",
+	"name": "AmberNyaDesk",
+	"version": "3.1.2",
+  "minAppVersion": "1.8.7",
+	"description": "把「本地日历」和「IMAP 邮箱」搬进 Obsidian：日程管理、任务看板与邮件收发，本地优先 | Local calendar, task boards and IMAP mail inside Obsidian.",
+	"author": "AmberNya",
+  "isDesktopOnly": true
+}

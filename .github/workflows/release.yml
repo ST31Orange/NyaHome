@@ -1,0 +1,78 @@
+name: Release
+
+# Push a tag that exactly matches manifest.json's version (e.g. 1.0.0) and this
+# builds the plugin, runs the tests, and publishes a GitHub release with the
+# three files Obsidian installs: manifest.json, main.js, styles.css.
+on:
+  push:
+    tags:
+      - "*"
+  # A tag that arrives in a batch of more than three fires no push event
+  # at all, so the release it should have built never happens. This is how
+  # one is built after the fact: gh workflow run release.yml --ref <tag>
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  # attest-build-provenance signs with a short-lived OIDC token and writes
+  # the attestation to the repo's attestation store.
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build and test
+        run: |
+          npm install
+          npm test
+          npm run build
+
+      - name: Verify tag matches manifest version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version=$(node -p "require('./manifest.json').version")
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $tag does not match manifest version $version" >&2
+            exit 1
+          fi
+
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          # idempotent: create the release the first time, refresh its assets on a
+          # re-pushed tag instead of failing (a force-pushed tag re-runs this)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" manifest.json main.js styles.css --clobber
+          else
+            gh release create "$tag" --title "$tag" \
+              --notes "See the README for what's included." \
+              manifest.json main.js styles.css
+          fi
+
+          # A release built after the fact, from a tag older than the newest one,
+          # takes the "Latest" label simply by being the most recently created.
+          # BRAT and /releases/latest both follow that label, so putting it back
+          # on the highest version is the difference between recovering a missed
+          # release and quietly shipping everyone an older plugin.
+          top=$(gh release list --limit 400 --json tagName --jq '.[].tagName' | sort -V | tail -1)
+          if [ -n "$top" ] && [ "$top" != "$tag" ]; then
+            gh release edit "$top" --latest
+          fi
