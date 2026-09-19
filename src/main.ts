@@ -16190,7 +16190,9 @@ class ImapRichComposeModal extends Modal {
 
 		const bar = c.createDiv("pcal-compose-bar");
 		const body = c.createDiv({ cls: "pcal-compose-editor pcal-imap-compose-editor", attr: { contenteditable: "true" } });
-		body.innerHTML = this.seed.html || "<br>";
+		// The seed comes from fetched mail or saved drafts, so sanitize it
+		// before it touches the DOM instead of assigning innerHTML directly.
+		body.replaceChildren(...(this.seed.html ? Array.from(sanitizeHTMLToDom(this.seed.html).childNodes) : [document.createElement("br")]));
 		this.editorEl = body;
 		richToolbarFull(this.app, bar, () => this.editorEl);
 

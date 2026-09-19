@@ -41,8 +41,6 @@ export interface ImapMessage {
 	size?: number;
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 async function libs(): Promise<{ ImapFlow: any; nodemailer: any; simpleParser: any }> {
 	const [{ ImapFlow }, nodemailer, { simpleParser }] = await Promise.all([
 		import("imapflow"),
