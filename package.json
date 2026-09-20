@@ -1,6 +1,6 @@
 {
-  "name": "ambernnyadesk",
-  "version": "3.1.3",
+	"name": "ambernnyadesk",
+	"version": "3.1.4",
 	"description": "Obsidian plugin: Microsoft 365, Google, CalDAV, and ICS calendars with a mail triage inbox",
 	"main": "main.js",
 	"type": "module",
@@ -14,7 +14,8 @@
 		"ical.js": "2.2.1",
 		"imapflow": "^2.0.5",
 		"mailparser": "^3.9.28",
-		"nodemailer": "^10.0.10"
+		"nodemailer": "^10.0.10",
+		"solarlunar": "^3.1.0"
 	},
 	"devDependencies": {
 		"@types/mailparser": "^3.4.6",

@@ -448,6 +448,13 @@
 	padding-top: 12px;
 }
 
+/* the calendar list now follows the agenda, so it gets its own seam */
+.pcal-sb-calendar-head {
+	margin-top: 18px;
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 12px;
+}
+
 .pcal-sb-dayhead {
 	display: flex;
 	align-items: baseline;
@@ -581,6 +588,39 @@
 	text-decoration: line-through;
 }
 
+/* A locally marked-done event says so with a soft strikethrough; its calendar
+   color stays visible so the event does not disappear from the schedule. */
+.is-completed .pcal-chip-title,
+.is-completed .pcal-block-title,
+.is-completed .pcal-span-title,
+.is-completed .pcal-agenda-title {
+	text-decoration: line-through;
+	text-decoration-thickness: 1px;
+	opacity: 0.7;
+}
+
+.is-completed .pcal-card-title,
+.is-completed .pcal-card-title-input {
+	text-decoration: line-through;
+	text-decoration-thickness: 1px;
+	opacity: 0.75;
+}
+
+/* a starred event keeps its dot, then earns a tiny star in the corner */
+.pcal-star {
+	position: absolute;
+	top: 3px;
+	right: 4px;
+	color: #ffbb33;
+	line-height: 0;
+	pointer-events: none;
+}
+
+.pcal-star .svg-icon {
+	width: 11px;
+	height: 11px;
+}
+
 /* a linked note exists: a small accent dot in the corner */
 .pcal-span.has-note::after,
 .pcal-block.has-note::after {
@@ -669,13 +709,21 @@
 }
 
 .pcal-month-daynum {
-	width: 22px;
+	min-width: 22px;
+	max-width: 100%;
 	height: 20px;
-	line-height: 20px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 0 5px;
+	box-sizing: border-box;
 	text-align: center;
 	border-radius: 10px;
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
 }
 
 .pcal-month-daynum:hover {
@@ -785,6 +833,23 @@
 	min-width: 0;
 }
 
+/* sketch notes are deliberately not events: a flat blue tile and a tiny note
+   mark, so a scheduled meeting and a loose thought read apart at a glance */
+.pcal-sketch-chip {
+	--pcal-ev-color: #4f8cff;
+}
+
+.pcal-sketch-icon {
+	color: #4f8cff;
+	flex-shrink: 0;
+	line-height: 0;
+}
+
+.pcal-sketch-icon .svg-icon {
+	width: 12px;
+	height: 12px;
+}
+
 button.pcal-more-btn,
 button.pcal-more-btn:hover {
 	background: transparent;
@@ -856,6 +921,29 @@ button.pcal-more-btn:hover {
 .pcal-week-headcell.is-today .pcal-week-headnum {
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
+}
+
+.pcal-lunar {
+	font-size: 11px;
+	line-height: 1;
+	font-weight: normal;
+	color: var(--text-muted);
+	white-space: nowrap;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pcal-lunar-festival {
+	color: #d64545;
+}
+
+.pcal-lunar-term {
+	color: var(--text-faint);
+}
+
+.pcal-week-headlunar {
+	min-width: 0;
 }
 
 .pcal-allday {
@@ -1285,6 +1373,17 @@ button.pcal-card-more .svg-icon {
 	line-height: 1.3;
 }
 
+.pcal-card-title-input {
+	width: 100%;
+	height: 30px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-modifier-form-field);
+	color: var(--text-normal);
+	padding: 0 8px;
+	font-size: var(--font-ui-small);
+}
+
 .pcal-card-when {
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
@@ -1334,6 +1433,14 @@ button.pcal-card-more .svg-icon {
 	white-space: pre-wrap;
 	max-height: 140px;
 	overflow-y: auto;
+}
+
+.pcal-card-desc-input {
+	width: 100%;
+	min-height: 90px;
+	resize: vertical;
+	background: var(--background-modifier-form-field);
+	color: var(--text-normal);
 }
 
 .pcal-card-rsvp {
@@ -1574,18 +1681,192 @@ button.pcal-card-more .svg-icon {
 	color: var(--text-faint);
 }
 
-/* the event modal breathes: the box is wider and text fields take the row */
+/* the event window reads as grouped panels: content first, then schedule,
+   then time, then invites. The separators are plain hairlines so the modal
+   stays compact and the controls can fill the width. */
 .pcal-event-modal {
-	width: 34em;
-	max-width: 82vw;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	width: 100%;
+	max-width: none;
+	padding: 0 16px 12px;
+	overflow-y: auto;
+}
+
+.pcal-event-section {
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pcal-event-section:last-of-type {
+	border-bottom: none;
+	padding-bottom: 0;
+}
+
+.pcal-event-top {
+	display: grid;
+	gap: 8px;
+}
+
+.pcal-event-title-row {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+}
+
+.pcal-event-title-row > .setting-item {
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-event-title-row.pcal-has-calendar > .setting-item:first-child {
+	flex: 1 1 60%;
+}
+
+.pcal-event-title-row.pcal-has-calendar > .setting-item:last-child {
+	flex: 0 1 220px;
+}
+
+.pcal-event-controls {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 8px;
+	align-items: end;
+}
+
+.pcal-event-control-cell {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	align-items: stretch;
+	min-width: 0;
+}
+
+.pcal-event-control-label {
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	margin-bottom: 2px;
+}
+
+.pcal-event-control-value {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 34px;
+	width: 100%;
+	justify-content: flex-start;
+}
+
+.pcal-event-control-value input[type="checkbox"] {
+	appearance: none;
+	width: 42px;
+	height: 24px;
+	border-radius: 999px;
+	background: var(--background-modifier-border);
+	position: relative;
+	cursor: pointer;
+	transition: background .15s ease;
+	border: 1px solid var(--background-modifier-border);
+}
+
+.pcal-event-control-value input[type="checkbox"]:checked {
+	background: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+}
+
+.pcal-event-control-value input[type="checkbox"]::after {
+	content: "";
+	position: absolute;
+	left: 3px;
+	top: 50%;
+	transform: translateY(-50%);
+	width: 18px;
+	height: 18px;
+	border-radius: 999px;
+	background: #ffffff;
+	transition: left .15s ease;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+}
+
+.pcal-event-control-value input[type="checkbox"]:checked::after {
+	left: 21px;
+}
+
+.pcal-event-control-value select {
+	height: 34px;
+	width: 100%;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-modifier-form-field);
+	color: var(--text-normal);
+	padding: 0 10px;
+	font-size: var(--font-ui-small);
+}
+
+.pcal-event-times {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+	align-items: center;
+}
+
+.pcal-event-time-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 34px;
+}
+
+.pcal-event-time-label {
+	flex: 0 0 76px;
+	min-width: 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+.pcal-event-time-controls {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+}
+
+.pcal-event-time-controls input {
+	flex: 1;
+	min-width: 0;
+	height: 34px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 0 10px;
+	background: var(--background-modifier-form-field);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+.pcal-event-invite {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.pcal-event-modal .setting-item {
+	border: none;
+	padding: 0;
+	margin: 0;
+	gap: 8px;
+	align-items: center;
 }
 
 .pcal-event-modal .setting-item-info {
-	flex: 0 0 32%;
+	flex: 0 0 88px;
+	min-width: 0;
 }
 
 .pcal-event-modal .setting-item-control {
 	flex: 1 1 auto;
+	min-width: 0;
 }
 
 .pcal-event-modal .setting-item-control input[type="text"],
@@ -1604,6 +1885,7 @@ button.pcal-card-more .svg-icon {
 	color: var(--text-normal);
 	font-size: var(--font-ui-small);
 	color-scheme: dark light;
+	height: 34px;
 }
 
 .pcal-modal-status {
@@ -1925,8 +2207,8 @@ button.pcal-card-more .svg-icon {
 .pcal-compose-window {
 	resize: both;
 	overflow: auto;
-	width: 620px;
-	min-width: 440px;
+	width: 780px;
+	min-width: 560px;
 	min-height: 300px;
 	max-width: 95vw;
 	max-height: 90vh;
@@ -1941,6 +2223,88 @@ button.pcal-card-more .svg-icon {
 
 .pcal-compose {
 	gap: 6px;
+}
+
+.pcal-compose-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 190px;
+	gap: 12px;
+	height: 100%;
+	min-height: 0;
+}
+
+.pcal-compose-main {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+}
+
+.pcal-contact-rail {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	padding: 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-secondary);
+}
+
+.pcal-contact-rail-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 6px;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+}
+
+.pcal-contact-rail-search {
+	width: 100%;
+	margin-bottom: 6px;
+}
+
+.pcal-contact-rail-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding-right: 2px;
+}
+
+.pcal-contact-rail-row {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 5px 7px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.pcal-contact-rail-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pcal-contact-rail-name {
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-contact-rail-email {
+	color: var(--text-faint);
+	font-size: 10px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-contact-rail-empty {
+	padding: 8px;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
 }
 
 .pcal-compose-from {
@@ -2434,13 +2798,60 @@ button.pcal-card-more .svg-icon {
 /* the event window: its fields are Settings rows, so it only needs room and
    a description that behaves like the compose editor */
 .pcal-event-desc-label {
-	margin: 14px 0 4px;
+	margin: 0;
 }
 
 .pcal-event-desc {
-	min-height: 120px;
-	max-height: 260px;
+	min-height: 90px;
+	max-height: 140px;
 	overflow-y: auto;
+}
+
+/* the scratchpad window is deliberately almost all canvas */
+.pcal-sketch-modal {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	width: 100%;
+	max-width: none;
+	padding: 0 16px 14px;
+}
+
+.pcal-sketch-head {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.pcal-sketch-head input[type="text"] {
+	flex: 1;
+	min-width: 0;
+	height: 34px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-modifier-form-field);
+	color: var(--text-normal);
+	padding: 0 10px;
+	font-size: var(--font-ui-small);
+}
+
+.pcal-sketch-body {
+	flex: 1;
+	min-height: 0;
+}
+
+.pcal-sketch-body textarea {
+	width: 100%;
+	height: 100%;
+	min-height: 260px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-modifier-form-field);
+	color: var(--text-normal);
+	padding: 10px 12px;
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+	resize: vertical;
 }
 
 /* the compose window: header rows, a bar, then an editor that takes the rest
@@ -2457,6 +2868,13 @@ button.pcal-card-more .svg-icon {
 
 .pcal-compose-fromrow select {
 	max-width: 280px;
+}
+
+.pcal-imap-rich-compose .pcal-compose-fromrow select {
+	flex: 1;
+	min-width: 0;
+	max-width: none;
+	height: 32px;
 }
 
 .pcal-compose-fromname {
@@ -4840,6 +5258,93 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	gap: 6px;
 }
 
+.pcal-tasks-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+}
+
+.pcal-tasks-header-add {
+	flex-shrink: 0;
+}
+
+.pcal-tasks-board {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
+	gap: 10px;
+}
+
+.pcal-tasks-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex: 0 0 auto;
+	max-height: 28.5714%;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 4px 8px 0;
+}
+
+.pcal-tasks-rowband {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	flex: 1 1 auto;
+	min-height: 72px;
+	background: var(--background-secondary);
+	border-radius: 8px;
+	padding: 10px 12px;
+}
+
+.pcal-tasks-rowhead {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 4px;
+}
+
+.pcal-tasks-rowband.is-collapsed {
+	flex: 0 0 auto;
+	height: auto;
+	min-height: 0;
+	overflow: hidden;
+	padding: 8px 12px;
+}
+
+.pcal-tasks-rowband.is-collapsed .pcal-tasks-rowcards,
+.pcal-tasks-col.is-collapsed .pcal-tasks-cards {
+	display: none;
+}
+
+.pcal-tasks-rowname {
+	font-weight: 700;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	font-size: var(--font-smaller);
+	opacity: 0.55;
+	cursor: pointer;
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pcal-tasks-rowcards {
+	display: flex;
+	gap: 8px;
+	overflow-x: auto;
+	flex: 1;
+	min-height: 0;
+}
+
+.pcal-tasks-rowcards .pcal-tasks-card {
+	flex: 0 0 260px;
+}
+
 .pcal-tasks-switch select {
 	min-width: 140px;
 }
@@ -4859,8 +5364,8 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 .pcal-tasks-col {
-	width: 272px;
-	flex-shrink: 0;
+	flex: 1 1 0;
+	min-width: 220px;
 	background: var(--background-secondary);
 	border-radius: 8px;
 	padding: 12px;
@@ -4880,6 +5385,20 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	align-items: center;
 	gap: 6px;
 	padding: 2px 4px;
+}
+
+.pcal-tasks-chevron {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 0 4px;
+	opacity: 0.5;
+	cursor: pointer;
+}
+
+.pcal-tasks-chevron .svg-icon {
+	width: 14px;
+	height: 14px;
 }
 
 .pcal-tasks-colname {
@@ -5419,11 +5938,24 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	gap: 6px;
 }
 
-.pcal-imap-rich-compose .modal-content,
-.pcal-imap-rich-compose .modal-content > div {
+.pcal-imap-rich-compose .modal-content {
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
+}
+
+.pcal-imap-compose-row input {
+	height: 32px;
+}
+
+.pcal-imap-compose-row .pcal-compose-label {
+	flex: 0 0 72px;
+}
+
+.pcal-imap-rich-compose .pcal-compose-bar {
+	flex-wrap: nowrap;
+	overflow-x: auto;
+	padding: 4px 0;
 }
 
 .pcal-imap-rich-compose .pcal-compose-editor {

@@ -9,6 +9,14 @@ import { zh } from "./i18n-zh";
 const PREFIX_EN = "AmberNyaDesk: ";
 const PREFIX_ZH = "AmberNyaDesk：";
 
+/** The interface language: "zh" runs the swap layer, "en" leaves every
+ *  string as its English source. Flip it from the language setting. */
+let lang: "zh" | "en" = "zh";
+
+export function setI18nLang(next: "zh" | "en"): void {
+	lang = next;
+}
+
 /** Dictionary lookup for a single string: the exact zh hit, the "AmberNyaDesk: "
  *  prefix rule, or the original. Exported so main.ts can localize strings at
  *  the source — settings definitions, for instance, which Obsidian renders
@@ -18,6 +26,7 @@ export function t(text: string): string {
 }
 
 function translateText(text: string): string | null {
+	if (lang === "en") return null;
 	const trimmed = text.trim();
 	if (!trimmed) return null;
 	const hit = zh[trimmed];

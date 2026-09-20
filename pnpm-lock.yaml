@@ -20,6 +20,9 @@ importers:
       nodemailer:
         specifier: ^10.0.10
         version: 10.0.10
+      solarlunar:
+        specifier: ^3.1.0
+        version: 3.1.0
     devDependencies:
       '@types/mailparser':
         specifier: ^3.4.6
@@ -379,6 +382,9 @@ packages:
     resolution: {integrity: sha512-e0VyvkVTwVYViNovRkZ9aodhxVlyoMn7eJhVUPxZ+eK9P/7CBkxvvsBOHqFPEH416726W8tLXXXjKwqgTErrCQ==}
     engines: {node: '>= 10.0.0', npm: '>= 3.0.0'}
 
+  solarlunar@3.1.0:
+    resolution: {integrity: sha512-PCJsIeSaMyQVK6TZk+tlPNaoAlk02+2UxhI/DS+K0zdLkwTihMp4px6S+Jv6HPPC0p7QsUM18WSs2/HEC1o0wQ==}
+
   sonic-boom@4.2.1:
     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
 
@@ -725,6 +731,8 @@ snapshots:
     dependencies:
       ip-address: 10.7.2
       smart-buffer: 4.2.0
+
+  solarlunar@3.1.0: {}
 
   sonic-boom@4.2.1:
     dependencies:

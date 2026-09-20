@@ -1675,7 +1675,7 @@ eq(dedupePeople(undefined, ["Ana"]), ["Ana"], "no organizer, no dedupe");
 
 // --- ics.ts: parsing and recurrence expansion ---
 import { parseIcsEvents } from "../src/ics";
-import { upsertIcsOverride } from "../src/localics";
+import { upsertIcsEvent, upsertIcsOverride } from "../src/localics";
 
 const SRC = { sourceId: "feed", calendarName: "Feed", color: "#123456" };
 const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//pc-test//EN", ...lines, "END:VCALENDAR"].join("\r\n");
@@ -1688,6 +1688,34 @@ const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-
 	eq(evs[0].title, "Simple", "ics: summary maps to title");
 	eq(evs[0].sourceId, "feed", "ics: source id carries through");
 	eq(parseIcsEvents(text, msOfKey("2026-08-01"), msOfKey("2026-08-05"), SRC).length, 0, "ics: events outside the window drop");
+}
+
+{
+	let text = ics("BEGIN:VEVENT", "UID:done-1", "DTSTART;VALUE=DATE:20260717", "SUMMARY:Finish", "END:VEVENT");
+	let evs = parseIcsEvents(text, msOfKey("2026-07-16"), msOfKey("2026-07-19"), SRC);
+	eq(evs[0].completed, false, "ics: an unmarked event is not completed");
+
+	text = upsertIcsEvent(text, {
+		uid: "done-1",
+		title: "Finish",
+		startMs: msOfKey("2026-07-17"),
+		endMs: msOfKey("2026-07-18"),
+		allDay: true,
+		completed: true,
+	});
+	evs = parseIcsEvents(text, msOfKey("2026-07-16"), msOfKey("2026-07-19"), SRC);
+	eq(evs[0].completed, true, "ics: the local done marker parses");
+
+	text = upsertIcsEvent(text, {
+		uid: "done-1",
+		title: "Finish",
+		startMs: msOfKey("2026-07-17"),
+		endMs: msOfKey("2026-07-18"),
+		allDay: true,
+		completed: false,
+	});
+	evs = parseIcsEvents(text, msOfKey("2026-07-16"), msOfKey("2026-07-19"), SRC);
+	eq(evs[0].completed, false, "ics: unmarking clears the local done marker");
 }
 
 {

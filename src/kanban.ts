@@ -6,7 +6,8 @@
  * marker (📅), tags, and a description body; right-click opens a context
  * menu in the shape of obsidian-kanban's card menu. */
 
-import { Menu, Modal, Notice, Setting } from "obsidian";
+import { Menu, Modal, Notice, Setting, setIcon } from "obsidian";
+import { t } from "./i18n";
 import type { App } from "obsidian";
 
 export interface KanbanCard {
@@ -21,7 +22,10 @@ export interface KanbanColumn {
 	cards: KanbanCard[];
 }
 
+export type KanbanRow = KanbanColumn;
+
 export interface KanbanBoard {
+	rows: KanbanRow[];
 	columns: KanbanColumn[];
 }
 
@@ -41,11 +45,18 @@ export function cardDate(card: KanbanCard): string | null {
  *  are `- [ ]` / `- [x]` list items, and indented lines under a card are
  *  that card's body. */
 export function parseKanbanBoard(text: string): KanbanBoard {
+	const rows: KanbanRow[] = [];
 	const columns: KanbanColumn[] = [];
 	let current: KanbanColumn | null = null;
 	let last: KanbanCard | null = null;
 	for (const raw of text.split(/\r?\n/)) {
 		const line = raw.trimEnd();
+		if (line.startsWith("### ")) {
+			current = { name: line.slice(4).trim(), cards: [] };
+			rows.push(current);
+			last = null;
+			continue;
+		}
 		if (line.startsWith("## ")) {
 			current = { name: line.slice(3).trim(), cards: [] };
 			columns.push(current);
@@ -70,11 +81,19 @@ export function parseKanbanBoard(text: string): KanbanBoard {
 		}
 	}
 	if (!columns.length) columns.push({ name: "Todo", cards: [] });
-	return { columns };
+	return { rows, columns };
 }
 
 export function serializeKanbanBoard(board: KanbanBoard): string {
 	const parts = [...FRONTMATTER];
+	for (const row of board.rows) {
+		parts.push(`### ${row.name}`, "");
+		for (const card of row.cards) {
+			parts.push(`- [${card.checked ? "x" : " "}] ${card.text}`);
+			if (card.body) for (const line of card.body.split("\n")) parts.push(`  ${line}`);
+		}
+		parts.push("");
+	}
 	for (const col of board.columns) {
 		parts.push(`## ${col.name}`, "");
 		for (const card of col.cards) {
@@ -98,6 +117,9 @@ export interface KanbanHost {
 	activeBoard: string | null;
 	/** Hand a card's text to the calendar (opens the event editor prefilled). */
 	linkToCalendar(text: string): void;
+	/** Folded rows and columns, kept across view re-renders and restarts. */
+	getCollapsed(): string[];
+	setCollapsed(keys: string[]): void;
 }
 
 export class TasksBoard {
@@ -105,6 +127,7 @@ export class TasksBoard {
 	private board: KanbanBoard | null = null;
 	private path: string | null = null;
 	private dragCard: KanbanCard | null = null;
+	private collapsed: Set<string>;
 
 	constructor(
 		private app: App,
@@ -113,6 +136,7 @@ export class TasksBoard {
 		folder: string
 	) {
 		this.folder = folder;
+		this.collapsed = new Set(this.host.getCollapsed());
 	}
 
 	async render() {
@@ -134,13 +158,38 @@ export class TasksBoard {
 			});
 			switcher.createEl("button", { text: "New board", cls: "mod-cta" }).addEventListener("click", () => this.askName("New board", "Create", null, (name) => this.create(name)));
 			switcher.createEl("button", { text: "Rename" }).addEventListener("click", () => this.path && this.askName("Rename board", "Rename", (this.path.split("/").pop() ?? this.path).replace(/\.md$/i, ""), (name) => this.rename(name)));
+			const actions = header.createDiv("pcal-tasks-actions");
+			const addRow = actions.createEl("button", { text: "+ Add row", cls: "pcal-tasks-header-add" });
+			addRow.disabled = !this.path;
+			addRow.addEventListener("click", () => {
+				if (!this.board) return;
+				this.askName("Add row", "Add", null, (name) => {
+					if (!this.board) return;
+					this.board.rows.unshift({ name: name.trim() || "持续目标", cards: [] });
+					void this.persist();
+				});
+			});
+			this.headerAddRow = addRow;
+			// add column sits beside add row, both board-level controls
+			const addCol = actions.createEl("button", { text: "+ Add column", cls: "pcal-tasks-header-add" });
+			addCol.disabled = !this.path;
+			addCol.addEventListener("click", () => {
+				if (!this.board) return;
+				this.askName("Add column", "Add", null, (name) => {
+					this.board?.columns.push({ name, cards: [] });
+					void this.persist();
+				});
+			});
+			this.headerAddCol = addCol;
 			// no delete button: a whole board is too much to lose to a click
 		} else {
 			switcher.createSpan({ cls: "pcal-tasks-empty", text: "No boards yet." });
 			switcher.createEl("button", { text: "New board", cls: "mod-cta" }).addEventListener("click", () => this.askName("New board", "Create", null, (name) => this.create(name)));
 		}
 
-		const body = c.createDiv("fk-board__columns pcal-tasks-columns");
+		const boardEl = c.createDiv("pcal-tasks-board");
+		const rowsEl = boardEl.createDiv("pcal-tasks-rows");
+		const body = boardEl.createDiv("fk-board__columns pcal-tasks-columns");
 		if (!this.path) return;
 		try {
 			this.board = parseKanbanBoard(await this.host.readBoard(this.path));
@@ -148,12 +197,100 @@ export class TasksBoard {
 			body.createDiv({ cls: "pcal-tasks-error", text: `Could not read the board (${e instanceof Error ? e.message : String(e)}).` });
 			return;
 		}
+		this.renderRows(rowsEl);
 		this.renderColumns(body);
+	}
+
+	private headerAddCol: HTMLButtonElement | null = null;
+	private headerAddRow: HTMLButtonElement | null = null;
+
+	/** Collapse state is per board and per named section, so it survives the
+	 *  immediate re-render after every card edit. */
+	private collapseKey(kind: "row" | "column", name: string): string {
+		return `${this.path ?? ""}:${kind}:${name}`;
+	}
+
+	private isCollapsed(kind: "row" | "column", name: string): boolean {
+		return this.collapsed.has(this.collapseKey(kind, name));
+	}
+
+	private toggleCollapsed(kind: "row" | "column", name: string): void {
+		const key = this.collapseKey(kind, name);
+		if (this.collapsed.has(key)) this.collapsed.delete(key);
+		else this.collapsed.add(key);
+		this.saveCollapsed();
+	}
+
+	/** Renaming a section keeps its fold instead of leaving stale state behind. */
+	private renameCollapsed(kind: "row" | "column", from: string, to: string): void {
+		const oldKey = this.collapseKey(kind, from);
+		if (!this.collapsed.delete(oldKey)) return;
+		this.collapsed.add(this.collapseKey(kind, to));
+		this.saveCollapsed();
+	}
+
+	private saveCollapsed(): void {
+		this.host.setCollapsed([...this.collapsed]);
+	}
+
+	private renderRows(host: HTMLElement) {
+		host.empty();
+		const board = this.board!;
+		if (this.headerAddCol) this.headerAddCol.disabled = false;
+		if (this.headerAddRow) this.headerAddRow.disabled = false;
+		board.rows.forEach((row, ri) => {
+			const rowEl = host.createDiv("pcal-tasks-rowband");
+			const head = rowEl.createDiv("pcal-tasks-rowhead");
+			const rowCollapsed = this.isCollapsed("row", row.name);
+			rowEl.toggleClass("is-collapsed", rowCollapsed);
+			const rowChev = head.createEl("button", { cls: "pcal-tasks-chevron" });
+			setIcon(rowChev, rowCollapsed ? "chevron-right" : "chevron-down");
+			rowChev.addEventListener("click", () => {
+				this.toggleCollapsed("row", row.name);
+				void this.render();
+			});
+			head.createSpan({ cls: "pcal-tasks-rowname", text: row.name }).addEventListener("click", () => this.askName(t("Rename row"), t("Rename"), row.name, (name) => { this.renameCollapsed("row", row.name, name); row.name = name; void this.persist(); }));
+			head.createSpan({ cls: "pcal-tasks-count", text: String(row.cards.length) });
+			head.createEl("button", { cls: "pcal-tasks-coladd", text: "+" }).addEventListener("click", () => this.addCard(row));
+			const rowDelete = head.createEl("button", { cls: "pcal-tasks-colmenu", text: "" });
+			setIcon(rowDelete, "trash-2");
+			rowDelete.addEventListener("click", (e) => {
+				e.stopPropagation();
+				if (row.cards.length) {
+					new Notice(t("Move or clear the cards in this row first."));
+					return;
+				}
+				board.rows = board.rows.filter((_, i) => i !== ri);
+				void this.persist();
+			});
+			const menuBtn = head.createEl("button", { cls: "pcal-tasks-colmenu", text: "⋯" });
+			menuBtn.addEventListener("click", (e) => {
+				const menu = new Menu();
+				menu.addItem((i) => i.setTitle(t("Rename row")).onClick(() => this.askName(t("Rename row"), t("Rename"), row.name, (name) => { this.renameCollapsed("row", row.name, name); row.name = name; void this.persist(); })));
+				menu.addItem((i) =>
+					i.setTitle(t("Delete row")).onClick(() => {
+						if (row.cards.length) new Notice(t("Move or clear the cards in this row first."));
+						else {
+							board.rows = board.rows.filter((_, i) => i !== ri);
+							void this.persist();
+						}
+					})
+				);
+				menu.showAtMouseEvent(e);
+			});
+			if (!rowCollapsed) {
+				const list = rowEl.createDiv("pcal-tasks-rowcards");
+				for (const card of row.cards) this.renderCard(list, card);
+				const addBtn = rowEl.createEl("button", { text: "+ Add card", cls: "pcal-tasks-addcard" });
+				addBtn.addEventListener("click", () => this.addCard(row));
+			}
+		});
 	}
 
 	private renderColumns(body: HTMLElement) {
 		body.empty();
 		const board = this.board!;
+		if (this.headerAddCol) this.headerAddCol.disabled = false;
 		board.columns.forEach((col, ci) => {
 			const colEl = body.createDiv("fk-col pcal-tasks-col");
 			colEl.addEventListener("dragover", (e) => {
@@ -168,19 +305,28 @@ export class TasksBoard {
 				this.dragCard = null;
 				if (!dragged) return;
 				for (const c of board.columns) c.cards = c.cards.filter((card) => card !== dragged);
+				for (const row of board.rows) row.cards = row.cards.filter((card) => card !== dragged);
 				board.columns[ci].cards.push(dragged);
 				void this.persist();
 			});
 			const head = colEl.createDiv("fk-col-header pcal-tasks-colhead");
-			head.createSpan({ cls: "pcal-tasks-colname", text: col.name }).addEventListener("click", () => this.askName("Rename column", "Rename", col.name, (name) => { col.name = name; void this.persist(); }));
+			const colCollapsed = this.isCollapsed("column", col.name);
+			colEl.toggleClass("is-collapsed", colCollapsed);
+			const colChev = head.createEl("button", { cls: "pcal-tasks-chevron" });
+			setIcon(colChev, colCollapsed ? "chevron-right" : "chevron-down");
+			colChev.addEventListener("click", () => {
+				this.toggleCollapsed("column", col.name);
+				void this.render();
+			});
+			head.createSpan({ cls: "pcal-tasks-colname", text: col.name }).addEventListener("click", () => this.askName(t("Rename column"), t("Rename"), col.name, (name) => { this.renameCollapsed("column", col.name, name); col.name = name; void this.persist(); }));
 			head.createSpan({ cls: "pcal-tasks-count", text: String(col.cards.length) });
 			head.createEl("button", { cls: "pcal-tasks-coladd", text: "+" }).addEventListener("click", () => this.addCard(col));
 			const menuBtn = head.createEl("button", { cls: "pcal-tasks-colmenu", text: "⋯" });
 			menuBtn.addEventListener("click", (e) => {
 				const menu = new Menu();
-				menu.addItem((i) => i.setTitle("Rename column").onClick(() => this.askName("Rename column", "Rename", col.name, (name) => { col.name = name; void this.persist(); })));
-				menu.addItem((i) => i.setTitle("Delete column").onClick(() => {
-					if (col.cards.length) new Notice("Move or clear the cards in this column first.");
+				menu.addItem((i) => i.setTitle(t("Rename column")).onClick(() => this.askName(t("Rename column"), t("Rename"), col.name, (name) => { this.renameCollapsed("column", col.name, name); col.name = name; void this.persist(); })));
+				menu.addItem((i) => i.setTitle(t("Delete column")).onClick(() => {
+					if (col.cards.length) new Notice(t("Move or clear the cards in this column first."));
 					else {
 						board.columns = board.columns.filter((_, i) => i !== ci);
 						void this.persist();
@@ -188,16 +334,13 @@ export class TasksBoard {
 				}));
 				menu.showAtMouseEvent(e);
 			});
-			const list = colEl.createDiv("pcal-tasks-cards");
-			for (const card of col.cards) this.renderCard(list, card);
-			const addBtn = colEl.createEl("button", { text: "+ Add card", cls: "pcal-tasks-addcard" });
-			addBtn.addEventListener("click", () => this.addCard(col));
+			if (!colCollapsed) {
+				const list = colEl.createDiv("pcal-tasks-cards");
+				for (const card of col.cards) this.renderCard(list, card);
+				const addBtn = colEl.createEl("button", { text: "+ Add card", cls: "pcal-tasks-addcard" });
+				addBtn.addEventListener("click", () => this.addCard(col));
+			}
 		});
-		const addCol = body.createDiv("pcal-tasks-addcol");
-		addCol.createEl("button", { text: "+ Add column" }).addEventListener("click", () => this.askName("Add column", "Add", null, (name) => {
-			board.columns.push({ name, cards: [] });
-			void this.persist();
-		}));
 	}
 
 	private renderCard(list: HTMLElement, card: KanbanCard) {
@@ -255,6 +398,7 @@ export class TasksBoard {
 				.setIcon("trash-2")
 				.onClick(() => {
 					for (const col of this.board!.columns) col.cards = col.cards.filter((c) => c !== card);
+					for (const row of this.board!.rows) row.cards = row.cards.filter((c) => c !== card);
 					void this.persist();
 				})
 		);
@@ -286,6 +430,7 @@ export class TasksBoard {
 			const tags = (card.text.match(/#([\p{L}\p{N}_/-]+)/gu) ?? []).join(" ");
 			if (remove) {
 				for (const col of this.board!.columns) col.cards = col.cards.filter((c) => c !== card);
+				for (const row of this.board!.rows) row.cards = row.cards.filter((c) => c !== card);
 			} else {
 				card.text = `${title.trim()}${date ? ` 📅 ${date}` : ""}` + (tags ? ` ${tags}` : "");
 				card.body = body || undefined;
@@ -301,7 +446,14 @@ export class TasksBoard {
 	private async create(name: string) {
 		this.path = await this.host.createBoard(this.folder, name);
 		this.host.activeBoard = this.path;
-		this.board = { columns: [{ name: "Todo", cards: [] }, { name: "Doing", cards: [] }, { name: "Done", cards: [] }] };
+		this.board = {
+			rows: [{ name: "持续目标", cards: [] }],
+			columns: [
+				{ name: "Todo", cards: [] },
+				{ name: "Doing", cards: [] },
+				{ name: "Done", cards: [] },
+			],
+		};
 		await this.host.writeBoard(this.path, serializeKanbanBoard(this.board));
 		await this.reload();
 	}

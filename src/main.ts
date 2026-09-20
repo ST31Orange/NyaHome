@@ -22,6 +22,8 @@ import { chunk, GRAPH_BATCH_MAX,
 	dayOfWeek,
 	DAYS_SHORT,
 	decodeJwtPayload,
+	UI_LANG,
+	dowShort,
 	dedupePeople,
 	dragTimes,
 	dueReminders,
@@ -80,6 +82,8 @@ import { chunk, GRAPH_BATCH_MAX,
 	parseAgendaBlock,
 	parseAttendeeInput,
 	periodLabel,
+	relativeDayLabel,
+	setUiLang,
 	renderNoteName,
 	searchFolderQuery,
 	avatarColor,
@@ -180,7 +184,8 @@ import { parseIcsEvents } from "./ics";
 import donateQr from "../donate-alipay.jpg";
 import donateWxQr from "../donate-wechat.jpg";
 import { decryptSecret, encryptSecret, secretIsEncrypted } from "./secret";
-import { startI18n, stopI18n, t } from "./i18n";
+import { lunarTag } from "./lunar";
+import { setI18nLang, startI18n, stopI18n, t } from "./i18n";
 import { KanbanHost, parseKanbanBoard, serializeKanbanBoard, TasksBoard } from "./kanban";
 import { ImapAccount, ImapBody, ImapFolderInfo, ImapMessage, SmtpAttachment, SmtpMail, imapLabel, listImapFolderInfos, listImapFolders, markImapRead, moveImapMessages, permanentlyDeleteImapMessages, searchImapMessages, searchImapSubjects, sendImapMail, setImapFlagged, trashFolderFor, fetchImapBody, fetchImapMessages, testImapAccount } from "./imap";
 import { ImapMailService } from "./mail-service";
@@ -620,6 +625,8 @@ interface PCSettings {
 	mailSignatureUse: { accountId: string; newId: string; replyId: string }[];
 	/** Where person pages live; empty borrows Power Assistant's folder. */
 	peopleFolder: string;
+	/** The local contact library shared by every mail account. */
+	imapContacts: ContactRecord[];
 	/** The view phones open with (agenda reads best on a narrow screen). */
 	phoneDefaultMode: ViewMode;
 	/** Open AmberNyaDesk as the workspace's first page when Obsidian starts. */
@@ -628,6 +635,13 @@ interface PCSettings {
 	calBackgroundPath: string;
 	/** 0-100 opacity of that wallpaper; 0 keeps the plain calendar surface. */
 	calBackgroundOpacity: number;
+	/** The interface language. "en" leaves source text untouched; "zh" turns
+	 *  on the swap layer and the localized calendar formatters. */
+	language: "zh" | "en";
+	/** A tiny local scratchpad: one note per tile, editable in place. */
+	sketchNotes: SketchNote[];
+	/** The event ids the user pinned for quick reference. */
+	starredEvents: string[];
 	showNotifications: boolean;
 	/** Print IMAP timing/cache diagnostics to the console; off by default. */
 	mailDebugLog: boolean;
@@ -652,6 +666,27 @@ interface ImapDraftAttachment {
 	filename: string;
 	contentType: string;
 	base64: string;
+}
+
+/** A contact saved in the plugin's own local address book. It is deliberately
+ *  small enough to be useful and small enough to be edited by hand later. */
+interface ContactRecord extends SavedContact {
+	id: string;
+	createdAtMs: number;
+	updatedAtMs: number;
+	lastMs: number;
+	count: number;
+}
+
+/** A free-form scratchpad note attached to a day in the calendar. Kept in
+ *  settings rather than a file so it survives restarts but stays private. */
+interface SketchNote {
+	id: string;
+	title: string;
+	date: string;
+	text: string;
+	createdMs: number;
+	updatedMs: number;
 }
 
 const DEFAULT_SETTINGS: PCSettings = {
@@ -685,6 +720,9 @@ const DEFAULT_SETTINGS: PCSettings = {
 	weatherLon: "",
 	weatherPlace: "",
 	weatherUnit: "f",
+	language: "zh",
+	sketchNotes: [],
+	starredEvents: [],
 	filterMeetings: true,
 	filterAppointments: true,
 	filterAllDay: true,
@@ -750,6 +788,7 @@ const DEFAULT_SETTINGS: PCSettings = {
 	mailSignatures: [],
 	mailSignatureUse: [],
 	peopleFolder: "",
+	imapContacts: [],
 	phoneDefaultMode: "agenda",
 	openAtStartup: true,
 	calBackgroundPath: "",
@@ -866,6 +905,8 @@ export default class PowerDeskPlugin extends Plugin {
 
 	async onload() {
 		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PCSettings> | null));
+		setI18nLang(this.settings.language);
+		setUiLang(this.settings.language);
 		pluginNoticesEnabled = () => this.settings.showNotifications;
 		// baseline is the DISK state, cloned before any migration, so the
 		// migrated keys read as our change and actually persist
@@ -921,12 +962,12 @@ export default class PowerDeskPlugin extends Plugin {
 		this.registerView(VIEW_TYPE, (leaf) => new PowerCalendarView(leaf, this));
 		this.registerView(VIEW_TYPE_MAIL, (leaf) => new MailView(leaf, this));
 		this.registerView(VIEW_TYPE_MAIL_IMAP, (leaf) => new ImapMailView(leaf, this));
-		this.i18nObserver = startI18n();
+		this.i18nObserver = this.settings.language === "zh" ? startI18n() : null;
 		this.addRibbonIcon("calendar-days", "Open AmberNyaDesk", () => void this.openCalendarView());
 		this.ribbonEl = this.addRibbonIcon("mail", "Open AmberNyaDesk inbox", () => void this.openMailView());
 		this.paintRibbonBadge();
 		this.addCommand({ id: "open-mail", icon: "inbox", name: "Open inbox", callback: () => void this.openMailView() });
-		this.addCommand({ id: "new-mail", icon: "pencil", name: "New mail", callback: () => new RichComposeModal(this.app, this, { mode: "new" }).open() });
+		this.addCommand({ id: "new-mail", icon: "pencil", name: "New mail", callback: () => this.openNewMailCompose() });
 		// the palette and the shortcut card are worth having on the vault's
 		// own command list too, so they can be given a global hotkey rather
 		// than only working once the mail view has focus
@@ -2248,6 +2289,7 @@ export default class PowerDeskPlugin extends Plugin {
 				allDay: draft.allDay,
 				location: draft.location ?? ev?.location,
 				description: draft.description ?? ev?.description,
+				completed: ev?.completed,
 			};
 			if (ev?.recurring) {
 				// an occurrence edit never rewrites the series: it lands as an
@@ -3638,6 +3680,146 @@ export default class PowerDeskPlugin extends Plugin {
 
 	/* ----- recipient autocomplete ----- */
 
+	/* ----- local contact library ----- */
+
+	/** The contacts the user saved here, not the ones a provider knows about. */
+	imapContacts(): ContactRecord[] {
+		return this.settings.imapContacts ?? [];
+	}
+
+	/** Toggle the local .ics "done" marker for one event (or one recurring
+	 *  occurrence). The field is custom, so other calendar apps keep the event
+	 *  while AmberNyaDesk restores its strikethrough. */
+	canToggleEventCompletion(ev: PCEvent): boolean {
+		return this.sourceByKey(ev.sourceId)?.kind === "local" && !!ev.canEdit && !ev.notePath;
+	}
+
+	async toggleEventCompletion(ev: PCEvent): Promise<boolean> {
+		const def = this.sourceByKey(ev.sourceId);
+		if (def?.kind !== "local" || !ev.canEdit || ev.notePath) {
+			new Notice("AmberNyaDesk: only local calendar events support marking done.");
+			return false;
+		}
+		const path = normalizePath(def.source.path);
+		try {
+			const uid = ev.seriesId || ev.id.slice(0, ev.id.lastIndexOf(":")) || newIcsUid();
+			const rec = {
+				uid,
+				title: ev.title === "(no title)" ? "" : ev.title,
+				startMs: ev.startMs,
+				endMs: ev.endMs,
+				allDay: ev.allDay,
+				location: ev.location,
+				description: ev.description,
+				completed: !ev.completed,
+			};
+			let text = await this.readIcsText(path);
+			if (ev.recurring) text = upsertIcsOverride(text, uid, ev.recurrenceIdMs ?? ev.startMs, rec, ev.recurrenceIdAllDay ?? ev.allDay);
+			else text = upsertIcsEvent(text, rec);
+			await this.app.vault.adapter.write(path, text);
+			const st = this.cache.get(ev.sourceId);
+			const cached = st?.events.find((e) => e.id === ev.id);
+			if (cached) cached.completed = !ev.completed;
+			this.notify();
+			this.refetchRemote(def.key);
+			return true;
+		} catch (e) {
+			new Notice(`AmberNyaDesk: could not mark the event done (${e instanceof Error ? e.message : String(e)}).`);
+			return false;
+		}
+	}
+
+	isContactSaved(email: string): boolean {
+		const lower = (email ?? "").trim().toLowerCase();
+		if (!lower) return false;
+		return this.imapContacts().some((c) => c.email.toLowerCase() === lower) || this.savedContactList.some((c) => c.email.toLowerCase() === lower);
+	}
+
+	saveContact(c: SavedContact): ContactRecord {
+		const now = Date.now();
+		const list = [...this.imapContacts()];
+		const existing = list.find((x) => x.email.toLowerCase() === c.email.trim().toLowerCase());
+		if (existing) {
+			Object.assign(existing, { ...c, email: existing.email, lastMs: now, updatedAtMs: now });
+			this.queueSave();
+			this.notify();
+			return existing;
+		}
+		const next: ContactRecord = {
+			id: freshId(),
+			name: c.name?.trim() || c.email,
+			email: c.email.trim(),
+			company: c.company,
+			title: c.title,
+			phone: c.phone,
+			createdAtMs: now,
+			updatedAtMs: now,
+			lastMs: now,
+			count: 0,
+		};
+		list.push(next);
+		this.settings.imapContacts = list;
+		this.queueSave();
+		this.notify();
+		return next;
+	}
+
+	updateContact(id: string, next: SavedContact): void {
+		const list = [...this.imapContacts()];
+		const hit = list.find((c) => c.id === id);
+		if (!hit) return;
+		Object.assign(hit, next, { id: hit.id, createdAtMs: hit.createdAtMs, updatedAtMs: Date.now() });
+		this.settings.imapContacts = list;
+		this.queueSave();
+		this.notify();
+	}
+
+	deleteContact(id: string): void {
+		this.settings.imapContacts = this.imapContacts().filter((c) => c.id !== id);
+		this.queueSave();
+		this.notify();
+	}
+
+	/** Count one more contact with an existing person, so the quick rail
+	 *  follows what you actually write to rather than only who you saved. */
+	touchContact(email: string): void {
+		const lower = (email ?? "").trim().toLowerCase();
+		if (!lower) return;
+		const list = [...this.imapContacts()];
+		const hit = list.find((c) => c.email.toLowerCase() === lower);
+		if (!hit) return;
+		hit.count++;
+		hit.lastMs = Date.now();
+		this.settings.imapContacts = list;
+		this.queueSave();
+		this.notify();
+	}
+
+	/** Record successful outgoing addresses in the local contact library. A
+	 *  reply to someone should make them findable before you have thought to
+	 *  save them by hand; deleting one later stays a deliberate action. */
+	async rememberOutgoingContacts(mail: SmtpMail, ownAddress: string): Promise<void> {
+		const self = (ownAddress ?? "").trim().toLowerCase();
+		const seen = new Set<string>();
+		for (const raw of [mail.to, mail.cc ?? "", mail.bcc ?? ""]) {
+			for (const part of raw.split(",")) {
+				const chunk = part.trim();
+				if (!chunk) continue;
+				const angle = /<([^>]+)>/.exec(chunk);
+				const email = (angle?.[1] ?? chunk).trim().toLowerCase();
+				if (!email.includes("@") || email === self || seen.has(email)) continue;
+				seen.add(email);
+				const name = angle
+					? chunk.slice(0, angle.index).replace(/^["']+|["']+$/g, "").trim()
+					: email;
+				const existing = this.imapContacts().find((c) => c.email.toLowerCase() === email);
+				if (existing) this.touchContact(email);
+				else this.saveContact({ name: name || email, email });
+			}
+		}
+		await this.queueSave();
+	}
+
 	/** Sightings harvested from Sent Items, kept for the session. The cached
 	 *  mail and the calendar are read fresh on every keystroke instead,
 	 *  since they are already in memory and cost nothing. */
@@ -3668,6 +3850,7 @@ export default class PowerDeskPlugin extends Plugin {
 		// a saved contact belongs in autocomplete even if you have never
 		// written to them, which is most of the point of saving one
 		for (const c of this.savedContactList) seen.push({ name: c.name, email: c.email, ms: 0 });
+		for (const c of this.imapContacts()) seen.push({ name: c.name, email: c.email, ms: c.lastMs });
 		// never suggest the mailboxes doing the sending
 		const own = new Set(this.settings.graphAccounts.map((a) => (a.label ?? "").toLowerCase()).filter(Boolean));
 		return rankContacts(seen).filter((c) => !own.has(c.email));
@@ -3709,7 +3892,7 @@ export default class PowerDeskPlugin extends Plugin {
 
 	/** The address book and the correspondence as one list. */
 	people(): PersonCard[] {
-		return mergePeople(this.contactIndex(), this.savedContactList);
+		return mergePeople(this.contactIndex(), [...this.imapContacts(), ...this.savedContactList]);
 	}
 
 	/** Read Sent Items once a session and remember who was on the To lines.
@@ -5199,6 +5382,25 @@ export default class PowerDeskPlugin extends Plugin {
 		await leaf.setViewState({ type: VIEW_TYPE_MAIL, active: true });
 	}
 
+	/** One compose entry point: IMAP wins when a standard mailbox exists,
+	 *  because the old rich window is tied to Graph token plumbing. */
+	openNewMailCompose(to = "", subject = "", preferImapAccountId?: string) {
+		const accounts = this.settings.imapAccounts;
+		const account = (preferImapAccountId ? accounts.find((x) => x.id === preferImapAccountId) : undefined) ?? accounts[0];
+		if (account) {
+			new ImapRichComposeModal(this.app, this, account, null, {
+				to,
+				cc: "",
+				bcc: "",
+				subject,
+				html: "",
+				attachments: [],
+			}).open();
+			return;
+		}
+		new RichComposeModal(this.app, this, { mode: "new", to, subject }).open();
+	}
+
 	/** Power Assistant's own-mailbox mail transport when it is present and
 	 *  connected; null otherwise. The mail-app handoff always works, so a
 	 *  missing sibling costs a nicety, never the feature. */
@@ -5523,6 +5725,74 @@ export default class PowerDeskPlugin extends Plugin {
 		await this.app.vault.createFolder(p).catch(() => {});
 	}
 
+	/* ---------------- sketch notes ---------------- */
+
+	/** The little blue tiles on the calendar are not events. They are
+	 *  throwaway thoughts that deserve their own window, not a schedule. */
+	createSketchNote(title: string, date: string): SketchNote {
+		const now = Date.now();
+		const note: SketchNote = {
+			id: freshId(),
+			title: title.trim() || "随笔",
+			date,
+			text: "",
+			createdMs: now,
+			updatedMs: now,
+		};
+		this.settings.sketchNotes = [...(this.settings.sketchNotes ?? []), note];
+		this.queueSave();
+		this.notify();
+		return note;
+	}
+
+	updateSketchNote(id: string, patch: { title?: string; text?: string }) {
+		const note = (this.settings.sketchNotes ?? []).find((n) => n.id === id);
+		if (!note) return;
+		const before = note.title;
+		if (patch.title !== undefined) note.title = patch.title;
+		if (patch.text !== undefined) note.text = patch.text;
+		note.updatedMs = Date.now();
+		this.queueSave();
+		if (patch.title !== undefined && patch.title !== before) this.notify();
+	}
+
+	deleteSketchNote(id: string) {
+		this.settings.sketchNotes = (this.settings.sketchNotes ?? []).filter((n) => n.id !== id);
+		this.queueSave();
+		this.notify();
+	}
+
+	/* ---------------- starred events ---------------- */
+
+	private starKey(ev: PCEvent): string {
+		return `${ev.sourceId}:${ev.id}`;
+	}
+
+	private legacyStarKey(ev: PCEvent): string {
+		return `${ev.sourceId}:${ev.startMs}`;
+	}
+
+	isStarred(ev: PCEvent): boolean {
+		const list = this.settings.starredEvents ?? [];
+		return list.includes(this.starKey(ev)) || (!ev.allDay && list.includes(this.legacyStarKey(ev)));
+	}
+
+	toggleStar(ev: PCEvent): boolean {
+		const key = this.starKey(ev);
+		const legacy = this.legacyStarKey(ev);
+		const list = new Set(this.settings.starredEvents ?? []);
+		const starred = !list.has(key);
+		if (starred) list.add(key);
+		else {
+			list.delete(key);
+			list.delete(legacy);
+		}
+		this.settings.starredEvents = [...list];
+		this.queueSave();
+		this.notify();
+		return starred;
+	}
+
 	/** Where person pages live: own setting first, Power Assistant's People
 	 *  folder as the fallback, a plain "People" folder when neither exists. */
 	personFolderPath(): string {
@@ -5599,7 +5869,21 @@ export default class PowerDeskPlugin extends Plugin {
 	openOwnSettings() {
 		const setting = (this.app as unknown as { setting?: { open: () => void; openTabById: (id: string) => void } }).setting;
 		setting?.open();
-		setting?.openTabById(this.manifest.id);
+		// openTabById races the settings window on a cold start; wait for it to
+		// finish opening or the plugin tab can land behind Obsidian's own tab
+		window.setTimeout(() => setting?.openTabById(this.manifest.id), 60);
+	}
+
+	applyLanguage() {
+		const lang = this.settings.language;
+		setI18nLang(lang);
+		setUiLang(lang);
+		this.i18nObserver?.disconnect();
+		this.i18nObserver = null;
+		stopI18n();
+		if (lang === "zh") this.i18nObserver = startI18n();
+		this.refreshSettingsTab?.();
+		this.notify();
 	}
 }
 
@@ -5845,7 +6129,7 @@ class MailView extends ItemView {
 		key([], "r", () => this.composeFor("reply"));
 		key([], "a", () => this.composeFor("replyAll"));
 		key([], "f", () => this.composeFor("forward"));
-		key([], "c", () => new RichComposeModal(this.app, this.plugin, { mode: "new" }).open());
+		key([], "c", () => this.plugin.openNewMailCompose());
 		key([], "x", () => this.toggleSelectionMark());
 		key([], "s", () => this.flagSelection());
 		key([], "b", () => this.snoozeSelection());
@@ -5929,7 +6213,7 @@ class MailView extends ItemView {
 			}
 		}
 
-		out.push({ label: "New mail", hint: "C", terms: "compose write", run: () => new RichComposeModal(this.app, this.plugin, { mode: "new" }).open() });
+		out.push({ label: "New mail", hint: "C", terms: "compose write", run: () => this.plugin.openNewMailCompose() });
 		out.push({ label: "Search", hint: "/", terms: "find from subject is unread flagged attachment phrase", run: () => this.focusSearch() });
 		out.push({ label: "Advanced search", terms: "find fields date range from subject", run: () => this.openSearchWindow() });
 		out.push({ label: "People", terms: "contacts address book who", run: () => this.plugin.openPeople() });
@@ -6904,7 +7188,7 @@ class MailView extends ItemView {
 		host.empty();
 		this.mailToolBtns = [];
 		const newMail = host.createEl("button", { cls: "pcal-new-btn", text: "New mail" });
-		newMail.addEventListener("click", () => new RichComposeModal(this.app, this.plugin, { mode: "new" }).open());
+		newMail.addEventListener("click", () => this.plugin.openNewMailCompose());
 		const catalog = new Map(this.toolActions().map((a) => [a.id, a]));
 		for (const id of this.plugin.settings.mailToolbar) {
 			const a = catalog.get(id);
@@ -8722,6 +9006,19 @@ class MailView extends ItemView {
 		host.createDiv({ cls: "pcal-mail-read-subject", text: m.subject });
 		const fromRow = host.createDiv({ cls: "pcal-mail-read-meta" });
 		fromRow.createSpan({ text: `${m.from}${m.fromAddress ? ` <${m.fromAddress}>` : ""}` });
+		if (m.fromAddress) {
+			const contact = fromRow.createEl("button", { cls: "pcal-icon-btn pcal-contact-save", attr: { "aria-label": this.plugin.isContactSaved(m.fromAddress) ? "Edit contact" : "Save sender to contacts" } });
+			setIcon(contact, this.plugin.isContactSaved(m.fromAddress) ? "check" : "user-plus");
+			contact.addEventListener("click", () => {
+				const existing = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === m.fromAddress?.toLowerCase());
+				if (existing) new ContactEditModal(this.app, this.plugin, existing, () => this.renderReading()).open();
+				else {
+					this.plugin.saveContact({ name: m.from, email: m.fromAddress! });
+					setIcon(contact, "check");
+					new Notice(`AmberNyaDesk: saved ${m.fromAddress}.`);
+				}
+			});
+		}
 		// bulk senders are required to say how to leave; when this one did,
 		// the way out sits beside their name rather than at the bottom of the
 		// mail in six-point grey, which is the whole reason it is hard to find
@@ -10780,10 +11077,13 @@ class PeopleModal extends Modal {
 		void this.plugin.ensureSentContacts();
 		void this.plugin.ensureSavedContacts().then(() => this.draw());
 		if (this.plugin.contactsNeedReconnect())
-			c.createDiv({
-				cls: "pcal-mail-error",
-				text: "Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission.",
-			});
+		c.createDiv({
+			cls: "pcal-mail-error",
+			text: "Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission.",
+		});
+
+		const head = c.createDiv("pcal-people-head");
+		head.createEl("button", { text: "Add contact", cls: "mod-cta" }).addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => this.draw()).open());
 
 		const search = c.createEl("input", { cls: "pcal-people-search", attr: { type: "search", placeholder: "Search people..." } });
 		search.addEventListener("input", () => {
@@ -10844,7 +11144,26 @@ class PeopleModal extends Modal {
 					run();
 				});
 			};
-			act("pencil", `New mail to ${p.name || p.email}`, () => new RichComposeModal(this.app, this.plugin, { mode: "new", to: p.email }).open());
+			act("pencil", `New mail to ${p.name || p.email}`, () => this.plugin.openNewMailCompose(p.email));
+			if (this.plugin.isContactSaved(p.email)) {
+				act("settings-2", `Edit ${p.name || p.email}`, () => {
+					const hit = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === p.email.toLowerCase());
+					if (hit) new ContactEditModal(this.app, this.plugin, hit, () => this.draw()).open();
+				});
+				act("trash-2", `Delete ${p.name || p.email}`, () => {
+					const hit = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === p.email.toLowerCase());
+					if (!hit) return;
+					new ConfirmModal(this.app, "Delete contact", `Remove ${p.name || p.email} from the local contact library?`, "Delete", () => {
+						this.plugin.deleteContact(hit.id);
+						this.draw();
+					}).open();
+				});
+			} else {
+				act("user-plus", `Save ${p.name || p.email}`, () => {
+					this.plugin.saveContact({ name: p.name, email: p.email, company: p.company, title: p.title, phone: p.phone });
+					this.draw();
+				});
+			}
 			act("inbox", "Their mail", () => {
 				this.onSearchMail(`from:${p.email}`);
 				this.close();
@@ -12429,12 +12748,9 @@ class ImapMailView extends ItemView {
 				contentType: x.contentType,
 				content: Buffer.from(x.base64, "base64"),
 			})),
-		}, (mail) => void sendImapMail(a, mail).then(() => {
-			this.plugin.settings.imapDrafts = this.plugin.settings.imapDrafts.filter((x) => x.id !== d.id);
-			this.plugin.queueSave();
-			new Notice("AmberNyaDesk: mail sent.");
+		}, () => {
 			void this.loadMessages();
-		})).open();
+		}).open();
 	}
 
 	/** One click: every folder of every account gets its metadata synced and
@@ -12542,10 +12858,9 @@ class ImapMailView extends ItemView {
 		const m = message ?? this.selectedMessage ?? undefined;
 		if (kind !== "new" && !m) return;
 		void this.loadBodyFor(kind, a, m).then((seed) => {
-			new ImapRichComposeModal(this.app, this.plugin, a, null, seed, (mail) => void sendImapMail(a, mail).then(() => {
-				new Notice("AmberNyaDesk: mail sent.");
+			new ImapRichComposeModal(this.app, this.plugin, a, null, seed, () => {
 				void this.loadMessages();
-			})).open();
+			}).open();
 		});
 	}
 
@@ -12603,6 +12918,123 @@ class ImapFolderPickModal extends Modal {
 				this.onPick(f.path);
 			});
 		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+class ContactPickerModal extends Modal {
+	private filter = "";
+	private selected = new Set<string>();
+	private listEl!: HTMLElement;
+
+	constructor(
+		app: App,
+		private plugin: PowerDeskPlugin,
+		private onPick: (emails: string[]) => void,
+		private onChanged?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText("Choose contacts");
+		makeMovable(this.app, this, "ambernyadesk:contact-picker", { w: 520, h: 560 });
+		const c = this.contentEl;
+		c.addClass("pcal-people");
+		void this.plugin.ensureSentContacts();
+		void this.plugin.ensureSavedContacts().then(() => this.draw());
+		const search = c.createEl("input", { cls: "pcal-people-search", attr: { type: "search", placeholder: "Search contacts..." } });
+		search.addEventListener("input", () => {
+			this.filter = search.value;
+			this.draw();
+		});
+		this.listEl = c.createDiv("pcal-people-list");
+		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
+		btns.createEl("button", { text: "Add contact" }).addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => {
+			this.draw();
+			this.onChanged?.();
+		}).open());
+		btns.createSpan("pcal-compose-btns-gap");
+		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		btns.createEl("button", { text: "Add selected", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => {
+			if (!this.selected.size) return;
+			this.onPick([...this.selected]);
+			this.close();
+		});
+		window.setTimeout(() => search.focus(), 20);
+	}
+
+	private draw() {
+		const host = this.listEl;
+		host.empty();
+		const hits = matchContacts(this.plugin.people(), this.filter, 200) as PersonCard[];
+		if (!hits.length) {
+			host.createDiv({ cls: "pcal-when-note", text: "No contacts yet." });
+			return;
+		}
+		for (const p of hits) {
+			const row = host.createDiv("pcal-people-row");
+			const check = row.createEl("input", { type: "checkbox" });
+			check.checked = this.selected.has(p.email);
+			check.addEventListener("click", (e) => {
+				if (check.checked) this.selected.add(p.email);
+				else this.selected.delete(p.email);
+				e.stopPropagation();
+			});
+			const mid = row.createDiv("pcal-people-mid");
+			mid.createDiv({ cls: "pcal-people-name", text: p.name || p.email });
+			mid.createDiv({ cls: "pcal-people-sub", text: p.email });
+			row.addEventListener("click", () => {
+				if (this.selected.has(p.email)) this.selected.delete(p.email);
+				else this.selected.add(p.email);
+				check.checked = this.selected.has(p.email);
+			});
+		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+class ContactEditModal extends Modal {
+	constructor(
+		app: App,
+		private plugin: PowerDeskPlugin,
+		private contact: ContactRecord | null,
+		private onDone: () => void
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText(this.contact ? "Edit contact" : "New contact");
+		const c = this.contentEl;
+		let name = this.contact?.name ?? "";
+		let email = this.contact?.email ?? "";
+		let company = this.contact?.company ?? "";
+		let title = this.contact?.title ?? "";
+		let phone = this.contact?.phone ?? "";
+		new Setting(c).setName("Name").addText((t) => t.setValue(name).onChange((v) => (name = v)));
+		new Setting(c).setName("Email").addText((t) => t.setValue(email).onChange((v) => (email = v)));
+		new Setting(c).setName("Company").addText((t) => t.setValue(company).onChange((v) => (company = v)));
+		new Setting(c).setName("Title").addText((t) => t.setValue(title).onChange((v) => (title = v)));
+		new Setting(c).setName("Phone").addText((t) => t.setValue(phone).onChange((v) => (phone = v)));
+		const btns = c.createDiv("pcal-modal-btns");
+		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
+			if (!email.trim().includes("@")) {
+				new Notice("AmberNyaDesk: enter an email address.");
+				return;
+			}
+			if (this.contact) this.plugin.updateContact(this.contact.id, { name, email, company, title, phone });
+			else this.plugin.saveContact({ name, email, company, title, phone });
+			this.onDone();
+			this.close();
+		});
 	}
 
 	onClose() {
@@ -12690,6 +13122,45 @@ class PromptModal extends Modal {
 			this.close();
 		});
 		window.setTimeout(() => inputs[0]?.focus(), 20);
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+/** A lightweight scratchpad: title, a big empty canvas, and one destructive
+ *  exit button. Kept deliberately bare so it feels like a pocket, not a form. */
+class SketchNoteModal extends Modal {
+	constructor(
+		app: App,
+		private plugin: PowerDeskPlugin,
+		private note: SketchNote
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText("随笔集");
+		const c = this.contentEl;
+		c.addClass("pcal-sketch-modal");
+		const head = c.createDiv("pcal-sketch-head");
+		const title = head.createEl("input", { attr: { type: "text", placeholder: "标题" } });
+		title.value = this.note.title;
+		title.addEventListener("input", () => this.plugin.updateSketchNote(this.note.id, { title: title.value }));
+		const exit = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "删除并退出" } });
+		setIcon(exit, "trash-2");
+		exit.addEventListener("click", () => {
+			new ConfirmModal(this.app, `删除随笔“${this.note.title}”？`, "这份灵感会从日历上移除。", "删除并退出", () => {
+				this.plugin.deleteSketchNote(this.note.id);
+				this.close();
+			}).open();
+		});
+		const body = c.createDiv("pcal-sketch-body");
+		const text = body.createEl("textarea", { attr: { placeholder: "把灵感随手写在这里..." } });
+		text.value = this.note.text;
+		text.addEventListener("input", () => this.plugin.updateSketchNote(this.note.id, { text: text.value }));
+		window.setTimeout(() => text.focus(), 20);
 	}
 
 	onClose() {
@@ -12831,7 +13302,7 @@ class PowerCalendarView extends ItemView {
 			if (e.target instanceof Node && newCaret.contains(e.target)) {
 				const menu = new Menu();
 				menu.addItem((i) => i.setTitle("Event").onClick(() => this.quickCreate()));
-				menu.addItem((i) => i.setTitle("Mail").onClick(() => new RichComposeModal(this.app, this.plugin, { mode: "new" }).open()));
+				menu.addItem((i) => i.setTitle("Mail").onClick(() => this.plugin.openNewMailCompose()));
 				menu.showAtMouseEvent(e);
 				return;
 			}
@@ -12886,9 +13357,7 @@ class PowerCalendarView extends ItemView {
 		const gear = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "AmberNyaDesk settings" } });
 		setIcon(gear, "settings");
 		gear.addEventListener("click", () => {
-			const st = (this.app as unknown as { setting?: { open: () => void; openTabById: (id: string) => void } }).setting;
-			st?.open();
-			st?.openTabById("powerdesk");
+			this.plugin.openOwnSettings();
 		});
 
 		const main = root.createDiv("pcal-main");
@@ -13094,13 +13563,22 @@ class PowerCalendarView extends ItemView {
 		});
 		paint();
 
-		// the calendar list folds behind its header, buying the agenda room
-		const calsHead = host.createDiv({ cls: "pcal-sb-section", attr: { "data-sec": "cals" } });
+		// the coming fortnight at a glance, then the calendar toggles below it:
+		// the user reads the next two weeks before choosing which sources to show
+		this.renderSidebarAgenda(host);
+		this.renderSidebarCalendars(host);
+	}
+
+	/** The calendar toggles, now below the agenda. Click a row to toggle it;
+	 *  right-click offers solo and show-all. */
+	private renderSidebarCalendars(host: HTMLElement) {
+		const s = this.plugin.settings;
+		const calsHead = host.createDiv({ cls: "pcal-sb-section pcal-sb-calendar-head", attr: { "data-sec": "cals" } });
 		const chev = calsHead.createSpan("pcal-sb-chev");
 		setIcon(chev, s.sidebarCalsCollapsed ? "chevron-right" : "chevron-down");
 		calsHead.createSpan({ text: "Calendars" });
+		if (s.sidebarCalsCollapsed) return;
 		for (const g of this.sidebarGroups()) {
-			if (s.sidebarCalsCollapsed) break;
 			host.createDiv({ cls: "pcal-sb-group", text: g.label });
 			for (const it of g.items) {
 				const row = host.createDiv({ cls: "pcal-sb-row", attr: { "aria-label": "Click to toggle; right-click for more" } });
@@ -13151,9 +13629,12 @@ class PowerCalendarView extends ItemView {
 				});
 			}
 		}
+	}
 
-		// the coming week at a glance under everything, Fantastical-style:
-		// day headers wear the forecast, rows open the event card
+	/** The next fourteen days at a glance: compact zh week labels, forecast on
+	 *  the day header, and rows that open the event card. */
+	private renderSidebarAgenda(host: HTMLElement) {
+		const s = this.plugin.settings;
 		const agHead = host.createDiv({ cls: "pcal-sb-section pcal-sb-agenda-head", attr: { "data-sec": "agenda" } });
 		const agChev = agHead.createSpan("pcal-sb-chev");
 		setIcon(agChev, s.sidebarAgendaCollapsed ? "chevron-right" : "chevron-down");
@@ -13161,13 +13642,14 @@ class PowerCalendarView extends ItemView {
 		if (s.sidebarAgendaCollapsed) return;
 		const ag = host.createDiv("pcal-sb-agenda");
 		const from = this.todayKey;
-		this.plugin.ensureWindow(from, addDays(from, 6), false);
-		const agEvents = this.plugin.eventsForWindow(from, addDays(from, 6));
-		for (let i = 0; i < 7; i++) {
+		const to = addDays(from, 13);
+		this.plugin.ensureWindow(from, to, false);
+		const agEvents = this.plugin.eventsForWindow(from, to);
+		for (let i = 0; i < 14; i++) {
 			const key = addDays(from, i);
 			const dayEvents = eventsOnDay(agEvents, key);
 			const head = ag.createDiv("pcal-sb-dayhead");
-			head.createSpan({ cls: "pcal-sb-dayname", text: (i === 0 ? "Today" : i === 1 ? "Tomorrow" : DAYS_SHORT[dayOfWeek(key)]) + ` ${+key.slice(5, 7)}/${+key.slice(8, 10)}` });
+			head.createSpan({ cls: "pcal-sb-dayname", text: relativeDayLabel(key, this.todayKey, s.weekStartsMonday) });
 			const w = this.plugin.weatherFor(key);
 			if (w) head.createSpan({ cls: "pcal-sb-weather", text: `${weatherGlyph(w.code)} ${w.hi}°/${w.lo}°` });
 			head.addEventListener("click", () => {
@@ -13175,7 +13657,7 @@ class PowerCalendarView extends ItemView {
 				this.refresh(false);
 			});
 			if (!dayEvents.length) {
-				ag.createDiv({ cls: "pcal-sb-noevents", text: "No events" });
+				ag.createDiv({ cls: "pcal-sb-noevents", text: UI_LANG === "zh" ? "无日程" : "No events" });
 				continue;
 			}
 			for (const ev of dayEvents) {
@@ -13183,11 +13665,21 @@ class PowerCalendarView extends ItemView {
 				row.createSpan("pcal-sb-dot").style.background = ev.color || "var(--interactive-accent)";
 				const tx = row.createDiv("pcal-sb-ev-text");
 				tx.createDiv({ cls: "pcal-sb-ev-title", text: ev.title });
-				tx.createDiv({ cls: "pcal-sb-ev-time", text: ev.allDay ? "All day" : fmtEventRange(ev, s.use24h) });
+				tx.createDiv({ cls: "pcal-sb-ev-time", text: this.sidebarEventTime(ev) });
 				row.addEventListener("click", (e) => this.openCard(ev, e.currentTarget as HTMLElement));
 				this.attachQuickDelete(row, ev);
 			}
 		}
+	}
+
+	/** Sidebar times stay plain: zh favors a compact 24h range and "全天",
+	 *  English keeps the existing range. */
+	private sidebarEventTime(ev: PCEvent): string {
+		if (UI_LANG === "zh") {
+			if (ev.allDay) return "全天";
+			return `${fmtClock(minutesOfMs(ev.startMs), true)} - ${fmtClock(minutesOfMs(ev.endMs), true)}`;
+		}
+		return ev.allDay ? "All day" : fmtEventRange(ev, this.plugin.settings.use24h);
 	}
 
 	private sidebarGroups(): { label: string; items: SidebarCal[] }[] {
@@ -13303,7 +13795,7 @@ class PowerCalendarView extends ItemView {
 			{ id: "journal", label: "Journal", icon: pickIcon("book-open", "book", "file-text"), run: () => new JournalModal(this.app, this.plugin).open() },
 			{ id: "freeSlots", label: "Copy free slots", icon: "copy", run: () => void this.plugin.copyFreeSlots() },
 			{ id: "today", label: "Today", icon: "calendar-check", run: () => this.goToday() },
-			{ id: "newMail", label: "New mail", icon: "pencil", run: () => new RichComposeModal(this.app, this.plugin, { mode: "new" }).open() },
+			{ id: "newMail", label: "New mail", icon: "pencil", run: () => this.plugin.openNewMailCompose() },
 			{ id: "inbox", label: "Inbox", icon: "inbox", run: () => void this.plugin.openMailView() },
 			// the month has two sensible shapes on paper; the print window is
 			// where that is chosen now, with the page in front of you
@@ -13531,6 +14023,11 @@ class PowerCalendarView extends ItemView {
 		this.closeCard();
 		this.titleEl.setText(periodLabel(this.mode, this.anchorKey, s.weekStartsMonday, s.agendaDays, s.dayViewDays));
 		if (this.mode === "tasks") this.titleEl.setText("Tasks");
+		else if (this.mode === "day" && s.dayViewDays <= 1) {
+			// the day view's title carries the day's lunar tag right on it
+			const tag = lunarTag(this.anchorKey);
+			if (tag) this.titleEl.createSpan({ cls: `pcal-lunar pcal-lunar-${tag.kind}`, text: `　${tag.text}` });
+		}
 		for (const [m, b] of this.modeBtns) b.toggleClass("is-active", m === this.mode);
 		this.dayLabelEl?.setText(s.dayViewDays > 1 ? `${s.dayViewDays} days` : "Day");
 		this.filterBtn.toggleClass("is-active", this.filterActive());
@@ -13571,7 +14068,8 @@ class PowerCalendarView extends ItemView {
 
 	private weekdayNames(): string[] {
 		const s = this.plugin.settings;
-		return s.weekStartsMonday ? [...DAYS_SHORT.slice(1), DAYS_SHORT[0]] : [...DAYS_SHORT];
+		const names = Array.from({ length: 7 }, (_, dow) => dowShort(dow));
+		return s.weekStartsMonday ? [...names.slice(1), names[0]] : names;
 	}
 
 	private renderMonth(events: PCEvent[]) {
@@ -13659,9 +14157,19 @@ class PowerCalendarView extends ItemView {
 			el.toggleClass("is-other-month", !cell.inMonth);
 			el.toggleClass("is-today", cell.key === this.todayKey);
 			const num = el.createDiv({ cls: "pcal-month-daynum", text: String(cell.day) });
+			// the lunar tag rides the day number: 十四 for ordinary days,
+			// a solar term when one falls here, and the festival name on top
+			const lunar = lunarTag(cell.key);
+			if (lunar) num.createSpan({ cls: `pcal-lunar pcal-lunar-${lunar.kind}`, text: lunar.text });
 			num.addEventListener("click", () => this.goDay(cell.key));
 			const chipArea = el.createDiv("pcal-month-chips");
 			chipArea.style.marginTop = `${laneCount * 22}px`;
+			el.addEventListener("contextmenu", (e) => {
+				const t = e.target as HTMLElement;
+				if (t.closest(".pcal-chip, .pcal-span, .pcal-month-daynum, button")) return;
+				e.preventDefault();
+				this.openBlankAreaMenu(cell.key, e);
+			});
 			el.addEventListener("dblclick", (e) => {
 				if (e.target !== el && e.target !== chipArea) return;
 				if (!this.plugin.anyWritable()) return;
@@ -13670,6 +14178,7 @@ class PowerCalendarView extends ItemView {
 			const timed = timedOnDay(events, cell.key);
 			const cap = 4;
 			for (const ev of timed.slice(0, cap)) this.renderChip(chipArea, ev);
+			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === cell.key) ?? []) this.renderSketchChip(chipArea, note);
 			if (timed.length > cap) {
 				const more = chipArea.createEl("button", { cls: "pcal-more-btn", text: `+${timed.length - cap} more` });
 				more.addEventListener("click", () => this.goDay(cell.key));
@@ -13708,10 +14217,7 @@ class PowerCalendarView extends ItemView {
 	private renderChip(parent: HTMLElement, ev: PCEvent) {
 		const s = this.plugin.settings;
 		const chip = parent.createDiv("pcal-chip");
-		chip.style.setProperty("--pcal-ev-color", ev.color ?? "var(--interactive-accent)");
-		chip.toggleClass("is-tentative", !!ev.tentative);
-		chip.toggleClass("is-declined", !!ev.declined);
-		this.paintNeedsAction(chip, ev);
+		this.paintEventEl(chip, ev);
 		chip.toggleClass("has-note", this.plugin.noteExistsFor(ev));
 		chip.createSpan({ cls: "pcal-chip-time", text: fmtTimeOfMs(ev.startMs, s.use24h, true) });
 		chip.createSpan({ cls: "pcal-chip-title", text: ev.title });
@@ -13728,6 +14234,60 @@ class PowerCalendarView extends ItemView {
 				this.monthDragEv = null;
 			});
 		}
+	}
+
+	/** Right-click on empty month space is a tiny menu: schedule a real event,
+	 *  or drop a quick sketch note on the day. */
+	private openBlankAreaMenu(key: string, e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		const menu = new Menu();
+		if (this.plugin.anyWritable())
+			menu.addItem((i) =>
+				i
+					.setTitle("新建日程")
+					.setIcon("calendar-plus")
+					.onClick(() => this.openEventModal(null, msOfKey(key), msOfKey(addDays(key, 1)), true))
+			);
+		menu.addItem((i) =>
+			i
+				.setTitle("新建随笔集")
+				.setIcon("sticky-note")
+				.onClick(() =>
+					new PromptModal(this.app, "新建随笔集", [{ label: "标题", value: "", placeholder: "灵感" }], ([title]) => {
+						if (!title.trim()) return;
+						this.plugin.createSketchNote(title, key);
+					}).open()
+				)
+		);
+		menu.showAtMouseEvent(e);
+	}
+
+	private renderSketchChip(parent: HTMLElement, note: SketchNote) {
+		const chip = parent.createDiv("pcal-chip pcal-sketch-chip");
+		const icon = chip.createSpan("pcal-sketch-icon");
+		setIcon(icon, "sticky-note");
+		chip.toggleClass("is-starred", false);
+		chip.createSpan({ cls: "pcal-chip-time", text: "随笔" });
+		chip.createSpan({ cls: "pcal-chip-title", text: note.title });
+		chip.addEventListener("dblclick", () => new SketchNoteModal(this.app, this.plugin, note).open());
+		chip.addEventListener("contextmenu", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const menu = new Menu();
+			menu.addItem((i) =>
+				i
+					.setTitle("打开")
+					.setIcon("eye")
+					.onClick(() => new SketchNoteModal(this.app, this.plugin, note).open())
+			);
+			menu.addItem((i) => {
+				i.setTitle("删除").setIcon("trash-2").setWarning(true).onClick(() =>
+					new ConfirmModal(this.app, `删除随笔“${note.title}”？`, "这份灵感会从日历上移除。", "删除", () => this.plugin.deleteSketchNote(note.id)).open()
+				);
+			});
+			menu.showAtMouseEvent(e);
+		});
 	}
 
 	/** Click to select (the chip keeps focus), Delete or Backspace to remove
@@ -13747,7 +14307,12 @@ class PowerCalendarView extends ItemView {
 		el.style.setProperty("--pcal-ev-color", ev.color ?? "var(--interactive-accent)");
 		el.toggleClass("is-tentative", !!ev.tentative);
 		el.toggleClass("is-declined", !!ev.declined);
+		el.toggleClass("is-completed", !!ev.completed);
 		this.paintNeedsAction(el, ev);
+		el.toggleClass("is-starred", this.plugin.isStarred(ev));
+		el.querySelector(".pcal-star")?.remove();
+		if (this.plugin.isStarred(ev)) setIcon(el.createDiv("pcal-star"), "star");
+		el.addEventListener("contextmenu", (e) => this.openEventMenu(ev, e));
 	}
 
 	/** An invite still waiting on an answer wears the awaiting-response wash. */
@@ -13772,8 +14337,11 @@ class PowerCalendarView extends ItemView {
 		for (const key of days) {
 			const cell = headCells.createDiv("pcal-week-headcell");
 			cell.toggleClass("is-today", key === this.todayKey);
-			cell.createSpan({ cls: "pcal-week-headname", text: DAYS_SHORT[dayOfWeek(key)] });
+			cell.createSpan({ cls: "pcal-week-headname", text: dowShort(dayOfWeek(key)) });
 			cell.createSpan({ cls: "pcal-week-headnum", text: String(+key.slice(8, 10)) });
+			// a compact lunar line under the date: term or festival wins, else 十四
+			const lunar = lunarTag(key);
+			if (lunar) cell.createSpan({ cls: `pcal-week-headlunar pcal-lunar-${lunar.kind}`, text: lunar.text });
 			cell.addEventListener("click", () => this.goDay(key));
 		}
 
@@ -13890,7 +14458,12 @@ class PowerCalendarView extends ItemView {
 		for (const g of groups) {
 			const day = root.createDiv("pcal-agenda-day");
 			day.toggleClass("is-today", g.key === this.todayKey);
-			const head = day.createDiv({ cls: "pcal-agenda-head", text: g.key === this.todayKey ? `Today, ${fmtDayHeading(g.key).split(", ")[1]}` : fmtDayHeading(g.key) });
+			const headText = UI_LANG === "zh"
+				? (g.key === this.todayKey ? `今天 ${fmtDayShort(g.key)}` : fmtDayHeading(g.key))
+				: (g.key === this.todayKey ? `Today, ${fmtDayHeading(g.key).split(", ")[1]}` : fmtDayHeading(g.key));
+			const head = day.createDiv({ cls: "pcal-agenda-head", text: headText });
+			const lunar = lunarTag(g.key);
+			if (lunar) head.createSpan({ cls: `pcal-lunar pcal-lunar-${lunar.kind}`, text: `　${lunar.text}` });
 			head.addEventListener("click", () => this.goDay(g.key));
 			for (const ev of g.events) {
 				const row = day.createDiv("pcal-agenda-row");
@@ -13947,7 +14520,17 @@ class PowerCalendarView extends ItemView {
 			createBoard: async (dir, name) => {
 				const p = normalizePath(`${dir}/${name.trim().replace(/\.md$/i, "")}.md`);
 				await this.plugin.ensureFolder(dir);
-				await adapter.write(p, serializeKanbanBoard({ columns: [{ name: "Todo", cards: [] }, { name: "Doing", cards: [] }, { name: "Done", cards: [] }] }));
+				await adapter.write(
+					p,
+					serializeKanbanBoard({
+						rows: [{ name: "持续目标", cards: [] }],
+						columns: [
+							{ name: "Todo", cards: [] },
+							{ name: "Doing", cards: [] },
+							{ name: "Done", cards: [] },
+						],
+					})
+				);
 				return p;
 			},
 			renameBoard: async (path, name) => {
@@ -13964,6 +14547,17 @@ class PowerCalendarView extends ItemView {
 			},
 			set activeBoard(v: string | null) {
 				app.saveLocalStorage("ambernyadesk-active-board", v ?? "");
+			},
+			getCollapsed: () => {
+				try {
+					const raw = app.loadLocalStorage("ambernyadesk-kanban-collapsed");
+					return Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : [];
+				} catch {
+					return [];
+				}
+			},
+			setCollapsed: (keys) => {
+				app.saveLocalStorage("ambernyadesk-kanban-collapsed", keys);
 			},
 			linkToCalendar: (text) => {
 				// anchor on the card's due date when it has one, else now
@@ -14145,6 +14739,97 @@ class PowerCalendarView extends ItemView {
 		this.cardEl = null;
 	}
 
+	/** Right-click on a scheduled item gives the short list that is worth
+	 *  having always at hand: pin, tasks, edit, delete. */
+	private openEventMenu(ev: PCEvent, e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		const menu = new Menu();
+		menu.addItem((i) =>
+			i
+				.setTitle(this.plugin.isStarred(ev) ? "取消星标" : "星标")
+				.setIcon("star")
+				.onClick(() => {
+					this.plugin.toggleStar(ev);
+				})
+		);
+		menu.addItem((i) =>
+			i
+				.setTitle("加到任务")
+				.setIcon("check-square")
+				.onClick(() => {
+					void this.addEventToTasks(ev);
+				})
+		);
+		if (this.plugin.canToggleEventCompletion(ev))
+			menu.addItem((i) =>
+				i
+					.setTitle(ev.completed ? "取消完成标记" : "标记已完成")
+					.setIcon(ev.completed ? "square" : "check")
+					.onClick(() => {
+						void this.plugin.toggleEventCompletion(ev);
+					})
+			);
+		if (ev.canEdit) {
+			menu.addSeparator();
+			menu.addItem((i) =>
+				i
+					.setTitle("编辑")
+					.setIcon("pencil")
+					.onClick(() => {
+						this.openEditForEvent(ev);
+					})
+			);
+		}
+		if (ev.canEdit) {
+			menu.addItem((i) => {
+				i.setTitle("删除").setIcon("trash-2").setWarning(true).onClick(() => this.confirmDelete(ev));
+			});
+		}
+		menu.showAtMouseEvent(e);
+	}
+
+	/** One edit path that knows about recurrence, so the menu and the card do
+	 *  not drift apart. */
+	private openEditForEvent(ev: PCEvent) {
+		if (ev.recurring && ev.seriesId) {
+			new SeriesChoiceModal(this.app, `编辑“${ev.title}”`, (scope) => {
+				if (scope === "occurrence") this.openEventModal(ev, ev.startMs, ev.endMs, ev.allDay);
+				else
+					void this.plugin.loadSeriesMaster(ev).then((master) => {
+						if (master) this.openEventModal(master, master.startMs, master.endMs, master.allDay);
+					});
+			}).open();
+		} else this.openEventModal(ev, ev.startMs, ev.endMs, ev.allDay);
+	}
+
+	/** Delete with the same warnings the card uses, so a right-click and the
+	 *  long way around never disagree. */
+	private confirmDelete(ev: PCEvent) {
+		const notified = (ev.attendeeDetail ?? []).length ? " 参会者会收到取消通知。" : "";
+		const confirmOccurrence = () =>
+			new ConfirmModal(
+				this.app,
+				ev.recurring ? `取消“${ev.title}”的此实例？` : `删除“${ev.title}”？`,
+				(ev.recurring ? "只会移除此实例。" : "此日程会从日历中移除。") + notified,
+				ev.recurring ? "取消实例" : "删除",
+				() => void this.plugin.deleteCalEvent(ev)
+			).open();
+		if (ev.recurring && ev.seriesId) {
+			new SeriesChoiceModal(this.app, `删除“${ev.title}”`, (scope) => {
+				if (scope === "occurrence") confirmOccurrence();
+				else
+					new ConfirmModal(
+						this.app,
+						`删除整个系列“${ev.title}”？`,
+						"所有实例都会被移除。" + notified,
+						"删除系列",
+						() => void this.plugin.deleteCalEvent({ ...ev, id: ev.seriesId as string, recurring: false })
+					).open();
+			}).open();
+		} else confirmOccurrence();
+	}
+
 	/** Add the clicked event as a plain task card in the active board's todo
 	 *  column. No dialog and no round-trip sync; the task is just a snapshot
 	 *  of what the event knows right now. */
@@ -14202,6 +14887,16 @@ class PowerCalendarView extends ItemView {
 		const card = document.body.createDiv("pcal-card");
 		this.cardEl = card;
 		card.style.setProperty("--pcal-ev-color", ev.color ?? "var(--interactive-accent)");
+		card.toggleClass("is-completed", !!ev.completed);
+		const inlineDraft = (patch: { title?: string; description?: string }): EventDraft => ({
+			title: patch.title ?? ev.title,
+			startMs: ev.startMs,
+			endMs: ev.endMs,
+			allDay: ev.allDay,
+			location: ev.location,
+			description: patch.description ?? ev.description,
+			showAs: ev.transparent ? "free" : ev.tentative ? "tentative" : "busy",
+		});
 
 		// context first, like Outlook's peek: which calendar this event lives on
 		if (ev.calendarName) {
@@ -14212,7 +14907,15 @@ class PowerCalendarView extends ItemView {
 		const head = card.createDiv("pcal-card-head");
 		head.createDiv("pcal-card-bar");
 		const ht = head.createDiv("pcal-card-headtext");
-		ht.createDiv({ cls: "pcal-card-title", text: ev.title });
+		if (ev.canEdit) {
+			const titleInput = ht.createEl("input", { cls: "pcal-card-title pcal-card-title-input", attr: { type: "text" } });
+			titleInput.value = ev.title === "(no title)" ? "" : ev.title;
+			titleInput.addEventListener("pointerdown", (e) => e.stopPropagation());
+			titleInput.addEventListener("blur", () => {
+				const next = titleInput.value.trim() || "(no title)";
+				if (next !== ev.title) void this.plugin.updateCalEvent(ev, inlineDraft({ title: next }));
+			});
+		} else ht.createDiv({ cls: "pcal-card-title", text: ev.title });
 
 		const people = dedupePeople(ev.organizer, ev.attendees);
 
@@ -14267,7 +14970,7 @@ class PowerCalendarView extends ItemView {
 						.filter((e): e is string => !!e)
 						.join(", ");
 					const preferAccountId = ev.sourceId.startsWith("m365:") ? ev.sourceId.split(":")[1] : undefined;
-					new RichComposeModal(this.app, this.plugin, { mode: "new", to, subject: ev.title, preferAccountId }).open();
+					this.plugin.openNewMailCompose(to, ev.title);
 				},
 			});
 		if (!ev.notePath && this.plugin.anyWritable())
@@ -14398,8 +15101,17 @@ class PowerCalendarView extends ItemView {
 			}
 		}
 
-		const d = stripMeetingBoilerplate(ev.description ?? "");
-		if (d) card.createDiv({ cls: "pcal-card-desc", text: d.length > 280 ? d.slice(0, 280).trimEnd() + "..." : d });
+		if (ev.canEdit) {
+			const descInput = card.createEl("textarea", { cls: "pcal-card-desc pcal-card-desc-input", attr: { placeholder: "详细内容" } });
+			descInput.value = stripMeetingBoilerplate(ev.description ?? "");
+			descInput.addEventListener("blur", () => {
+				const next = descInput.value.trim() || "";
+				if (next !== (ev.description ?? "").trim()) void this.plugin.updateCalEvent(ev, inlineDraft({ description: next }));
+			});
+		} else {
+			const d = stripMeetingBoilerplate(ev.description ?? "");
+			if (d) card.createDiv({ cls: "pcal-card-desc", text: d.length > 280 ? d.slice(0, 280).trimEnd() + "..." : d });
+		}
 
 		// Sized and placed like the other windows, keeping both. The very
 		// first card lands beside the event that was clicked, clamped to the
@@ -14550,14 +15262,16 @@ class EventModal extends Modal {
 	onOpen() {
 		this.titleEl.setText(this.ev ? "Edit event" : "New event");
 		this.modalEl.addClass("pcal-event-window");
-		makeMovable(this.app, this, "ambernyadesk:event-window", { w: 720, h: 700 });
+		makeMovable(this.app, this, "ambernyadesk:event-window", { w: 780, h: 620 });
 		const c = this.contentEl;
 		c.addClass("pcal-event-modal");
 		let titleInput: HTMLInputElement | null = null;
-		new Setting(c).setName("Title").addText((t) => {
-			titleInput = t.inputEl;
-			t.setPlaceholder("Event title").setValue(this.etitle).onChange((v) => (this.etitle = v));
-			t.inputEl.addEventListener("keydown", (e) => {
+		const top = c.createDiv("pcal-event-section pcal-event-top");
+		const titleRow = top.createDiv("pcal-event-title-row");
+		new Setting(titleRow).setName(t("Title")).addText((field) => {
+			titleInput = field.inputEl;
+			field.setPlaceholder(t("Event title")).setValue(this.etitle).onChange((v) => (this.etitle = v));
+			field.inputEl.addEventListener("keydown", (e) => {
 				if (e.key === "Enter") {
 					e.preventDefault();
 					void this.save();
@@ -14566,7 +15280,8 @@ class EventModal extends Modal {
 		});
 		const targets = this.plugin.writableTargets();
 		if (!this.ev && targets.length > 1) {
-			new Setting(c).setName("Calendar").addDropdown((d) => {
+			titleRow.addClass("pcal-has-calendar");
+			new Setting(titleRow).setName(t("Calendar")).addDropdown((d) => {
 				for (const t of targets) d.addOption(t.key, t.label);
 				d.setValue(this.targetKey ?? targets[0].key).onChange((v) => {
 					this.targetKey = v;
@@ -14576,64 +15291,78 @@ class EventModal extends Modal {
 				});
 			});
 		}
-		new Setting(c).setName("All day").addToggle((t) =>
-			t.setValue(this.allDay).onChange((v) => {
-				if (v) {
-					const lastKey = keyOfMs(Math.max(this.draftEnd - 1, this.draftStart));
-					this.draftStart = msOfKey(keyOfMs(this.draftStart));
-					this.draftEnd = msOfKey(addDays(lastKey, 1));
-				} else {
-					const day = keyOfMs(this.draftStart);
-					this.draftStart = msOfKey(day) + 9 * 3600000;
-					this.draftEnd = this.draftStart + 30 * 60000;
-				}
-				this.allDay = v;
-				this.renderTimeFields();
-			})
-		);
-		this.fieldsEl = c.createDiv();
-		this.renderTimeFields();
-		new Setting(c).setName("Location").addText((t) => t.setValue(this.location).onChange((v) => (this.location = v)));
-		this.meetingEl = c.createDiv();
-		this.renderMeetingField();
-		new Setting(c)
-			.setName("Invite")
-			.setDesc("Email addresses, comma separated. Invitations go out when you save.")
-			.addText((t) => t.setPlaceholder("ana@x.com, Bob <bob@x.com>").setValue(this.invites).onChange((v) => (this.invites = v)));
-		new Setting(c).setName("Show as").addDropdown((d) =>
-			d
-				.addOptions({ busy: "Busy", free: "Free", tentative: "Tentative" })
-				.setValue(this.showAs)
-				.onChange((v) => (this.showAs = v as "busy" | "free" | "tentative"))
-		);
 		if (!this.ev) {
-			new Setting(c).setName("Repeat").addDropdown((d) =>
-				d
-					.addOptions({ none: "Does not repeat", daily: "Daily", weekdays: "Every weekday", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" })
-					.setValue(this.repeat)
-					.onChange((v) => (this.repeat = v as RepeatKind))
-			);
-			// a real editor, since an agenda is a list and a joining link is a
-			// link. Only on a new event: editing one never writes the
-			// description back, because only a preview of it was ever fetched
-			// and saving that would truncate what is actually there.
-			c.createDiv({ cls: "setting-item-name pcal-event-desc-label", text: "Description" });
-			const descBar = c.createDiv("pcal-compose-bar");
-			this.descEl = c.createDiv({ cls: "pcal-compose-editor pcal-event-desc", attr: { contenteditable: "true" } });
+			top.createDiv({ cls: "setting-item-name pcal-event-desc-label", text: t("Description") });
+			const descBar = top.createDiv("pcal-compose-bar");
+			this.descEl = top.createDiv({ cls: "pcal-compose-editor pcal-event-desc", attr: { contenteditable: "true" } });
 			richToolbar(this.app, descBar, () => this.descEl);
-			// an untouched contenteditable still holds a <br>, and sending that
-			// as a description gives every invitee an event whose body is one
-			// stray tag; empty means empty
 			this.descEl.addEventListener("input", () => {
 				const hasWords = !!this.descEl.textContent?.trim();
 				const hasThings = !!this.descEl.querySelector("img, a, li, hr");
 				this.description = hasWords || hasThings ? this.descEl.innerHTML : "";
 			});
 		}
+		new Setting(top).setName(t("Location")).addText((field) => field.setValue(this.location).onChange((v) => (this.location = v)));
+
+		const controls = c.createDiv("pcal-event-section pcal-event-controls");
+		const makeControlCell = (label: string) => {
+			const cell = controls.createDiv("pcal-event-control-cell");
+			cell.createDiv({ cls: "pcal-event-control-label", text: label });
+			const host = cell.createDiv("pcal-event-control-value");
+			return host;
+		};
+		const allDayCtl = makeControlCell(t("All day"));
+		const allDayToggle = allDayCtl.createEl("input", { attr: { type: "checkbox" } });
+		allDayToggle.checked = this.allDay;
+		allDayToggle.addEventListener("change", () => {
+			if (allDayToggle.checked) {
+				const lastKey = keyOfMs(Math.max(this.draftEnd - 1, this.draftStart));
+				this.draftStart = msOfKey(keyOfMs(this.draftStart));
+				this.draftEnd = msOfKey(addDays(lastKey, 1));
+			} else {
+				const day = keyOfMs(this.draftStart);
+				this.draftStart = msOfKey(day) + 9 * 3600000;
+				this.draftEnd = this.draftStart + 30 * 60000;
+			}
+			this.allDay = allDayToggle.checked;
+			this.renderTimeFields();
+		});
+		const showAsCtl = makeControlCell(t("Show as"));
+		const showAsSelect = showAsCtl.createEl("select");
+		for (const [value, label] of Object.entries({ busy: t("Busy"), free: t("Free"), tentative: t("Tentative") })) {
+			showAsSelect.createEl("option", { value }).text = label;
+		}
+		showAsSelect.value = this.showAs;
+		showAsSelect.addEventListener("change", () => (this.showAs = showAsSelect.value as "busy" | "free" | "tentative"));
+		if (!this.ev) {
+			const repeatCtl = makeControlCell(t("Repeat"));
+			const repeatSelect = repeatCtl.createEl("select");
+			for (const [value, label] of Object.entries({
+				none: t("Does not repeat"),
+				daily: t("Daily"),
+				weekdays: t("Every weekday"),
+				weekly: t("Weekly"),
+				monthly: t("Monthly"),
+				yearly: t("Yearly"),
+			})) {
+				repeatSelect.createEl("option", { value }).text = label;
+			}
+			repeatSelect.value = this.repeat;
+			repeatSelect.addEventListener("change", () => (this.repeat = repeatSelect.value as RepeatKind));
+		}
+		this.fieldsEl = c.createDiv("pcal-event-section pcal-event-times");
+		this.renderTimeFields();
+		const invite = c.createDiv("pcal-event-section pcal-event-invite");
+		this.meetingEl = invite.createDiv();
+		this.renderMeetingField();
+		new Setting(invite)
+			.setName(t("Invite"))
+			.setDesc(t("Email addresses, comma separated. Invitations go out when you save."))
+			.addText((field) => field.setPlaceholder("ana@x.com, Bob <bob@x.com>").setValue(this.invites).onChange((v) => (this.invites = v)));
 		const btns = c.createDiv({ cls: "pcal-modal-btns pcal-compose-btns" });
-		btns.createEl("button", { text: this.ev ? "Save" : "Create", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => void this.save());
+		btns.createEl("button", { text: t(this.ev ? "Save" : "Create"), cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => void this.save());
 		btns.createSpan("pcal-compose-btns-gap");
-		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		btns.createEl("button", { text: t("Cancel") }).addEventListener("click", () => this.close());
 		window.setTimeout(() => titleInput?.focus(), 20);
 	}
 
@@ -14656,15 +15385,15 @@ class EventModal extends Modal {
 				this.renderTimeFields();
 			});
 		}
-		const dateInput = (row: Setting, value: string, onPick: (key: string) => void) => {
-			const el = row.controlEl.createEl("input", { attr: { type: "date" } });
+		const dateInput = (host: HTMLElement, value: string, onPick: (key: string) => void) => {
+			const el = host.createEl("input", { attr: { type: "date" } });
 			el.value = value;
 			el.addEventListener("change", () => {
 				if (/^\d{4}-\d{2}-\d{2}$/.test(el.value)) onPick(el.value);
 			});
 		};
-		const timeInput = (row: Setting, value: number, onPick: (min: number) => void) => {
-			const el = row.controlEl.createEl("input", { attr: { type: "time" } });
+		const timeInput = (host: HTMLElement, value: number, onPick: (min: number) => void) => {
+			const el = host.createEl("input", { attr: { type: "time" } });
 			el.value = timeVal(value);
 			el.addEventListener("change", () => {
 				const m = el.value.match(/^(\d{2}):(\d{2})$/);
@@ -14672,28 +15401,32 @@ class EventModal extends Modal {
 			});
 		};
 		const dur = this.draftEnd - this.draftStart;
-		const start = new Setting(host).setName(this.allDay ? "First day" : "Starts");
-		dateInput(start, keyOfMs(this.draftStart), (key) => {
+		const startRow = host.createDiv("pcal-event-time-row");
+		startRow.createDiv({ cls: "pcal-event-time-label", text: this.allDay ? t("First day") : t("Starts") });
+		const startCtl = startRow.createDiv("pcal-event-time-controls");
+		dateInput(startCtl, keyOfMs(this.draftStart), (key) => {
 			this.draftStart = msOfKey(key) + (this.allDay ? 0 : minutesOfMs(this.draftStart) * 60000);
 			this.draftEnd = this.draftStart + dur;
 		});
 		if (!this.allDay)
-			timeInput(start, minutesOfMs(this.draftStart), (min) => {
+			timeInput(startCtl, minutesOfMs(this.draftStart), (min) => {
 				this.draftStart = msOfKey(keyOfMs(this.draftStart)) + min * 60000;
 				this.draftEnd = this.draftStart + dur;
 			});
-		const end = new Setting(host).setName(this.allDay ? "Last day" : "Ends");
+		const endRow = host.createDiv("pcal-event-time-row");
+		endRow.createDiv({ cls: "pcal-event-time-label", text: this.allDay ? t("Last day") : t("Ends") });
+		const endCtl = endRow.createDiv("pcal-event-time-controls");
 		if (this.allDay) {
-			dateInput(end, keyOfMs(this.draftEnd - 1), (key) => {
+			dateInput(endCtl, keyOfMs(this.draftEnd - 1), (key) => {
 				this.draftEnd = Math.max(msOfKey(addDays(key, 1)), this.draftStart + 86400000);
 			});
 		} else {
 			// a midnight end belongs to the next day, which the date field makes visible
 			if (keyOfMs(this.draftEnd) !== keyOfMs(this.draftStart))
-				dateInput(end, keyOfMs(this.draftEnd), (key) => {
+				dateInput(endCtl, keyOfMs(this.draftEnd), (key) => {
 					this.draftEnd = msOfKey(key) + minutesOfMs(this.draftEnd) * 60000;
 				});
-			timeInput(end, minutesOfMs(this.draftEnd), (min) => {
+			timeInput(endCtl, minutesOfMs(this.draftEnd), (min) => {
 				this.draftEnd = msOfKey(keyOfMs(this.draftEnd)) + min * 60000;
 			});
 		}
@@ -16157,6 +16890,8 @@ class ImapRichComposeModal extends Modal {
 	private editorEl!: HTMLElement;
 	private attachments: SmtpAttachment[] = [];
 	private sent = false;
+	private lastField: HTMLInputElement | null = null;
+	private contactRailEl: HTMLElement | null = null;
 
 	constructor(
 		app: App,
@@ -16175,39 +16910,150 @@ class ImapRichComposeModal extends Modal {
 	}
 
 	onOpen() {
-		this.titleEl.setText(`${t(this.subject ? "Reply" : "New mail")} — ${imapLabel(this.account)}`);
-		this.modalEl.addClass("pcal-compose-window pcal-imap-rich-compose");
+		this.drawTitle();
+		this.modalEl.addClass("pcal-compose-window");
+		this.modalEl.addClass("pcal-imap-rich-compose");
 		makeMovable(this.app, this, "ambernyadesk:imap-compose", { w: 920, h: 700 });
 		const c = this.contentEl;
-		const toSetting = new Setting(c).setName("To");
-		toSetting.addText((t) => t.setPlaceholder("name@example.com, Bob <bob@example.com>").setValue(this.to).onChange((v) => (this.to = v)));
-		const ccSetting = new Setting(c).setName("CC").addText((t) => t.setValue(this.cc).onChange((v) => (this.cc = v)));
-		const bccSetting = new Setting(c).setName("BCC").addText((t) => t.setValue(this.bcc).onChange((v) => (this.bcc = v)));
-		const subjectSetting = new Setting(c).setName("Subject");
-		subjectSetting.addText((t) => t.setValue(this.subject).onChange((v) => (this.subject = v)));
-		void ccSetting;
-		void bccSetting;
+		c.addClass("pcal-compose");
+		const layout = c.createDiv("pcal-compose-layout");
+		const main = layout.createDiv("pcal-compose-main");
+		const rail = layout.createDiv("pcal-contact-rail");
+		this.contactRailEl = rail;
 
-		const bar = c.createDiv("pcal-compose-bar");
-		const body = c.createDiv({ cls: "pcal-compose-editor pcal-imap-compose-editor", attr: { contenteditable: "true" } });
+		// The actual SMTP identity is the stored user; making it explicit
+		// prevents a friendly account label from reading as a different sender.
+		const fromRow = main.createDiv("pcal-compose-row pcal-compose-fromrow");
+		fromRow.createSpan({ cls: "pcal-compose-label", text: "From" });
+		const fromSelect = fromRow.createEl("select", { cls: "pcal-compose-fromselect", attr: { "aria-label": "Sending account" } });
+		for (const a of this.plugin.settings.imapAccounts) {
+			const label = imapLabel(a);
+			fromSelect.createEl("option", {
+				value: a.id,
+				text: label.toLowerCase() === a.user.toLowerCase() ? a.user : `${label} / ${a.user}`,
+			});
+		}
+		fromSelect.value = this.account.id;
+		fromSelect.addEventListener("change", () => {
+			const next = this.plugin.settings.imapAccounts.find((a) => a.id === fromSelect.value);
+			if (next) {
+				this.account = next;
+				this.drawTitle();
+			}
+		});
+		// Dedicated rows instead of Setting rows: Obsidian's setting chrome
+		// stacks labels above controls and turns the compose window into a
+		// form instead of an email header.
+		const row = (label: string, value: string, placeholder?: string, withPicker = false): HTMLInputElement => {
+			const r = main.createDiv("pcal-compose-row pcal-imap-compose-row");
+			r.createSpan({ cls: "pcal-compose-label", text: label });
+			const input = r.createEl("input", { attr: { type: "text", spellcheck: "false" } });
+			input.value = value;
+			if (placeholder) input.placeholder = placeholder;
+			input.addEventListener("input", (e) => {
+				if (label === "To") this.to = (e.currentTarget as HTMLInputElement).value;
+				else if (label === "CC") this.cc = (e.currentTarget as HTMLInputElement).value;
+				else if (label === "BCC") this.bcc = (e.currentTarget as HTMLInputElement).value;
+				else this.subject = (e.currentTarget as HTMLInputElement).value;
+			});
+			if (withPicker) input.addEventListener("focus", () => (this.lastField = input));
+			if (withPicker) {
+				const pick = r.createEl("button", { cls: "pcal-icon-btn pcal-contact-btn", attr: { "aria-label": `Choose contacts for ${label}` } });
+				setIcon(pick, "user-plus");
+				pick.addEventListener("click", () => this.openContactPicker(input));
+			}
+			return input;
+		};
+		const toInput = row("To", this.to, "name@example.com, Bob <bob@example.com>", true);
+		const ccInput = row("CC", this.cc, "", true);
+		const bccInput = row("BCC", this.bcc, "", true);
+		row("Subject", this.subject);
+		this.lastField = toInput;
+		new AddressSuggest(toInput, this.plugin);
+		new AddressSuggest(ccInput, this.plugin);
+		new AddressSuggest(bccInput, this.plugin);
+
+		const bar = main.createDiv("pcal-compose-bar");
+		const body = main.createDiv({ cls: "pcal-compose-editor pcal-imap-compose-editor", attr: { contenteditable: "true" } });
 		// The seed comes from fetched mail or saved drafts, so sanitize it
 		// before it touches the DOM instead of assigning innerHTML directly.
 		body.replaceChildren(...(this.seed.html ? Array.from(sanitizeHTMLToDom(this.seed.html).childNodes) : [document.createElement("br")]));
 		this.editorEl = body;
 		richToolbarFull(this.app, bar, () => this.editorEl);
 
-		const atts = c.createDiv("pcal-imap-attachment-list");
-		const fileInput = c.createEl("input", { type: "file", attr: { style: "display:none", multiple: "multiple" } });
+		const atts = main.createDiv("pcal-imap-attachment-list");
+		const fileInput = main.createEl("input", { type: "file", attr: { style: "display:none", multiple: "multiple" } });
 		fileInput.addEventListener("change", () => void this.addFiles(fileInput, atts));
 		this.renderAttachments(atts);
 
-		const btns = c.createDiv({ cls: "pcal-modal-btns pcal-compose-btns" });
+		const btns = main.createDiv({ cls: "pcal-modal-btns pcal-compose-btns" });
 		btns.createEl("button", { text: "Attach" }).addEventListener("click", () => fileInput.click());
 		btns.createEl("button", { text: "Save draft" }).addEventListener("click", () => void this.saveDraft());
 		btns.createSpan("pcal-compose-btns-gap");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Send", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => void this.send());
+		this.drawContactRail(rail);
 		window.setTimeout(() => this.editorEl.focus(), 30);
+	}
+
+	private openContactPicker(target: HTMLInputElement) {
+		new ContactPickerModal(this.app, this.plugin, (emails) => {
+			for (const email of emails) {
+				const next = applyAddressChoice(target.value, target.selectionStart ?? target.value.length, email);
+				target.value = next.value;
+				target.setSelectionRange(next.caret, next.caret);
+			}
+			target.focus();
+		}, () => this.drawContactRail(this.contactRailEl!)).open();
+	}
+
+	/** The modal title names the selected sender, so changing From also
+	 *  changes which account the heading advertises. */
+	private drawTitle() {
+		const kind = this.seed.inReplyTo ? "Reply" : /^fwd:/i.test(this.subject) ? "Forward" : "New mail";
+		const label = imapLabel(this.account);
+		const sender = label.toLowerCase() === this.account.user.toLowerCase() ? this.account.user : `${label} <${this.account.user}>`;
+		this.titleEl.setText(`${t(kind)} — ${sender}`);
+	}
+
+	private drawContactRail(host: HTMLElement) {
+		if (!host) return;
+		host.empty();
+		const head = host.createDiv("pcal-contact-rail-head");
+		head.createSpan({ text: t("Recent contacts") });
+		const open = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Open People" } });
+		setIcon(open, "users");
+		open.addEventListener("click", () => this.plugin.openPeople());
+		const add = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Add contact" } });
+		setIcon(add, "user-plus");
+		add.addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => this.drawContactRail(this.contactRailEl!)).open());
+		const search = host.createEl("input", { cls: "pcal-contact-rail-search", attr: { type: "search", placeholder: t("Search contacts...") } });
+		const list = host.createDiv("pcal-contact-rail-list");
+		const draw = () => {
+			list.empty();
+			const hits = matchContacts(this.plugin.people(), search.value, 12) as PersonCard[];
+			if (!hits.length) {
+				list.createDiv({ cls: "pcal-contact-rail-empty", text: t("No contacts yet.") });
+				return;
+			}
+			for (const p of hits) {
+				const row = list.createDiv("pcal-contact-rail-row");
+				row.createDiv({ cls: "pcal-contact-rail-name", text: p.name || p.email });
+				row.createDiv({ cls: "pcal-contact-rail-email", text: p.email.split("@")[0] || p.email });
+				row.addEventListener("click", () => this.appendContact(p.email));
+			}
+		};
+		search.addEventListener("input", draw);
+		draw();
+	}
+
+	private appendContact(email: string) {
+		const target = this.lastField;
+		if (!target) return;
+		const next = applyAddressChoice(target.value, target.selectionStart ?? target.value.length, email);
+		target.value = next.value;
+		target.setSelectionRange(next.caret, next.caret);
+		target.focus();
 	}
 
 	private async addFiles(input: HTMLInputElement, host: HTMLElement) {
@@ -16289,6 +17135,7 @@ class ImapRichComposeModal extends Modal {
 		try {
 			await sendImapMail(this.account, mail);
 			this.sent = true;
+			await this.plugin.rememberOutgoingContacts(mail, this.account.user);
 			if (this.draftId) {
 				this.plugin.settings.imapDrafts = this.plugin.settings.imapDrafts.filter((x) => x.id !== this.draftId);
 				await this.plugin.queueSave();
@@ -17110,6 +17957,24 @@ class PCSettingTab extends PluginSettingTab {
 		// boxes and breaks the column the rest of the rows line up on.
 		const intro = (text: string): Row => ({ name: "", desc: text, cls: "pcal-section-intro" });
 		const general: Row[] = [
+			{
+				name: "Language 界面语言",
+				desc: "简体中文 / English",
+				help: "Simplified Chinese translates the interface immediately. English keeps the source strings and localized date labels.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ zh: "简体中文", en: "English" })
+							.setValue(s.language)
+							.onChange((v) => {
+								if (s.language === v) return;
+								s.language = v as PCSettings["language"];
+								save();
+								this.plugin.applyLanguage();
+							})
+					);
+				},
+			},
 			{
 				name: "Show notifications",
 				desc: "Show popup notices from AmberNyaDesk. Turn off to keep Obsidian clear, especially on phones.",

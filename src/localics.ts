@@ -15,6 +15,8 @@ export interface LocalEventRecord {
 	description?: string;
 	/** Raw RRULE value ("FREQ=DAILY"), written on create only. */
 	repeat?: string;
+	/** AmberNyaDesk's local "done" marker. Undefined leaves existing state alone. */
+	completed?: boolean;
 }
 
 const CRLF = "\r\n";
@@ -84,7 +86,7 @@ function findVevent(comp: ICAL.Component, uid: string, recurrenceIdMs?: number, 
 /** The shared field writer. Keeps UIDs stable, refreshes DTSTAMP, and never
  *  touches RRULE: a series' rule survives every occurrence edit. */
 function fillVevent(ev: ICAL.Component, rec: LocalEventRecord): void {
-	const setProp = (name: string, value: string | null) => {
+	const setProp = (name: string, value: string | null | undefined) => {
 		const existing = ev.getFirstProperty(name);
 		if (value == null) {
 			if (existing) ev.removeProperty(existing);
@@ -106,6 +108,7 @@ function fillVevent(ev: ICAL.Component, rec: LocalEventRecord): void {
 	if (duration) ev.removeProperty(duration);
 	setProp("location", rec.location || null);
 	setProp("description", rec.description || null);
+	setProp("x-ambernyadesk-completed", rec.completed === true ? "TRUE" : rec.completed === false ? null : undefined);
 	setUtc("dtstamp");
 	setUtc("last-modified");
 	if (rec.repeat) {

@@ -53,6 +53,8 @@ export interface PCEvent {
 	/** Set when the event IS a vault note (a vault-notes source): the path to
 	 *  open, and the sign that provider actions do not apply. */
 	notePath?: string;
+	/** Local events only: this occurrence was marked done from the context menu. */
+	completed?: boolean;
 }
 
 /* ---------- day-key algebra (UTC-based over YYYY-MM-DD keys, so DST can
@@ -376,6 +378,40 @@ export const MONTHS = ["January", "February", "March", "April", "May", "June", "
 export const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 export const DAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+export const DAYS_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+export const DOW_ZH = ["日", "一", "二", "三", "四", "五", "六"];
+
+export type UiLang = "zh" | "en";
+export let UI_LANG: UiLang = "en";
+
+/** The one switch the language setting flips; pure formatters read it. */
+export function setUiLang(lang: UiLang): void {
+	UI_LANG = lang;
+}
+
+/** The column-letter weekday: "Sun" in English, "日" in Chinese. */
+export function dowShort(dow: number): string {
+	return UI_LANG === "zh" ? DOW_ZH[dow] : DAYS_SHORT[dow];
+}
+
+/** A sidebar day's compact label: the current and coming week in zh, and
+ *  the established Today/Tomorrow forms in English. */
+export function relativeDayLabel(key: string, todayKey: string, weekStartsMonday: boolean): string {
+	const date = `${key.slice(5, 7)}.${key.slice(8, 10)}`;
+	if (UI_LANG !== "zh") {
+		const diff = dayDiff(todayKey, key);
+		if (diff === 0) return `Today ${date}`;
+		if (diff === 1) return `Tomorrow ${date}`;
+		return `${DAYS_SHORT[dayOfWeek(key)]} ${date}`;
+	}
+	// `weekDays` gives local wall-clock days; the arithmetic on their numbers
+	// is enough for a 14-day rail and is immune to a DST hour inside a week.
+	const starts = (k: string) => weekDays(k, weekStartsMonday)[0];
+	const weekDiff = dayDiff(starts(key), starts(todayKey)) / 7;
+	const dow = DOW_ZH[dayOfWeek(key)];
+	const prefix = weekDiff === 0 ? "本周" : weekDiff === 1 ? "下周" : weekDiff === 2 ? "下下周" : `${weekDiff}周后`;
+	return `${prefix}${dow} ${date}`;
+}
 
 /** "9 AM", "9:30 AM", "12:05 PM" / 24h "09:00". `short` drops :00 in 12h. */
 export function fmtClock(minutes: number, use24h: boolean, short = false): string {
@@ -394,6 +430,11 @@ export function fmtTimeOfMs(ms: number, use24h: boolean, short = false): string 
 
 /** "Jul 17" / with year "Jul 17, 2026". */
 export function fmtDayShort(key: string, withYear = false): string {
+	if (UI_LANG === "zh") {
+		const mo = +key.slice(5, 7);
+		const d = +key.slice(8, 10);
+		return withYear ? `${key.slice(0, 4)}年${mo}月${d}日` : `${mo}月${d}日`;
+	}
 	const mo = MONTHS_SHORT[+key.slice(5, 7) - 1];
 	const d = +key.slice(8, 10);
 	return withYear ? `${mo} ${d}, ${key.slice(0, 4)}` : `${mo} ${d}`;
@@ -401,11 +442,23 @@ export function fmtDayShort(key: string, withYear = false): string {
 
 /** "Thursday, Jul 17" for agenda day headings. */
 export function fmtDayHeading(key: string): string {
+	if (UI_LANG === "zh") return `${fmtDayShort(key)} ${DAYS_ZH[dayOfWeek(key)]}`;
 	return `${DAYS[dayOfWeek(key)]}, ${fmtDayShort(key)}`;
 }
 
 /** The header title for each mode. Ranges use a plain hyphen. */
 export function periodLabel(mode: ViewMode, anchorKey: string, weekStartsMonday: boolean, agendaDays = 30, dayCount = 1): string {
+	if (UI_LANG === "zh") {
+		const cn = (key: string) => `${+key.slice(0, 4)}年${+key.slice(5, 7)}月${+key.slice(8, 10)}日`;
+		if (mode === "month") return `${+anchorKey.slice(0, 4)}年${+anchorKey.slice(5, 7)}月`;
+		if (mode === "day" && dayCount <= 1) return `${cn(anchorKey)} ${DAYS_ZH[dayOfWeek(anchorKey)]}`;
+		const { fromKey, toKey } = viewWindow(mode, anchorKey, weekStartsMonday, agendaDays, dayCount);
+		const sameYear = fromKey.slice(0, 4) === toKey.slice(0, 4);
+		if (!sameYear) return `${cn(fromKey)} - ${cn(toKey)}`;
+		const sameMonth = fromKey.slice(5, 7) === toKey.slice(5, 7);
+		const tail = sameMonth ? `${+toKey.slice(8, 10)}日` : `${+toKey.slice(5, 7)}月${+toKey.slice(8, 10)}日`;
+		return `${cn(fromKey)} - ${tail}`;
+	}
 	if (mode === "month") return `${MONTHS[+anchorKey.slice(5, 7) - 1]} ${anchorKey.slice(0, 4)}`;
 	if (mode === "day" && dayCount <= 1) return `${DAYS[dayOfWeek(anchorKey)]}, ${fmtDayShort(anchorKey, true)}`;
 	const { fromKey, toKey } = viewWindow(mode, anchorKey, weekStartsMonday, agendaDays, dayCount);

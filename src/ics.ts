@@ -142,6 +142,7 @@ function instance(
 	const description = item.description || undefined;
 	const urlProp = item.component.getFirstPropertyValue("url");
 	const url = urlProp == null ? undefined : String(urlProp);
+	const completed = String(item.component.getFirstPropertyValue("x-ambernyadesk-completed") ?? "").toUpperCase() === "TRUE";
 	return {
 		id: `${main.uid || "?"}:${startMs}`,
 		sourceId: src.sourceId,
@@ -161,6 +162,7 @@ function instance(
 		recurrenceIdMs,
 		recurrenceIdAllDay,
 		tentative: String(item.component.getFirstPropertyValue("status") ?? "").toUpperCase() === "TENTATIVE",
+		completed,
 	};
 }
 
