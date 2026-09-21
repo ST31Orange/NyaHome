@@ -6223,6 +6223,7 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 .nyahome-cat-trigger {
+	font-size: inherit;
 	width: 0.9em;
 	height: 0.9em;
 	display: grid;
