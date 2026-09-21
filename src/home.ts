@@ -193,12 +193,11 @@ export class NyaHomeView extends ItemView {
 		this.applyHomeBackground(background);
 
 		const header = page.createDiv("nyahome-header");
-		header.createEl("button", { cls: "nyahome-top-settings", attr: { "aria-label": t.openSettings, title: t.openSettings } }, (el) => {
-			setIcon(el, "settings");
+		const cat = header.createDiv("nyahome-cat");
+		cat.createEl("button", { cls: "nyahome-cat-trigger", attr: { "aria-label": t.openSettings, title: t.openSettings } }, (el) => {
+			el.createEl("img", { attr: { src: CAT_ICON, alt: "" } });
 			el.addEventListener("click", () => this.plugin.openOwnSettings());
 		});
-		const cat = header.createDiv("nyahome-cat");
-		cat.createEl("img", { attr: { src: CAT_ICON, alt: "NyaHome" } });
 		cat.createEl("h1", { text: t.title });
 
 		const searchWrap = page.createDiv("nyahome-search-wrap");
