@@ -921,6 +921,9 @@ export default class NyaHomePlugin extends Plugin {
 	private dataStamp: string | null = null;
 	private autoTimer: number | null = null;
 	private notifyTimer: number | null = null;
+	/** Keep one home page as the landing surface when the workspace empties. */
+	private emptyHomeTimer: number | null = null;
+	private openingEmptyHome = false;
 
 	async onload() {
 		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<NyaHomeSettings> | null));
@@ -1115,8 +1118,15 @@ export default class NyaHomePlugin extends Plugin {
 				// tabs look like, and stepping onto a note hands the pages
 				// back rather than leaving them shut behind it.
 				this.applyFocus();
+				this.queueOpenHomeWhenEmpty();
 			})
 		);
+		this.registerEvent(
+			this.app.workspace.on("layout-change", () => this.queueOpenHomeWhenEmpty())
+		);
+		this.register(() => {
+			if (this.emptyHomeTimer != null) window.clearTimeout(this.emptyHomeTimer);
+		});
 		// anything on the ribbon opens something in the page tree, so bring
 		// the tree back rather than firing a click into a collapsed pane
 		this.registerDomEvent(
@@ -5429,6 +5439,48 @@ export default class NyaHomePlugin extends Plugin {
 		}
 		const leaf = this.app.workspace.getLeaf(true);
 		await leaf.setViewState({ type: VIEW_TYPE_HOME, active: true });
+	}
+
+	/** Closing the last tab leaves Obsidian's empty placeholder behind. Let
+	 *  that settle for a frame, then turn the empty workspace into NyaHome. */
+	private queueOpenHomeWhenEmpty(delay = 80): void {
+		if (this.emptyHomeTimer != null) window.clearTimeout(this.emptyHomeTimer);
+		this.emptyHomeTimer = window.setTimeout(() => {
+			this.emptyHomeTimer = null;
+			void this.openHomeWhenEmpty();
+		}, delay);
+	}
+
+	private workspaceLeaves(): WorkspaceLeaf[] {
+		const leaves: WorkspaceLeaf[] = [];
+		this.app.workspace.iterateRootLeaves((leaf) => leaves.push(leaf));
+		return leaves;
+	}
+
+	private workspaceIsEmpty(): boolean {
+		const leaves = this.workspaceLeaves();
+		return leaves.length === 0 || (leaves.length === 1 && leaves[0].view?.getViewType() === "empty");
+	}
+
+	private async openHomeWhenEmpty(): Promise<void> {
+		if (this.openingEmptyHome || !this.workspaceIsEmpty()) return;
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOME)[0];
+		if (existing) {
+			await this.app.workspace.revealLeaf(existing);
+			return;
+		}
+		const emptyLeaf = this.workspaceLeaves().find((leaf) => leaf.view?.getViewType() === "empty");
+		const leaf = emptyLeaf ?? this.app.workspace.getLeaf(false);
+		this.openingEmptyHome = true;
+		try {
+			await leaf.setViewState({ type: VIEW_TYPE_HOME, active: true });
+		} finally {
+			// layout-change fires again after the view lands; this brief guard
+			// keeps the first settling pass from re-entering the opener.
+			window.setTimeout(() => {
+				this.openingEmptyHome = false;
+			}, 120);
+		}
 	}
 
 	/** One compose entry point: IMAP wins when a standard mailbox exists,
