@@ -6214,12 +6214,34 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 .nyahome .nyahome-header {
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	gap: 18px;
 	margin-top: max(0.6em, 16px);
 	margin-bottom: 18px;
+}
+
+.nyahome-top-settings {
+	position: absolute;
+	top: 0;
+	right: 0;
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	padding: 0;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.nyahome-top-settings:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
 }
 
 .nyahome-cat {

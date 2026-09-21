@@ -14237,7 +14237,6 @@ class PowerCalendarView extends ItemView {
 	private renderMonthRow(grid: HTMLElement, rowCells: DayCell[], events: PCEvent[], cellMap: Map<string, HTMLElement>) {
 		const rowKeys = rowCells.map((c) => c.key);
 		const spans = spansForRow(events, rowKeys);
-		const laneCount = spans.reduce((m, sp) => Math.max(m, sp.lane + 1), 0);
 		const row = grid.createDiv("nya-month-row");
 		if (this.plugin.settings.showWeekNumbers) row.createDiv({ cls: "nya-weeknum", text: `W${isoWeekNum(rowKeys[0])}` });
 
@@ -14272,7 +14271,11 @@ class PowerCalendarView extends ItemView {
 			if (lunar) num.createSpan({ cls: `nya-lunar nya-lunar-${lunar.kind}`, text: lunar.text });
 			num.addEventListener("click", () => this.goDay(cell.key));
 			const chipArea = el.createDiv("nya-month-chips");
-			chipArea.style.marginTop = `${laneCount * 22}px`;
+			const cellIdx = rowKeys.indexOf(cell.key);
+			const cellLaneCount = spans
+				.filter((sp) => cellIdx >= sp.startIdx && cellIdx <= sp.endIdx)
+				.reduce((m, sp) => Math.max(m, sp.lane + 1), 0);
+			chipArea.style.marginTop = `${cellLaneCount * 22}px`;
 			el.addEventListener("contextmenu", (e) => {
 				const t = e.target as HTMLElement;
 				if (t.closest(".nya-chip, .nya-span, .nya-month-daynum, button")) return;
