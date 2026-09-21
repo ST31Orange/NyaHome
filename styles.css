@@ -6223,12 +6223,22 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 .nyahome-cat-trigger {
+	width: 0.9em;
+	height: 0.9em;
 	display: grid;
 	place-items: center;
+	overflow: hidden;
 	padding: 0;
 	border: 0;
+	border-radius: 50%;
 	background: transparent;
 	cursor: pointer;
+}
+
+.nyahome-cat-trigger img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
 }
 
 .nyahome-cat-trigger:focus-visible {
