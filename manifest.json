@@ -1,9 +1,9 @@
 {
 	"id": "nyahome",
 	"name": "NyaHome",
-	"version": "4.0.1",
+	"version": "4.0.2",
   "minAppVersion": "1.8.7",
-	"description": "NyaHome：Obsidian 统一主页与本地优先的工作台；可选接入在线日历和邮箱 | NyaHome: a unified Obsidian home with local-first notes, calendars and optional connected services.",
+	"description": "统一主页与本地优先的工作台；可选接入在线日历和邮箱 | A unified home with local-first notes, calendars and optional connected services.",
 	"author": "AmberNya",
   "isDesktopOnly": true
 }

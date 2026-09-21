@@ -348,8 +348,6 @@ export class NyaHomeView extends ItemView {
 		if (!cardList.length) {
 			cards.createDiv("nyahome-card is-empty", (el) => {
 				el.createDiv({ text: t.emptyGrid });
-				el.style.gridColumn = "1 / span 4";
-				el.style.gridRow = "1 / span 2";
 				el.addEventListener("click", () => new HomeTextModal(this.app, t.addFolder, t.cardName, "", (title) => {
 					this.addNamedHomeCard(title, t);
 				}).open());

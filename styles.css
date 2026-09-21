@@ -6677,6 +6677,8 @@ body.theme-light .notice:not(.pw-self-styled) a {
 
 .nyahome-card.is-empty,
 .nyahome-card.is-add {
+	grid-column: 1 / span 4;
+	grid-row: 1 / span 2;
 	border-style: dashed;
 	display: grid;
 	place-content: center;
