@@ -142,7 +142,7 @@ function instance(
 	const description = item.description || undefined;
 	const urlProp = item.component.getFirstPropertyValue("url");
 	const url = urlProp == null ? undefined : String(urlProp);
-	const completed = String(item.component.getFirstPropertyValue("x-ambernyadesk-completed") ?? "").toUpperCase() === "TRUE";
+	const completed = String(item.component.getFirstPropertyValue("x-nyahome-completed") ?? item.component.getFirstPropertyValue("x-ambernyadesk-completed") ?? "").toUpperCase() === "TRUE";
 	return {
 		id: `${main.uid || "?"}:${startMs}`,
 		sourceId: src.sourceId,

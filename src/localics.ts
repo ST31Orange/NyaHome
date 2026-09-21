@@ -108,7 +108,7 @@ function fillVevent(ev: ICAL.Component, rec: LocalEventRecord): void {
 	if (duration) ev.removeProperty(duration);
 	setProp("location", rec.location || null);
 	setProp("description", rec.description || null);
-	setProp("x-ambernyadesk-completed", rec.completed === true ? "TRUE" : rec.completed === false ? null : undefined);
+	setProp("x-nyahome-completed", rec.completed === true ? "TRUE" : rec.completed === false ? null : undefined);
 	setUtc("dtstamp");
 	setUtc("last-modified");
 	if (rec.repeat) {
@@ -220,5 +220,5 @@ export function rruleOf(kind: string, startMs: number): string | null {
 /** A fresh UID: random hex in UUID shape, so id splitting stays safe. */
 export function newIcsUid(): string {
 	const hex = (n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n))).map((b) => b.toString(16).padStart(2, "0")).join("");
-	return `${hex(8)}-${hex(4)}-${hex(4)}-${hex(4)}-${hex(12)}@ambernyadesk`;
+	return `${hex(8)}-${hex(4)}-${hex(4)}-${hex(4)}-${hex(12)}@nyahome`;
 }

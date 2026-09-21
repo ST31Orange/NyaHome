@@ -1,15 +1,15 @@
-# AmberNyaDesk
+# NyaHome
 
-一款把「本地日历」和「IMAP 邮箱」搬进 Obsidian 的插件：无需离开笔记库，就能查看日程、管理事件、收发邮件，让待办、笔记和邮件在同一条工作流里自然衔接。
+NyaHome 把 Obsidian 的入口收拢成一页：快速搜索、可自由整理的文件夹卡片、时钟、日历与邮箱都在这里。本地功能开箱即用，在线服务按需接入。
 
-A local calendar and an IMAP mailbox, inside Obsidian: schedules, events, task boards and mail without ever leaving your vault.
+NyaHome gathers your Obsidian entry point on one page: quick search, freely arranged folder cards, clock, calendar and mail. Local features work out of the box; connected services are optional.
 
 ## 核心功能
 
 - **本地日历**：月 / 周 / 日视图，支持事件创建、编辑与拖拽调整。
-- **多日历管理**：工作、生活、项目分开归类，颜色一目了然。
 - **任务看板**：长期任务管理，支持多看板切换，数据就是普通 Markdown。
-- **IMAP 邮箱**：接入常用邮箱（QQ、163、学校邮箱等），在 Obsidian 内直接收信、读信、写邮件。
+- **主页背景**：使用库内图片，透明度和模糊可调。
+- **连接服务**：Microsoft、Google、CalDAV、ICS、IMAP 统一收纳，全部可选。
 - **邮件与笔记联动**：一键把邮件转成笔记，或生成日历事件。
 - **提醒与搜索**：快速定位事件和邮件，不错过重要安排。
 - **本地优先**：数据保存在你自己的库里，隐私更可控。
@@ -17,9 +17,9 @@ A local calendar and an IMAP mailbox, inside Obsidian: schedules, events, task b
 ## Core features
 
 - **Local calendar**: month, week and day views; create, edit and drag events.
-- **Multiple calendars** for work, life and projects, each with its own color.
 - **Task boards** for long-term to-dos, multiple boards, plain Markdown files.
-- **IMAP mail**: connect your accounts (QQ, 163, school mail and more) and read, write and send mail inside Obsidian.
+- **Home background**: use a vault image with adjustable opacity and blur.
+- **Connected services**: Microsoft, Google, CalDAV, ICS and IMAP in one optional tab.
 - **Mail meets notes**: turn a message into a note or a calendar event in one click.
 - **Search and reminders**: find events and mail fast, so nothing slips by.
 - **Local-first**: your data stays in your own vault.
@@ -42,17 +42,17 @@ Sign in with your IMAP / SMTP credentials and the mail view covers every account
 
 ## 兼容说明
 
-本插件基于 Power Desk（formerly Power Calendar）二次开发，原设置会自动迁移，旧代码块继续可用。
+本插件从早期内部版本整理而来；首次部署会自动迁移原设置和缓存，旧代码块继续可用。
 
 ## Compatibility
 
-AmberNyaDesk is built on Power Desk (formerly Power Calendar); settings migrate automatically and old code blocks keep working.
+NyaHome is a new plugin built from the earlier internal edition; the first deploy migrates settings and caches automatically, and old code blocks keep working.
 
 ## 开发不易，感谢打赏
 
 如果这个插件对你有帮助，欢迎请作者喝杯咖啡。你的支持会用于后续维护、修 bug 和适配新版本。
 
-If AmberNyaDesk helps you, buying the author a coffee is much appreciated — it goes toward maintenance, bug fixes and keeping up with new Obsidian versions.
+If NyaHome helps you, buying the author a coffee is much appreciated — it goes toward maintenance, bug fixes and keeping up with new Obsidian versions.
 
 <p align="center">
   <img src="donate-alipay.jpg" alt="支付宝收款码" width="180">

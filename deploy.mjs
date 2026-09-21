@@ -8,7 +8,7 @@
 // silently wins gives no sign it happened: the vault simply loses a feature
 // that was, by every other measure, finished and shipped. Pass --force to
 // deploy anyway, which is what a deliberate rollback wants.
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import process from "process";
@@ -44,7 +44,9 @@ if (!vaults.length) {
 	process.exit(1);
 }
 
-const version = JSON.parse(readFileSync("manifest.json", "utf8")).version;
+const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
+const pluginId = manifest.id || "nyahome";
+const version = manifest.version;
 const files = ["manifest.json", "main.js", "styles.css", "README.md"];
 let deployed = 0;
 let blocked = 0;
@@ -53,7 +55,7 @@ for (const vault of vaults) {
 		console.log("skip (no .obsidian):", vault);
 		continue;
 	}
-	const dest = join(vault, ".obsidian", "plugins", "ambernyadesk");
+	const dest = join(vault, ".obsidian", "plugins", pluginId);
 	const installed = installedVersion(join(dest, "manifest.json"));
 	const back = isDowngrade(installed, version);
 	if (back && !force) {
@@ -67,18 +69,29 @@ for (const vault of vaults) {
 	if (back) console.log(`forced back over ${installed} ->`, dest);
 	mkdirSync(dest, { recursive: true });
 	for (const f of files) copyFileSync(f, join(dest, f));
-	// one-time rename migration: carry settings (accounts, tokens, sources)
-	// over from the old Power Calendar install when the new folder has none
-	const oldData = join(vault, ".obsidian", "plugins", "powercalendar", "data.json");
+	// one-time rename migration: carry the prior install's settings, caches and
+	// IMAP shards into NyaHome so the new plugin id does not lose local data
+	const legacy = join(vault, ".obsidian", "plugins", "ambernyadesk");
 	const newData = join(dest, "data.json");
-	if (!existsSync(newData) && existsSync(oldData)) {
-		copyFileSync(oldData, newData);
-		console.log("migrated settings from powercalendar ->", newData);
+	if (!existsSync(newData) && existsSync(join(legacy, "data.json"))) {
+		copyFileSync(join(legacy, "data.json"), newData);
+		console.log("migrated settings from ambernyadesk ->", newData);
+	}
+	const newCache = join(dest, "cache.json");
+	if (!existsSync(newCache) && existsSync(join(legacy, "cache.json"))) {
+		copyFileSync(join(legacy, "cache.json"), newCache);
+		console.log("migrated fetch cache from ambernyadesk ->", newCache);
+	}
+	const legacyImapCache = join(legacy, "imap-cache");
+	const newImapCache = join(dest, "imap-cache");
+	if (!existsSync(newImapCache) && existsSync(legacyImapCache)) {
+		cpSync(legacyImapCache, newImapCache, { recursive: true });
+		console.log("migrated IMAP cache from ambernyadesk ->", newImapCache);
 	}
 	console.log("deployed ->", dest);
 	deployed++;
 }
-console.log(deployed ? `Done. Reload Obsidian (Ctrl+R) and enable "Power Desk" if it isn't enabled yet.` : "Nothing deployed.");
+console.log(deployed ? `Done. Reload Obsidian (Ctrl+R), then enable "NyaHome". The old ambernyadesk plugin can be disabled after you verify NyaHome.` : "Nothing deployed.");
 // a blocked vault has to fail the command: the point is that it stops being
 // something you have to notice in the scrollback
 if (blocked) process.exit(1);

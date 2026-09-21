@@ -284,6 +284,8 @@ import {
 import { GoogleError, deleteGoogleEvent, fetchGoogleEvents, getGoogleEvent, insertGoogleEvent, listGoogleCalendars, loopbackAuth, patchGoogleEvent, refreshGoogleTokens } from "./google";
 import { CaldavError, discoverCalendars, fetchCollectionIcs } from "./caldav";
 import { DavCollection } from "./caldavxml";
+import { NyaHomeView, type HomeCard } from "./home";
+import catIcon from "./assets/cat.jpg";
 
 /** One calendar row in the sidebar rail, whatever source it came from. */
 interface SidebarCal {
@@ -296,9 +298,10 @@ interface SidebarCal {
 
 const SIDEBAR_COLOR_NAMES = ["Blue", "Red", "Green", "Orange", "Purple", "Teal", "Pink", "Olive", "Rust", "Indigo"];
 
-const VIEW_TYPE = "power-calendar";
-const VIEW_TYPE_MAIL = "power-calendar-mail";
-const VIEW_TYPE_MAIL_IMAP = "power-calendar-mail-imap";
+const VIEW_TYPE = "nyahome-calendar";
+const VIEW_TYPE_MAIL = "nyahome-mail";
+const VIEW_TYPE_MAIL_IMAP = "nyahome-mail-imap";
+const VIEW_TYPE_HOME = "nyahome-home";
 /** The Unread search folder's virtual id in folder selections and caches. */
 const UNREAD_FOLDER = "__unread__";
 /** How many inline pictures one saved message may bring into the vault. A
@@ -409,7 +412,7 @@ interface GoogleAccount {
 	calendars: GoogleCalendar[];
 }
 
-interface PCSettings {
+interface NyaHomeSettings {
 	/** The shared Azure app new Microsoft sign-ins use (per-account overrides
 	 *  live on the account). Tokens live locally in data.json. */
 	graphClientId: string;
@@ -629,8 +632,18 @@ interface PCSettings {
 	imapContacts: ContactRecord[];
 	/** The view phones open with (agenda reads best on a narrow screen). */
 	phoneDefaultMode: ViewMode;
-	/** Open AmberNyaDesk as the workspace's first page when Obsidian starts. */
+	/** Open NyaHome as the workspace's first page when Obsidian starts. */
 	openAtStartup: boolean;
+	/** Which desk surface owns startup and the single ribbon entry. */
+	startupView: "home" | "calendar" | "mail";
+	/** NyaHome's editable folder cards. Notes stay in the vault; a card only remembers links to them. */
+	homeCards: HomeCard[];
+	/** Optional wallpaper image inside the vault, shown behind NyaHome. */
+	homeBackgroundPath: string;
+	/** 0-100 opacity of the NyaHome wallpaper. */
+	homeBackgroundOpacity: number;
+	/** 0-24 px blur for the NyaHome wallpaper. */
+	homeBackgroundBlur: number;
 	/** Optional wallpaper image inside the vault, shown behind the calendar. */
 	calBackgroundPath: string;
 	/** 0-100 opacity of that wallpaper; 0 keeps the plain calendar surface. */
@@ -689,7 +702,7 @@ interface SketchNote {
 	updatedMs: number;
 }
 
-const DEFAULT_SETTINGS: PCSettings = {
+const DEFAULT_SETTINGS: NyaHomeSettings = {
 	graphClientId: "",
 	graphTenant: "",
 	graphRefresh: "",
@@ -791,6 +804,11 @@ const DEFAULT_SETTINGS: PCSettings = {
 	imapContacts: [],
 	phoneDefaultMode: "agenda",
 	openAtStartup: true,
+	startupView: "home",
+	homeCards: [],
+	homeBackgroundPath: "",
+	homeBackgroundOpacity: 65,
+	homeBackgroundBlur: 0,
 	calBackgroundPath: "",
 	calBackgroundOpacity: 55,
 	showNotifications: true,
@@ -878,8 +896,8 @@ interface TxnMailLike {
  *  two places, and `new Map()` on its own infers nothing. */
 type WeatherDays = Map<string, { hi: number; lo: number; code: number }>;
 
-export default class PowerDeskPlugin extends Plugin {
-	settings: PCSettings = DEFAULT_SETTINGS;
+export default class NyaHomePlugin extends Plugin {
+	settings: NyaHomeSettings = DEFAULT_SETTINGS;
 	refreshSettingsTab: (() => void) | null = null;
 	/** Per-source fetched events, keyed by SourceDef.key. */
 	private cache = new Map<string, SourceState>();
@@ -895,7 +913,8 @@ export default class PowerDeskPlugin extends Plugin {
 	/** The settings as they last stood on disk, read or written by us. Whatever
 	 *  differs from this in memory is OUR change, and only those keys may
 	 *  overwrite a synced data.json; see persistSettings(). */
-	private baseline: PCSettings = DEFAULT_SETTINGS;
+	private baseline: NyaHomeSettings = DEFAULT_SETTINGS;
+	private sourceCache: SourceDef[] | null = null;
 	/** data.json's size and mtime as we last saw them, so the desktop poll can
 	 *  tell a file someone else wrote from one nobody touched, without reading
 	 *  it; see watchDataFile(). */
@@ -904,7 +923,7 @@ export default class PowerDeskPlugin extends Plugin {
 	private notifyTimer: number | null = null;
 
 	async onload() {
-		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PCSettings> | null));
+		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<NyaHomeSettings> | null));
 		setI18nLang(this.settings.language);
 		setUiLang(this.settings.language);
 		pluginNoticesEnabled = () => this.settings.showNotifications;
@@ -938,9 +957,9 @@ export default class PowerDeskPlugin extends Plugin {
 		this.migrateImapSecrets();
 		// a first-run local calendar, so the plugin is useful the moment it
 		// opens: one .ics file in the notes folder, writable out of the box
-		if (!this.settings.localCalendars.length && this.app.loadLocalStorage("ambernyadesk-local-seeded") !== "1") {
+		if (!this.settings.localCalendars.length && this.app.loadLocalStorage("nyahome-local-seeded") !== "1") {
 			this.settings.localCalendars = [{ id: freshId(), name: "Local", path: "Calendar/Local.ics", color: "#e8a33d", enabled: true }];
-			this.app.saveLocalStorage("ambernyadesk-local-seeded", "1");
+			this.app.saveLocalStorage("nyahome-local-seeded", "1");
 			this.queueSave();
 		}
 		this.offerToolbarActions();
@@ -949,7 +968,7 @@ export default class PowerDeskPlugin extends Plugin {
 		this.register(() => this.mailService.dispose());
 		const stale = this.settings.graphAccounts.filter((a) => a.refresh && a.grantedScope !== this.scopeFor(a));
 		if (stale.length) {
-			const message = `AmberNyaDesk: reconnect ${stale.map((a) => this.nameOf(a)).join(", ")} in settings to enable the newest permissions (event editing, mail, reply windows).`;
+			const message = `NyaHome: reconnect ${stale.map((a) => this.nameOf(a)).join(", ")} in settings to enable the newest permissions (event editing, mail, reply windows).`;
 			const key = `pdesk-scope-notice:${message}`;
 			// The account warning is actionable, but repeating it over the document
 			// on every phone launch turns a standing setup choice into startup spam.
@@ -962,10 +981,12 @@ export default class PowerDeskPlugin extends Plugin {
 		this.registerView(VIEW_TYPE, (leaf) => new PowerCalendarView(leaf, this));
 		this.registerView(VIEW_TYPE_MAIL, (leaf) => new MailView(leaf, this));
 		this.registerView(VIEW_TYPE_MAIL_IMAP, (leaf) => new ImapMailView(leaf, this));
+		this.registerView(VIEW_TYPE_HOME, (leaf) => new NyaHomeView(leaf, this));
 		this.i18nObserver = this.settings.language === "zh" ? startI18n() : null;
-		this.addRibbonIcon("calendar-days", "Open AmberNyaDesk", () => void this.openCalendarView());
-		this.ribbonEl = this.addRibbonIcon("mail", "Open AmberNyaDesk inbox", () => void this.openMailView());
-		this.paintRibbonBadge();
+		this.ribbonEl = this.addRibbonIcon("home", "Open NyaHome", () => void this.openDefaultView());
+		this.ribbonEl.empty();
+		this.ribbonEl.addClass("nyahome-cat-button");
+		this.ribbonEl.createEl("img", { attr: { src: catIcon, alt: "Open NyaHome" } });
 		this.addCommand({ id: "open-mail", icon: "inbox", name: "Open inbox", callback: () => void this.openMailView() });
 		this.addCommand({ id: "new-mail", icon: "pencil", name: "New mail", callback: () => this.openNewMailCompose() });
 		// the palette and the shortcut card are worth having on the vault's
@@ -997,7 +1018,7 @@ export default class PowerDeskPlugin extends Plugin {
 			callback: () => {
 				const v = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
 				if (v instanceof PowerCalendarView) v.printCalendar();
-				else new Notice("AmberNyaDesk: open the calendar first, so there is a range to print.");
+				else new Notice("NyaHome: open the calendar first, so there is a range to print.");
 			},
 		});
 		this.addCommand({ id: "mail-ooo", icon: "megaphone", name: "Automatic replies (out of office)", callback: () => new OutOfOfficeModal(this.app, this).open() });
@@ -1016,12 +1037,12 @@ export default class PowerDeskPlugin extends Plugin {
 			name: "Scan mail for orders and bills now",
 			callback: () => {
 				if (!this.assistantTxn()) {
-					new Notice("AmberNyaDesk: install Power Assistant and set a transaction folder to capture orders.", 8000);
+					new Notice("NyaHome: install Power Assistant and set a transaction folder to capture orders.", 8000);
 					return;
 				}
-				new Notice("AmberNyaDesk: scanning mail for orders and bills...");
+				new Notice("NyaHome: scanning mail for orders and bills...");
 				void this.scanForTransactions(true).then((n) => {
-					if (!n) new Notice("AmberNyaDesk: no new orders or bills found.");
+					if (!n) new Notice("NyaHome: no new orders or bills found.");
 				});
 			},
 		});
@@ -1048,17 +1069,17 @@ export default class PowerDeskPlugin extends Plugin {
 		this.addCommand({ id: "create-events-base", icon: "database", name: "Create events base", callback: () => void this.createEventsBase() });
 		this.addCommand({ id: "test-reminder", name: "Show a test meeting reminder", callback: () => this.previewReminder() });
 
-		// ```power-calendar``` (and its AmberNyaDesk alias) renders that day's
+		// ```nyahome``` (and its legacy aliases) renders that day's
 		// agenda inside any note; with no date line it reads the day out of the
 		// note's own filename, so one template block serves every daily note.
 		// The old name stays registered forever: it lives in note templates.
-		for (const lang of ["power-calendar", "power-desk"]) {
+		for (const lang of ["nyahome", "power-calendar", "power-desk"]) {
 			this.registerMarkdownCodeBlockProcessor(lang, (source, el, ctx) => {
 				ctx.addChild(new AgendaBlock(el, this, parseAgendaBlock(source), ctx.sourcePath));
 			});
 		}
 
-		this.addSettingTab(new PCSettingTab(this.app, this));
+		this.addSettingTab(new NyaHomeSettingTab(this.app, this));
 		this.watchDataFile();
 		this.scheduleAutoRefresh();
 		this.register(() => {
@@ -1137,7 +1158,7 @@ export default class PowerDeskPlugin extends Plugin {
 		// and does not get hijacked just because the setting is on.
 		if (!this.app.workspace.layoutReady) {
 			this.app.workspace.onLayoutReady(() => {
-				if (this.settings.openAtStartup) void this.openCalendarView();
+				if (this.settings.openAtStartup) void this.openDefaultView();
 			});
 		}
 	}
@@ -1238,38 +1259,38 @@ export default class PowerDeskPlugin extends Plugin {
 		const where = ev.location && ev.location !== ev.joinUrl && !/^https?:\/\//i.test(ev.location) ? ev.location : provider;
 		let notice: Notice | null = null;
 		const frag = createFragment((f) => {
-			const card = f.createDiv({ cls: "pcal-remind" });
-			const head = card.createDiv({ cls: "pcal-remind-head" });
-			setIcon(head.createDiv({ cls: "pcal-remind-icon" }), ev.joinUrl ? "video" : "calendar-clock");
-			head.createDiv({ cls: "pcal-remind-title", text: ev.title });
-			const meta = card.createDiv({ cls: "pcal-remind-sub" });
-			const chip = meta.createSpan({ cls: "pcal-remind-when", text: now ? "Starting now" : `In ${mins} minute${mins === 1 ? "" : "s"}` });
+			const card = f.createDiv({ cls: "nya-remind" });
+			const head = card.createDiv({ cls: "nya-remind-head" });
+			setIcon(head.createDiv({ cls: "nya-remind-icon" }), ev.joinUrl ? "video" : "calendar-clock");
+			head.createDiv({ cls: "nya-remind-title", text: ev.title });
+			const meta = card.createDiv({ cls: "nya-remind-sub" });
+			const chip = meta.createSpan({ cls: "nya-remind-when", text: now ? "Starting now" : `In ${mins} minute${mins === 1 ? "" : "s"}` });
 			chip.toggleClass("is-now", now);
-			meta.createSpan({ cls: "pcal-remind-at", text: fmtTimeOfMs(ev.startMs, this.settings.use24h) });
-			if (where) meta.createSpan({ cls: "pcal-remind-where", text: where });
-			const row = card.createDiv({ cls: "pcal-remind-btns" });
+			meta.createSpan({ cls: "nya-remind-at", text: fmtTimeOfMs(ev.startMs, this.settings.use24h) });
+			if (where) meta.createSpan({ cls: "nya-remind-where", text: where });
+			const row = card.createDiv({ cls: "nya-remind-btns" });
 			if (ev.joinUrl) {
 				row.createEl("button", { text: "Join", cls: "mod-cta" }).addEventListener("click", () => {
 					window.open(ev.joinUrl, "_blank");
 					notice?.hide(); // the reminder has done its job; leaving it up is litter
 				});
 			}
-			row.createEl("button", { cls: "pcal-remind-later", text: "Snooze" }).addEventListener("click", () => {
+			row.createEl("button", { cls: "nya-remind-later", text: "Snooze" }).addEventListener("click", () => {
 				notice?.hide();
 				this.snoozeReminder(ev);
 			});
-			row.createEl("button", { cls: "pcal-remind-later", text: "Dismiss" }).addEventListener("click", () => notice?.hide());
+			row.createEl("button", { cls: "nya-remind-later", text: "Dismiss" }).addEventListener("click", () => notice?.hide());
 		});
 		notice = new Notice(frag, 0);
 		// styling the notice itself, not just its contents: the default black
 		// slab is what makes a reminder look like an error message. pw-self-styled
 		// is the family's marker for a notice that brings its own surface, so the
 		// light-theme restyling below leaves it alone.
-		// The card is styled as `.notice.pcal-remind-notice`, so the classes go on
+		// The card is styled as `.notice.nya-remind-notice`, so the classes go on
 		// the notice's own box rather than the message inside it. Walking up from
 		// messageEl finds that box on every build, and closest() counts the element
 		// itself, so it is right either way round.
-		notice.messageEl.closest(".notice")?.addClass("pcal-remind-notice", "pw-self-styled");
+		notice.messageEl.closest(".notice")?.addClass("nya-remind-notice", "pw-self-styled");
 	}
 
 	/** Phones get one compact reminder surface even when calendars contain
@@ -1279,23 +1300,23 @@ export default class PowerDeskPlugin extends Plugin {
 		let notice: Notice | null = null;
 		const ordered = [...events].sort((a, b) => a.startMs - b.startMs);
 		const frag = createFragment((f) => {
-			const card = f.createDiv({ cls: "pcal-remind" });
-			const head = card.createDiv({ cls: "pcal-remind-head" });
-			setIcon(head.createDiv({ cls: "pcal-remind-icon" }), "calendar-clock");
-			head.createDiv({ cls: "pcal-remind-title", text: `${ordered.length} meetings starting soon` });
+			const card = f.createDiv({ cls: "nya-remind" });
+			const head = card.createDiv({ cls: "nya-remind-head" });
+			setIcon(head.createDiv({ cls: "nya-remind-icon" }), "calendar-clock");
+			head.createDiv({ cls: "nya-remind-title", text: `${ordered.length} meetings starting soon` });
 			for (const ev of ordered.slice(0, 3)) {
-				const row = card.createDiv({ cls: "pcal-remind-sub" });
-				row.createSpan({ cls: "pcal-remind-when", text: fmtTimeOfMs(ev.startMs, this.settings.use24h) });
-				row.createSpan({ cls: "pcal-remind-at", text: ev.title });
+				const row = card.createDiv({ cls: "nya-remind-sub" });
+				row.createSpan({ cls: "nya-remind-when", text: fmtTimeOfMs(ev.startMs, this.settings.use24h) });
+				row.createSpan({ cls: "nya-remind-at", text: ev.title });
 				if (ev.joinUrl) {
 					row.createEl("button", { text: "Join", cls: "mod-cta" }).addEventListener("click", () => window.open(ev.joinUrl, "_blank"));
 				}
 			}
-			if (ordered.length > 3) card.createDiv({ cls: "pcal-remind-sub", text: `And ${ordered.length - 3} more` });
-			card.createDiv({ cls: "pcal-remind-btns" }).createEl("button", { text: "Dismiss" }).addEventListener("click", () => notice?.hide());
+			if (ordered.length > 3) card.createDiv({ cls: "nya-remind-sub", text: `And ${ordered.length - 3} more` });
+			card.createDiv({ cls: "nya-remind-btns" }).createEl("button", { text: "Dismiss" }).addEventListener("click", () => notice?.hide());
 		});
 		notice = new Notice(frag, 0);
-		notice.messageEl.closest(".notice")?.addClass("pcal-remind-notice", "pw-self-styled");
+		notice.messageEl.closest(".notice")?.addClass("nya-remind-notice", "pw-self-styled");
 	}
 
 	onunload() {
@@ -1327,6 +1348,10 @@ export default class PowerDeskPlugin extends Plugin {
 		}, 400);
 	}
 
+	persistNow(): Promise<void> {
+		return this.persistSettings();
+	}
+
 	/**
 	 * The one write path for settings. Every save goes through here so the
 	 * data.json watcher can tell our own write from someone else's edit.
@@ -1342,15 +1367,16 @@ export default class PowerDeskPlugin extends Plugin {
 	 * assignment to this.settings goes through here for that reason. The field
 	 * starts life as DEFAULT_SETTINGS itself, which must never be mutated.
 	 */
-	private adoptSettings(next: PCSettings) {
+	private adoptSettings(next: NyaHomeSettings) {
 		if (this.settings && this.settings !== DEFAULT_SETTINGS) Object.assign(this.settings, next);
 		else this.settings = { ...next };
+		this.sourceCache = null;
 	}
 
 	async persistSettings() {
 		this.saving = true;
 		try {
-			const disk = (await this.loadData()) as Partial<PCSettings> | null;
+			const disk = (await this.loadData()) as Partial<NyaHomeSettings> | null;
 			this.adoptSettings(mergeForSave(this.settings, this.baseline, disk));
 			await this.saveData(this.settings);
 			this.baseline = structuredClone(this.settings);
@@ -1412,7 +1438,7 @@ export default class PowerDeskPlugin extends Plugin {
 	private async adoptExternalData() {
 		if (this.busySaving()) return; // a live in-app change is on its way to disk; it wins
 		const before = JSON.stringify(this.settings);
-		const raw = (await this.loadData()) as Partial<PCSettings> | null;
+		const raw = (await this.loadData()) as Partial<NyaHomeSettings> | null;
 		if (!raw) return;
 		// memory can move while we await; adopting a stale read would revert it
 		if (this.busySaving() || JSON.stringify(this.settings) !== before) return;
@@ -1508,6 +1534,7 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  assigned by position so an uncolored source keeps its hue between
 	 *  renders. */
 	sources(): SourceDef[] {
+		if (this.sourceCache) return this.sourceCache;
 		const out: SourceDef[] = [];
 		let i = 0;
 		for (const a of this.settings.graphAccounts) {
@@ -1563,6 +1590,7 @@ export default class PowerDeskPlugin extends Plugin {
 			const owner = d.kind === "m365" || d.kind === "google" ? this.nameOf(d.account) : d.kind === "caldav" ? d.account.name : "";
 			if (owner) d.label = `${d.label} · ${owner}`;
 		}
+		this.sourceCache = out;
 		return out;
 	}
 
@@ -1629,6 +1657,7 @@ export default class PowerDeskPlugin extends Plugin {
 	/** Sources changed shape (added, removed, toggled): drop stale caches and
 	 *  let every open view refetch what it looks at. */
 	sourcesChanged() {
+		this.sourceCache = null;
 		const live = new Set(this.sources().map((d) => d.key));
 		for (const key of Array.from(this.cache.keys())) if (!live.has(key)) this.cache.delete(key);
 		this.notify();
@@ -2014,11 +2043,11 @@ export default class PowerDeskPlugin extends Plugin {
 			calendars: [],
 		};
 		if (!this.clientIdFor(target)) {
-			new Notice("AmberNyaDesk: enter an Azure app (client) ID in settings first.");
+			new Notice("NyaHome: enter an Azure app (client) ID in settings first.");
 			return;
 		}
 		if (this.graphConnecting) {
-			new Notice("AmberNyaDesk: a sign-in is already in progress.");
+			new Notice("NyaHome: a sign-in is already in progress.");
 			return;
 		}
 		this.graphConnecting = true;
@@ -2101,8 +2130,8 @@ export default class PowerDeskPlugin extends Plugin {
 				},
 				() => !!modal && !modal.waiting
 			);
-			if (acct) new Notice(`AmberNyaDesk: connected ${this.nameOf(acct)}.`);
-			else if (modal?.waiting) new Notice("AmberNyaDesk: sign-in timed out; try again.");
+			if (acct) new Notice(`NyaHome: connected ${this.nameOf(acct)}.`);
+			else if (modal?.waiting) new Notice("NyaHome: sign-in timed out; try again.");
 		} catch (e) {
 			this.graphErrorNotice(e);
 		}
@@ -2131,13 +2160,13 @@ export default class PowerDeskPlugin extends Plugin {
 	private graphErrorNotice(e: unknown) {
 		const msg = e instanceof Error ? e.message : String(e);
 		const hint = graphSetupHint(msg);
-		new Notice("AmberNyaDesk: " + (hint ? `${hint}\n\n(${msg})` : msg), hint ? 15000 : 8000);
+		new Notice("NyaHome: " + (hint ? `${hint}\n\n(${msg})` : msg), hint ? 15000 : 8000);
 	}
 
 	removeGraphAccount(a: GraphAccount) {
 		this.settings.graphAccounts = this.settings.graphAccounts.filter((x) => x.id !== a.id);
 		void this.persistSettings();
-		new Notice(`AmberNyaDesk: removed ${this.nameOf(a)}.`);
+		new Notice(`NyaHome: removed ${this.nameOf(a)}.`);
 		this.refreshSettingsTab?.();
 		this.sourcesChanged();
 	}
@@ -2152,23 +2181,23 @@ export default class PowerDeskPlugin extends Plugin {
 	 *  (which keeps its calendar toggles). Desktop only; the tokens sync. */
 	async connectGoogle(existing?: GoogleAccount) {
 		if (!this.googleReady()) {
-			new Notice("AmberNyaDesk: enter your Google client ID and secret in settings first. The README walks through the one-time Google Cloud setup.", 10000);
+			new Notice("NyaHome: enter your Google client ID and secret in settings first. The README walks through the one-time Google Cloud setup.", 10000);
 			return;
 		}
 		if (!Platform.isDesktopApp) {
-			new Notice("AmberNyaDesk: sign in to Google once on desktop; the connection then syncs to this device.");
+			new Notice("NyaHome: sign in to Google once on desktop; the connection then syncs to this device.");
 			return;
 		}
 		if (this.googleConnecting) {
-			new Notice("AmberNyaDesk: a sign-in is already in progress.");
+			new Notice("NyaHome: a sign-in is already in progress.");
 			return;
 		}
 		this.googleConnecting = true;
-		new Notice("AmberNyaDesk: finish the Google sign-in in your browser.");
+		new Notice("NyaHome: finish the Google sign-in in your browser.");
 		try {
 			const t = await loopbackAuth(this.settings.googleClientId.trim(), this.settings.googleClientSecret.trim(), (url) => window.open(url));
 			if (!t.refresh_token) {
-				new Notice("AmberNyaDesk: Google returned no refresh token. Remove the app's access at myaccount.google.com/permissions and connect again.", 12000);
+				new Notice("NyaHome: Google returned no refresh token. Remove the app's access at myaccount.google.com/permissions and connect again.", 12000);
 				return;
 			}
 			const claims = decodeJwtPayload(t.id_token ?? "");
@@ -2179,7 +2208,7 @@ export default class PowerDeskPlugin extends Plugin {
 			g.expiry = Date.now() + t.expires_in * 1000;
 			if (!existing) this.settings.googleAccounts = [...this.settings.googleAccounts, g];
 			await this.persistSettings();
-			new Notice(`AmberNyaDesk: connected ${this.nameOf(g)}.`);
+			new Notice(`NyaHome: connected ${this.nameOf(g)}.`);
 			await this.syncGoogleCalendars(g);
 			this.refreshSettingsTab?.();
 			this.sourcesChanged();
@@ -2234,7 +2263,7 @@ export default class PowerDeskPlugin extends Plugin {
 	removeGoogleAccount(g: GoogleAccount) {
 		this.settings.googleAccounts = this.settings.googleAccounts.filter((x) => x.id !== g.id);
 		void this.persistSettings();
-		new Notice(`AmberNyaDesk: removed ${this.nameOf(g)}.`);
+		new Notice(`NyaHome: removed ${this.nameOf(g)}.`);
 		this.refreshSettingsTab?.();
 		this.sourcesChanged();
 	}
@@ -2245,7 +2274,7 @@ export default class PowerDeskPlugin extends Plugin {
 			e instanceof GoogleError && e.code === "invalid_grant"
 				? " If this happens every 7 days, open your Google Cloud project's OAuth consent screen and press Publish app."
 				: "";
-		new Notice("AmberNyaDesk: " + msg + weekly, weekly ? 15000 : 8000);
+		new Notice("NyaHome: " + msg + weekly, weekly ? 15000 : 8000);
 	}
 
 	/* ---------------- event writes (Microsoft 365 only, phase two) ---------------- */
@@ -2303,7 +2332,7 @@ export default class PowerDeskPlugin extends Plugin {
 			await this.app.vault.adapter.write(path, text);
 			return true;
 		} catch (e) {
-			new Notice(`AmberNyaDesk: could not write the calendar (${e instanceof Error ? e.message : String(e)}).`);
+			new Notice(`NyaHome: could not write the calendar (${e instanceof Error ? e.message : String(e)}).`);
 			return false;
 		}
 	}
@@ -2347,9 +2376,9 @@ export default class PowerDeskPlugin extends Plugin {
 				: removeIcsEvent(old, uid);
 				if (next != null) await this.app.vault.adapter.write(path, next);
 			}
-			new Notice(ev.recurring ? "AmberNyaDesk: series deleted." : "AmberNyaDesk: event deleted.");
+			new Notice(ev.recurring ? "NyaHome: series deleted." : "NyaHome: event deleted.");
 		} catch (e) {
-			new Notice(`AmberNyaDesk: could not update the calendar (${e instanceof Error ? e.message : String(e)}).`);
+			new Notice(`NyaHome: could not update the calendar (${e instanceof Error ? e.message : String(e)}).`);
 		} finally {
 			this.refetchRemote(def.key);
 		}
@@ -2411,14 +2440,14 @@ export default class PowerDeskPlugin extends Plugin {
 	async createEventAt(targetKey: string | null, draft: EventDraft): Promise<boolean> {
 		const target = (targetKey ? this.writableTargets().find((t) => t.key === targetKey) : null) ?? this.defaultWriteTarget();
 		if (!target) {
-			new Notice("AmberNyaDesk: no writable calendar is available. Add a local calendar in settings.");
+			new Notice("NyaHome: no writable calendar is available. Add a local calendar in settings.");
 			return false;
 		}
 		const def = target.def;
 		if (def.kind === "local") {
 			const ok = await this.writeLocalEvent(def, null, draft);
 			if (ok) {
-				new Notice("AmberNyaDesk: event created.");
+				new Notice("NyaHome: event created.");
 				this.refetchRemote(def.key);
 			}
 			return ok;
@@ -2427,7 +2456,7 @@ export default class PowerDeskPlugin extends Plugin {
 			if (def.kind === "m365") await createEvent(await this.graphTokenFor(def.account), def.calendarId, graphEventBody(draft, this.localTz()));
 			else if (def.kind === "google") await insertGoogleEvent(await this.googleTokenFor(def.account), def.calendarId, googleEventBody(draft, this.localTz()), (draft.attendees?.length ?? 0) > 0);
 			else return false;
-			new Notice("AmberNyaDesk: event created.");
+			new Notice("NyaHome: event created.");
 			this.refetchRemote(def.key);
 			return true;
 		} catch (e) {
@@ -2450,7 +2479,7 @@ export default class PowerDeskPlugin extends Plugin {
 				}
 			});
 		} catch (e) {
-			new Notice("AmberNyaDesk: could not update the note (" + (e instanceof Error ? e.message : String(e)) + ").");
+			new Notice("NyaHome: could not update the note (" + (e instanceof Error ? e.message : String(e)) + ").");
 			this.queueVaultRefresh();
 		}
 	}
@@ -2516,7 +2545,7 @@ export default class PowerDeskPlugin extends Plugin {
 		try {
 			if (def.kind === "m365") await updateEvent(await this.graphTokenFor(def.account), ev.id, graphEventBody(draft, this.localTz()));
 			else await patchGoogleEvent(await this.googleTokenFor(def.account), def.calendarId, ev.id, googleEventBody(draft, this.localTz()), draft.attendees != null);
-			new Notice("AmberNyaDesk: event updated.");
+			new Notice("NyaHome: event updated.");
 			this.refetchRemote(def.key);
 			return true;
 		} catch (e) {
@@ -2564,7 +2593,7 @@ export default class PowerDeskPlugin extends Plugin {
 		try {
 			if (def.kind === "m365") await deleteEvent(await this.graphTokenFor(def.account), ev.id);
 			else await deleteGoogleEvent(await this.googleTokenFor(def.account), def.calendarId, ev.id);
-			new Notice(ev.recurring ? "AmberNyaDesk: occurrence canceled." : "AmberNyaDesk: event deleted.");
+			new Notice(ev.recurring ? "NyaHome: occurrence canceled." : "NyaHome: event deleted.");
 		} catch (e) {
 			this.anyErrorNotice(def.kind, e);
 		} finally {
@@ -2596,7 +2625,7 @@ export default class PowerDeskPlugin extends Plugin {
 				const attendees = ((raw.attendees as Record<string, unknown>[]) ?? []).map((a) => (a.self ? { ...a, responseStatus: response } : a));
 				await patchGoogleEvent(token, def.calendarId, ev.id, { attendees }, true);
 			}
-			new Notice("AmberNyaDesk: response sent.");
+			new Notice("NyaHome: response sent.");
 		} catch (e) {
 			this.anyErrorNotice(def.kind, e);
 		} finally {
@@ -2618,7 +2647,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const fromMin = s.freeFromHour * 60;
 		const toMin = s.freeToHour * 60;
 		if (toMin <= fromMin) {
-			new Notice("AmberNyaDesk: the availability window in settings ends before it starts.");
+			new Notice("NyaHome: the availability window in settings ends before it starts.");
 			return;
 		}
 		const days: string[] = [];
@@ -2638,7 +2667,7 @@ export default class PowerDeskPlugin extends Plugin {
 			s.use24h
 		);
 		await navigator.clipboard.writeText(text);
-		new Notice("AmberNyaDesk: free slots copied.\n\n" + text, 8000);
+		new Notice("NyaHome: free slots copied.\n\n" + text, 8000);
 	}
 
 	/* ---------------- mail: the triage inbox ---------------- */
@@ -3481,7 +3510,7 @@ export default class PowerDeskPlugin extends Plugin {
 	async saveMailAttachment(m: PCMail, att: MailAttachment): Promise<string | null> {
 		const raw = await this.mailAttachmentRaw(m, att.id);
 		if (!raw) {
-			new Notice("AmberNyaDesk: this attachment carries no file to save.");
+			new Notice("NyaHome: this attachment carries no file to save.");
 			return null;
 		}
 		const path = await this.app.fileManager.getAvailablePathForAttachment(raw.name);
@@ -3494,12 +3523,12 @@ export default class PowerDeskPlugin extends Plugin {
 	async saveMailAttachmentLocal(m: PCMail, att: MailAttachment): Promise<string | null> {
 		const req = (window as unknown as { require?: (mod: string) => unknown }).require;
 		if (!Platform.isDesktopApp || !req) {
-			new Notice("AmberNyaDesk: saving outside the vault needs the desktop app.");
+			new Notice("NyaHome: saving outside the vault needs the desktop app.");
 			return null;
 		}
 		const raw = await this.mailAttachmentRaw(m, att.id);
 		if (!raw) {
-			new Notice("AmberNyaDesk: this attachment carries no file to save.");
+			new Notice("NyaHome: this attachment carries no file to save.");
 			return null;
 		}
 		const fs = req("fs") as { promises: { mkdir: (p: string, o: { recursive: boolean }) => Promise<unknown>; writeFile: (p: string, d: Uint8Array) => Promise<void> }; existsSync: (p: string) => boolean };
@@ -3514,10 +3543,10 @@ export default class PowerDeskPlugin extends Plugin {
 				target = pathMod.join(dir, `${pathMod.basename(raw.name, ext)} (${n})${ext}`);
 			}
 			await fs.promises.writeFile(target, new Uint8Array(base64ToArrayBuffer(raw.contentBytes)));
-			new Notice(`AmberNyaDesk: saved ${target}.`);
+			new Notice(`NyaHome: saved ${target}.`);
 			return target;
 		} catch (e) {
-			new Notice("AmberNyaDesk: could not save there. " + (e instanceof Error ? e.message : String(e)));
+			new Notice("NyaHome: could not save there. " + (e instanceof Error ? e.message : String(e)));
 			return null;
 		}
 	}
@@ -3597,7 +3626,7 @@ export default class PowerDeskPlugin extends Plugin {
 		this.pendingSends.set(id, { timer, fire: opts.fire });
 
 		const frag = createFragment();
-		const wrap = frag.createDiv("pcal-undo-notice");
+		const wrap = frag.createDiv("nya-undo-notice");
 		wrap.createSpan({ text: `Sending "${opts.label}"` });
 		const btn = wrap.createEl("button", { text: "Undo" });
 		const notice = new Notice(frag, secs * 1000);
@@ -3689,7 +3718,7 @@ export default class PowerDeskPlugin extends Plugin {
 
 	/** Toggle the local .ics "done" marker for one event (or one recurring
 	 *  occurrence). The field is custom, so other calendar apps keep the event
-	 *  while AmberNyaDesk restores its strikethrough. */
+	 *  while NyaHome restores its strikethrough. */
 	canToggleEventCompletion(ev: PCEvent): boolean {
 		return this.sourceByKey(ev.sourceId)?.kind === "local" && !!ev.canEdit && !ev.notePath;
 	}
@@ -3697,7 +3726,7 @@ export default class PowerDeskPlugin extends Plugin {
 	async toggleEventCompletion(ev: PCEvent): Promise<boolean> {
 		const def = this.sourceByKey(ev.sourceId);
 		if (def?.kind !== "local" || !ev.canEdit || ev.notePath) {
-			new Notice("AmberNyaDesk: only local calendar events support marking done.");
+			new Notice("NyaHome: only local calendar events support marking done.");
 			return false;
 		}
 		const path = normalizePath(def.source.path);
@@ -3724,7 +3753,7 @@ export default class PowerDeskPlugin extends Plugin {
 			this.refetchRemote(def.key);
 			return true;
 		} catch (e) {
-			new Notice(`AmberNyaDesk: could not mark the event done (${e instanceof Error ? e.message : String(e)}).`);
+			new Notice(`NyaHome: could not mark the event done (${e instanceof Error ? e.message : String(e)}).`);
 			return false;
 		}
 	}
@@ -3989,7 +4018,7 @@ export default class PowerDeskPlugin extends Plugin {
 		}
 		if (woke.length) {
 			this.queueSave();
-			new Notice(woke.length === 1 ? `AmberNyaDesk: "${woke[0]}" is back in your inbox.` : `AmberNyaDesk: ${woke.length} snoozed messages are back in your inbox.`);
+			new Notice(woke.length === 1 ? `NyaHome: "${woke[0]}" is back in your inbox.` : `NyaHome: ${woke.length} snoozed messages are back in your inbox.`);
 			this.refreshMailAll(true);
 		}
 	}
@@ -4047,7 +4076,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const a = this.accountById(accountId);
 		if (!a) return [];
 		if (this.rulesNeedReconnect(accountId)) {
-			this.rulesError.set(accountId, `Reconnect ${this.nameOf(a)} in settings to let AmberNyaDesk read its rules. Rules sit under a separate mailbox permission that this account has not granted yet.`);
+			this.rulesError.set(accountId, `Reconnect ${this.nameOf(a)} in settings to let NyaHome read its rules. Rules sit under a separate mailbox permission that this account has not granted yet.`);
 			this.notify();
 			return [];
 		}
@@ -4082,7 +4111,7 @@ export default class PowerDeskPlugin extends Plugin {
 			if (existing) await updateMessageRule(token, existing.id, body);
 			else await createMessageRule(token, { ...body, sequence: (this.rulesFor(accountId).length || 0) + 1 });
 			await this.loadRules(accountId);
-			new Notice(existing ? "AmberNyaDesk: rule updated." : "AmberNyaDesk: rule created. It runs in your mailbox from now on.");
+			new Notice(existing ? "NyaHome: rule updated." : "NyaHome: rule created. It runs in your mailbox from now on.");
 			return true;
 		} catch (e) {
 			this.graphErrorNotice(e);
@@ -4176,13 +4205,13 @@ export default class PowerDeskPlugin extends Plugin {
 
 		const { title, body } = arrivalSummary(arrivals);
 		const frag = createFragment();
-		const wrap = frag.createDiv("pcal-newmail-notice");
-		wrap.createDiv({ cls: "pcal-newmail-from", text: title });
-		wrap.createDiv({ cls: "pcal-newmail-subject", text: body });
+		const wrap = frag.createDiv("nya-newmail-notice");
+		wrap.createDiv({ cls: "nya-newmail-from", text: title });
+		wrap.createDiv({ cls: "nya-newmail-subject", text: body });
 		const notice = new Notice(frag, 8000);
 		// clicking the notice opens the newest of them, which is what the
 		// hand is already reaching for
-		notice.containerEl.addClass("pcal-newmail-clickable");
+		notice.containerEl.addClass("nya-newmail-clickable");
 		notice.containerEl.addEventListener("click", () => {
 			notice.hide();
 			void this.openMailView().then(() => {
@@ -4207,8 +4236,8 @@ export default class PowerDeskPlugin extends Plugin {
 		const el = this.ribbonEl;
 		if (!el) return;
 		const n = this.mailAccounts().reduce((sum, a) => sum + (this.mailCache.get(a.id)?.messages.filter((m) => m.unread).length ?? 0), 0);
-		el.toggleClass("pcal-has-unread", n > 0 && this.settings.mailBadge);
-		el.setAttribute("data-pcal-unread", n > 99 ? "99+" : String(n));
+		el.toggleClass("nya-has-unread", n > 0 && this.settings.mailBadge);
+		el.setAttribute("data-nya-unread", n > 99 ? "99+" : String(n));
 	}
 
 	/* ----- focus mode ----- */
@@ -4336,7 +4365,7 @@ export default class PowerDeskPlugin extends Plugin {
 			await setAutoReply(await this.graphTokenFor(a), setting);
 			this.autoReplyCache.set(accountId, setting);
 			this.notify();
-			new Notice(setting.status === "disabled" ? "AmberNyaDesk: automatic replies are off." : "AmberNyaDesk: automatic replies are on.");
+			new Notice(setting.status === "disabled" ? "NyaHome: automatic replies are off." : "NyaHome: automatic replies are on.");
 			return true;
 		} catch (e) {
 			this.graphErrorNotice(e);
@@ -4412,7 +4441,7 @@ export default class PowerDeskPlugin extends Plugin {
 					already = data.includes(head);
 					return already ? data : `${data.trimEnd()}\n\n${markdown}`;
 				});
-				if (already) new Notice("AmberNyaDesk: this day is already in that note.");
+				if (already) new Notice("NyaHome: this day is already in that note.");
 				await this.showNote(existing);
 				return true;
 			}
@@ -4420,7 +4449,7 @@ export default class PowerDeskPlugin extends Plugin {
 			await this.showNote(f);
 			return true;
 		} catch (e) {
-			new Notice("AmberNyaDesk: could not write that note. " + (e instanceof Error ? e.message : String(e)));
+			new Notice("NyaHome: could not write that note. " + (e instanceof Error ? e.message : String(e)));
 			return false;
 		}
 	}
@@ -4852,7 +4881,7 @@ export default class PowerDeskPlugin extends Plugin {
 		try {
 			const id = await createMailFolder(await this.graphTokenFor(a), name.trim(), parentId);
 			await this.refetchFolders(a);
-			new Notice(`AmberNyaDesk: created ${name.trim()}.`);
+			new Notice(`NyaHome: created ${name.trim()}.`);
 			return id;
 		} catch (e) {
 			this.graphErrorNotice(e);
@@ -5118,7 +5147,7 @@ export default class PowerDeskPlugin extends Plugin {
 			this.settings.graphAccounts.find((x) => !!x.refresh && x.grantedScope.includes("Mail.Send")) ??
 			null;
 		if (!a) {
-			new Notice("AmberNyaDesk: this needs a Microsoft account connected with send permission.");
+			new Notice("NyaHome: this needs a Microsoft account connected with send permission.");
 			return false;
 		}
 		try {
@@ -5135,7 +5164,7 @@ export default class PowerDeskPlugin extends Plugin {
 			for (const f of o.files) await addFileAttachment(token, draftId, f);
 			if (o.whenMs) await setDeferredSend(token, draftId, o.whenMs);
 			await sendDraft(token, draftId);
-			new Notice(o.whenMs ? `AmberNyaDesk: scheduled for ${fmtWhen(o.whenMs, this.settings.use24h)}.` : "AmberNyaDesk: mail sent.");
+			new Notice(o.whenMs ? `NyaHome: scheduled for ${fmtWhen(o.whenMs, this.settings.use24h)}.` : "NyaHome: mail sent.");
 			return true;
 		} catch (e) {
 			this.graphErrorNotice(e);
@@ -5158,7 +5187,7 @@ export default class PowerDeskPlugin extends Plugin {
 		if (!a) return false;
 		try {
 			await replyMessage(await this.graphTokenFor(a), m.id, this.composeHtml(text));
-			new Notice("AmberNyaDesk: reply sent.");
+			new Notice("NyaHome: reply sent.");
 			return true;
 		} catch (e) {
 			this.graphErrorNotice(e);
@@ -5203,7 +5232,7 @@ export default class PowerDeskPlugin extends Plugin {
 		if (!a) return false;
 		try {
 			await replyAllMessage(await this.graphTokenFor(a), m.id, this.composeHtml(text));
-			new Notice("AmberNyaDesk: reply sent to everyone.");
+			new Notice("NyaHome: reply sent to everyone.");
 			return true;
 		} catch (e) {
 			this.graphErrorNotice(e);
@@ -5220,12 +5249,12 @@ export default class PowerDeskPlugin extends Plugin {
 			.map((s) => s.trim())
 			.filter(Boolean);
 		if (!addrs.length) {
-			new Notice("AmberNyaDesk: enter at least one address to forward to.");
+			new Notice("NyaHome: enter at least one address to forward to.");
 			return false;
 		}
 		try {
 			await forwardMessage(await this.graphTokenFor(a), m.id, comment.trim() || this.settings.mailSignature.trim() ? this.composeHtml(comment) : "", addrs);
-			new Notice("AmberNyaDesk: forwarded.");
+			new Notice("NyaHome: forwarded.");
 			return true;
 		} catch (e) {
 			this.graphErrorNotice(e);
@@ -5280,7 +5309,7 @@ export default class PowerDeskPlugin extends Plugin {
 		];
 		const f = await this.app.vault.create(path, lines.join("\n"));
 		await this.showNote(f);
-		new Notice("AmberNyaDesk: mail saved to a note.");
+		new Notice("NyaHome: mail saved to a note.");
 	}
 
 	/** A saved message's body. HTML mail becomes Markdown, so the headings,
@@ -5313,7 +5342,7 @@ export default class PowerDeskPlugin extends Plugin {
 		const refs = all.slice(0, MAX_NOTE_IMAGES);
 		if (!refs.length) return new Map();
 		// a cap that says nothing reads as "that was all of them"
-		if (all.length > refs.length) new Notice(`AmberNyaDesk: keeping the first ${refs.length} pictures of ${all.length}.`);
+		if (all.length > refs.length) new Notice(`NyaHome: keeping the first ${refs.length} pictures of ${all.length}.`);
 		const bytes = new Map<string, { base64: string; ext: string }>();
 		for (const r of refs) {
 			const parsed = r.dataUrl ? parseDataUrl(r.dataUrl) : null;
@@ -5380,6 +5409,26 @@ export default class PowerDeskPlugin extends Plugin {
 		}
 		const leaf = this.app.workspace.getLeaf(true);
 		await leaf.setViewState({ type: VIEW_TYPE_MAIL, active: true });
+	}
+
+	/** The single entry point behind NyaHome. It reveals an existing leaf
+	 *  instead of spawning another copy of the same view. */
+	async openDefaultView(): Promise<void> {
+		if (this.settings.startupView === "calendar") {
+			await this.openCalendarView();
+			return;
+		}
+		if (this.settings.startupView === "mail") {
+			await this.openMailView();
+			return;
+		}
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOME)[0];
+		if (existing) {
+			await this.app.workspace.revealLeaf(existing);
+			return;
+		}
+		const leaf = this.app.workspace.getLeaf(true);
+		await leaf.setViewState({ type: VIEW_TYPE_HOME, active: true });
 	}
 
 	/** One compose entry point: IMAP wins when a standard mailbox exists,
@@ -5603,7 +5652,7 @@ export default class PowerDeskPlugin extends Plugin {
 					}
 					captured += await txn.capture({ ...w, html: body.html, text: body.text, webLink: msg.webLink, attachments });
 				} catch (e) {
-					console.warn("AmberNyaDesk: transaction capture failed for one message.", e);
+					console.warn("NyaHome: transaction capture failed for one message.", e);
 				}
 			}
 			return captured;
@@ -5849,7 +5898,7 @@ export default class PowerDeskPlugin extends Plugin {
 		].join("\n");
 		await this.ensureFolder(folder);
 		const f = await this.app.vault.create(path, yaml);
-		new Notice("AmberNyaDesk: events base created.");
+		new Notice("NyaHome: events base created.");
 		await this.showNote(f, false);
 	}
 
@@ -5918,7 +5967,7 @@ class AgendaBlock extends MarkdownRenderChild {
 
 	constructor(
 		containerEl: HTMLElement,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private cfg: { date: string | null; days: number },
 		private sourcePath: string
 	) {
@@ -5943,35 +5992,35 @@ class AgendaBlock extends MarkdownRenderChild {
 	private render() {
 		const el = this.containerEl;
 		el.empty();
-		el.addClass("pcal-embed");
+		el.addClass("nya-embed");
 		const s = this.plugin.settings;
 		const from = this.startKey();
 		const to = addDays(from, this.cfg.days - 1);
 		this.plugin.ensureWindow(from, to, false);
 		const openAt = (key: string) => void this.plugin.openCalendarView().then((v) => v?.goDay(key));
-		const title = el.createDiv({ cls: "pcal-embed-title", text: this.cfg.days === 1 ? fmtDayHeading(from) : `${fmtDayShort(from)} - ${fmtDayShort(to, true)}` });
+		const title = el.createDiv({ cls: "nya-embed-title", text: this.cfg.days === 1 ? fmtDayHeading(from) : `${fmtDayShort(from)} - ${fmtDayShort(to, true)}` });
 		title.addEventListener("click", () => openAt(from));
 		const groups = groupByDay(this.plugin.eventsForWindow(from, to), from, to);
 		if (!groups.length) {
-			el.createDiv({ cls: "pcal-embed-empty", text: this.plugin.sources().length ? "Nothing scheduled." : "No calendar sources connected." });
+			el.createDiv({ cls: "nya-embed-empty", text: this.plugin.sources().length ? "Nothing scheduled." : "No calendar sources connected." });
 			return;
 		}
 		for (const g of groups) {
 			if (this.cfg.days > 1) {
-				const head = el.createDiv({ cls: "pcal-agenda-head", text: fmtDayHeading(g.key) });
+				const head = el.createDiv({ cls: "nya-agenda-head", text: fmtDayHeading(g.key) });
 				head.addEventListener("click", () => openAt(g.key));
 			}
 			for (const ev of g.events) {
-				const row = el.createDiv("pcal-agenda-row");
-				row.style.setProperty("--pcal-ev-color", ev.color ?? "var(--interactive-accent)");
+				const row = el.createDiv("nya-agenda-row");
+				row.style.setProperty("--nya-ev-color", ev.color ?? "var(--interactive-accent)");
 				row.toggleClass("is-declined", !!ev.declined);
-				row.createDiv("pcal-agenda-dot");
-				row.createDiv({ cls: "pcal-agenda-time", text: ev.allDay ? "All day" : fmtTimeOfMs(ev.startMs, s.use24h) });
-				const main = row.createDiv("pcal-agenda-main");
-				main.createDiv({ cls: "pcal-agenda-title", text: ev.title });
-				if (ev.location) main.createDiv({ cls: "pcal-agenda-sub", text: ev.location });
+				row.createDiv("nya-agenda-dot");
+				row.createDiv({ cls: "nya-agenda-time", text: ev.allDay ? "All day" : fmtTimeOfMs(ev.startMs, s.use24h) });
+				const main = row.createDiv("nya-agenda-main");
+				main.createDiv({ cls: "nya-agenda-title", text: ev.title });
+				if (ev.location) main.createDiv({ cls: "nya-agenda-sub", text: ev.location });
 				if (ev.joinUrl) {
-					const join = row.createEl("button", { cls: "pcal-icon-btn pcal-join-btn", attr: { "aria-label": "Join meeting" } });
+					const join = row.createEl("button", { cls: "nya-icon-btn nya-join-btn", attr: { "aria-label": "Join meeting" } });
 					setIcon(join, "video");
 					join.addEventListener("click", (e) => {
 						e.stopPropagation();
@@ -5989,7 +6038,7 @@ class AgendaBlock extends MarkdownRenderChild {
 class EventFindModal extends FuzzySuggestModal<PCEvent> {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app);
 		this.setPlaceholder("Find an event...");
@@ -6100,7 +6149,7 @@ class MailView extends ItemView {
 
 	constructor(
 		leaf: WorkspaceLeaf,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(leaf);
 		this.scope = new Scope(this.app.scope);
@@ -6357,7 +6406,7 @@ class MailView extends ItemView {
 	private scrollSelectedIntoView() {
 		window.setTimeout(() => {
 			const i = this.lastList.findIndex((x) => x.id === this.selected?.id);
-			const rows = this.listEl?.querySelectorAll(".pcal-mail-row");
+			const rows = this.listEl?.querySelectorAll(".nya-mail-row");
 			if (i >= 0 && rows?.[i]) (rows[i] as HTMLElement).scrollIntoView({ block: "nearest" });
 		}, 0);
 	}
@@ -6494,7 +6543,7 @@ class MailView extends ItemView {
 				void (async () => {
 					let ok = 0;
 					for (const t of targets) if (await this.plugin.snoozeMail(t, ms)) ok++;
-					if (ok) new Notice(`AmberNyaDesk: ${what} back ${fmtWhen(ms, this.plugin.settings.use24h)}.`);
+					if (ok) new Notice(`NyaHome: ${what} back ${fmtWhen(ms, this.plugin.settings.use24h)}.`);
 					if (targets.some((t) => t.id === this.selected?.id)) this.selected = null;
 					this.multiSel.clear();
 					this.render();
@@ -6585,14 +6634,15 @@ class MailView extends ItemView {
 		this.plugin.listeners.add(this.onData);
 		const root = this.contentEl;
 		root.empty();
+		root.removeClass("nya-root", "nya-imap-mail");
 		// the columns below are built fresh, so whatever the last open drew is
 		// gone; a stale signature would let the first render skip itself
 		this.drawnItems.clear();
 		this.lastReadSig = null;
 		this.lastFolderSig = null;
-		root.addClass("pcal-mail-root");
-		const header = root.createDiv("pcal-mail-header");
-		this.backBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Back" } });
+		root.addClass("nya-mail-root");
+		const header = root.createDiv("nya-mail-header");
+		this.backBtn = header.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Back" } });
 		setIcon(this.backBtn, "chevron-left");
 		this.backBtn.addEventListener("click", () => {
 			this.screen = this.screen === "read" ? "list" : "folders";
@@ -6604,7 +6654,7 @@ class MailView extends ItemView {
 		// "files" rather than a panel glyph: this toggles the vault's notes,
 		// not a panel belonging to this view, and the calendar has a real
 		// panel toggle of its own that should keep the panel icon
-		this.foldToggleBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
+		this.foldToggleBtn = header.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
 		setIcon(this.foldToggleBtn, "panel-left");
 		this.foldToggleBtn.toggleClass("is-active", this.plugin.focusOn());
 		this.foldToggleBtn.addEventListener("click", () => {
@@ -6612,23 +6662,23 @@ class MailView extends ItemView {
 			this.syncFoldToggle();
 		});
 		this.register(this.plugin.watchFocus(() => this.syncFoldToggle()));
-		const calSwap = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Open calendar" } });
+		const calSwap = header.createEl("button", { cls: "nya-icon-btn nya-primary-swap", attr: { "aria-label": "Open calendar" } });
 		setIcon(calSwap, "calendar-days");
 		calSwap.addEventListener("click", () => {
 			void this.leaf.setViewState({ type: VIEW_TYPE, active: true });
 		});
-		this.toolsEl = header.createDiv("pcal-mail-tools");
+		this.toolsEl = header.createDiv("nya-mail-tools");
 		this.renderToolbar();
-		const right = header.createDiv("pcal-header-right");
-		const imapSwap = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Open IMAP mail" } });
+		const right = header.createDiv("nya-header-right");
+		const imapSwap = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Open IMAP mail" } });
 		setIcon(imapSwap, "mailbox");
 		imapSwap.addEventListener("click", () => {
 			void this.leaf.setViewState({ type: VIEW_TYPE_MAIL_IMAP, active: true });
 		});
-		this.imapBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "IMAP inboxes" } });
+		this.imapBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "IMAP inboxes" } });
 		setIcon(this.imapBtn, "mailbox");
 		this.imapBtn.addEventListener("click", () => this.toggleImap());
-		const searchBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Search mail" } });
+		const searchBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Search mail" } });
 		setIcon(searchBtn, "search");
 		searchBtn.addEventListener("click", () => {
 			const open = this.searchRowEl.isShown();
@@ -6647,15 +6697,15 @@ class MailView extends ItemView {
 			menu.addItem((i) => i.setTitle("Advanced search...").setIcon("search").onClick(() => this.openSearchWindow()));
 			menu.showAtMouseEvent(e);
 		});
-		const advBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Advanced search (Shift + /)" } });
+		const advBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Advanced search (Shift + /)" } });
 		setIcon(advBtn, pickIcon("search-check", "filter", "search"));
 		advBtn.addEventListener("click", () => this.openSearchWindow());
-		this.refreshBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Refresh" } });
+		this.refreshBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Refresh" } });
 		setIcon(this.refreshBtn, "refresh-cw");
 		this.refreshBtn.addEventListener("click", () => this.plugin.userRefreshMail());
-		this.oooEl = root.createDiv("pcal-mail-ooo-bar");
+		this.oooEl = root.createDiv("nya-mail-ooo-bar");
 		this.oooEl.hide();
-		this.searchRowEl = root.createDiv("pcal-mail-searchrow");
+		this.searchRowEl = root.createDiv("nya-mail-searchrow");
 		this.searchRowEl.hide();
 		this.searchInputEl = this.searchRowEl.createEl("input", { attr: { type: "search", placeholder: "Search: words, from:name, subject:x, is:unread, has:attachment, \"a phrase\"" } });
 		// typing searches the local index, which is instant and costs nothing;
@@ -6683,17 +6733,17 @@ class MailView extends ItemView {
 			this.searchRowEl.hide();
 			this.plugin.clearMailSearch();
 		});
-		const body = root.createDiv("pcal-mail-body");
-		this.foldersEl = body.createDiv("pcal-mail-folders");
-		const split1 = Platform.isPhone ? null : body.createDiv("pcal-mail-splitter");
+		const body = root.createDiv("nya-mail-body");
+		this.foldersEl = body.createDiv("nya-mail-folders");
+		const split1 = Platform.isPhone ? null : body.createDiv("nya-mail-splitter");
 		// the list column: an Outlook-style header (folder name, select, jump,
 		// filter, sort) over the rows
-		const listWrap = body.createDiv("pcal-mail-listwrap");
-		const lh = listWrap.createDiv("pcal-mail-listhead");
-		this.titleTextEl = lh.createSpan({ cls: "pcal-mail-listtitle", text: "All inboxes" });
-		const lhBtns = lh.createDiv("pcal-mail-listhead-btns");
+		const listWrap = body.createDiv("nya-mail-listwrap");
+		const lh = listWrap.createDiv("nya-mail-listhead");
+		this.titleTextEl = lh.createSpan({ cls: "nya-mail-listtitle", text: "All inboxes" });
+		const lhBtns = lh.createDiv("nya-mail-listhead-btns");
 		const hbtn = (icon: string, label: string, cb: (e: MouseEvent) => void): HTMLElement => {
-			const b = lhBtns.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+			const b = lhBtns.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 			setIcon(b, icon);
 			b.addEventListener("click", cb);
 			return b;
@@ -6711,7 +6761,7 @@ class MailView extends ItemView {
 					i.setTitle(label).onClick(() => {
 						const targetMs = msOfKey(addDays(keyOfDate(new Date()), -daysBack)) + 86399999;
 						const idx = this.lastList.findIndex((m) => m.receivedMs <= targetMs);
-						const rows = this.listEl.querySelectorAll(".pcal-mail-row");
+						const rows = this.listEl.querySelectorAll(".nya-mail-row");
 						if (idx >= 0 && rows[idx]) (rows[idx] as HTMLElement).scrollIntoView({ block: "start" });
 					})
 				);
@@ -6816,23 +6866,23 @@ class MailView extends ItemView {
 			}
 			menu.showAtMouseEvent(e);
 		});
-		this.listEl = listWrap.createDiv("pcal-mail-list");
-		const split2 = Platform.isPhone ? null : body.createDiv("pcal-mail-splitter");
-		this.readEl = body.createDiv("pcal-mail-read");
+		this.listEl = listWrap.createDiv("nya-mail-list");
+		const split2 = Platform.isPhone ? null : body.createDiv("nya-mail-splitter");
+		this.readEl = body.createDiv("nya-mail-read");
 		// pane widths drag on the seams and stick per device, not per vault
 		const store = this.app as unknown as { loadLocalStorage: (k: string) => unknown; saveLocalStorage: (k: string, v: unknown) => void };
 		const wireSplitter = (el: HTMLElement | null, pane: HTMLElement, storeKey: string, min: number, max: number) => {
 			if (!el) return;
 			const saved = Number(store.loadLocalStorage(storeKey) ?? 0);
 			if (saved >= min && saved <= max) {
-				pane.addClass("pcal-pane-sized");
+				pane.addClass("nya-pane-sized");
 				pane.style.width = `${saved}px`;
 			}
 			el.addEventListener("pointerdown", (e) => {
 				e.preventDefault();
 				const startX = e.clientX;
 				const startW = pane.getBoundingClientRect().width;
-				pane.addClass("pcal-pane-sized");
+				pane.addClass("nya-pane-sized");
 				const move = (ev: PointerEvent) => {
 					pane.style.width = `${Math.min(max, Math.max(min, startW + (ev.clientX - startX)))}px`;
 				};
@@ -6913,7 +6963,7 @@ class MailView extends ItemView {
 					this.plugin.settings.mailStart = sel ? { mode: "folder", accountId: sel.accountId, folderId: sel.folderId, name: sel.name } : { mode: "all", accountId: "", folderId: "", name: "" };
 					this.plugin.queueSave();
 					this.plugin.refreshSettingsTab?.();
-					new Notice(sel ? `AmberNyaDesk: mail will open at ${sel.name}.` : "AmberNyaDesk: mail will open at All inboxes.");
+					new Notice(sel ? `NyaHome: mail will open at ${sel.name}.` : "NyaHome: mail will open at All inboxes.");
 				})
 		);
 	}
@@ -6947,7 +6997,7 @@ class MailView extends ItemView {
 	private toolActions(): { id: string; label: string; icon: string; many: boolean; solo?: boolean; run: (targets: PCMail[]) => void }[] {
 		const one = (targets: PCMail[]): PCMail | null => {
 			if (targets.length > 1) {
-				new Notice("AmberNyaDesk: this works on a single message; pick just one.");
+				new Notice("NyaHome: this works on a single message; pick just one.");
 				return null;
 			}
 			return targets[0] ?? null;
@@ -7084,7 +7134,7 @@ class MailView extends ItemView {
 			this.imapPane = null;
 			return;
 		}
-		const pane = this.contentEl.createDiv("pcal-imap-overlay");
+		const pane = this.contentEl.createDiv("nya-imap-overlay");
 		this.imapPane = pane;
 		void this.renderImapPane(pane);
 	}
@@ -7094,21 +7144,21 @@ class MailView extends ItemView {
 	private async renderImapPane(pane: HTMLElement) {
 		const s = this.plugin.settings;
 		pane.empty();
-		const head = pane.createDiv("pcal-imap-head");
-		head.createEl("span", { cls: "pcal-imap-title", text: "IMAP" });
-		const right = head.createDiv("pcal-header-right");
+		const head = pane.createDiv("nya-imap-head");
+		head.createEl("span", { cls: "nya-imap-title", text: "IMAP" });
+		const right = head.createDiv("nya-header-right");
 		right.createEl("button", { text: "Close" }).addEventListener("click", () => this.toggleImap());
-		const body = pane.createDiv("pcal-imap-body");
+		const body = pane.createDiv("nya-imap-body");
 		if (!s.imapAccounts.length) {
-			body.createDiv({ cls: "pcal-empty", text: "No IMAP accounts connected. Add one in settings." });
+			body.createDiv({ cls: "nya-empty", text: "No IMAP accounts connected. Add one in settings." });
 			return;
 		}
 		const pick = s.imapAccounts[0];
-		const controls = body.createDiv("pcal-imap-controls");
+		const controls = body.createDiv("nya-imap-controls");
 		let folders: string[] = [];
 		let folder = "";
-		const listEl = body.createDiv("pcal-imap-list");
-		const readEl = body.createDiv("pcal-imap-read");
+		const listEl = body.createDiv("nya-imap-list");
+		const readEl = body.createDiv("nya-imap-read");
 		const accSel = controls.createEl("select", { cls: "dropdown" });
 		for (const a of s.imapAccounts) accSel.createEl("option", { value: a.id, text: imapLabel(a) });
 		const folderSel = controls.createEl("select", { cls: "dropdown" });
@@ -7118,12 +7168,12 @@ class MailView extends ItemView {
 		const drawFolders = async () => {
 			const a = s.imapAccounts.find((x) => x.id === accSel.value)!;
 			listEl.empty();
-			listEl.createDiv({ cls: "pcal-empty", text: "Loading folders..." });
+			listEl.createDiv({ cls: "nya-empty", text: "Loading folders..." });
 			try {
 				folders = await listImapFolders(a);
 			} catch (e) {
 				listEl.empty();
-				listEl.createDiv({ cls: "pcal-empty", text: `IMAP failed (${e instanceof Error ? e.message : String(e)}).` });
+				listEl.createDiv({ cls: "nya-empty", text: `IMAP failed (${e instanceof Error ? e.message : String(e)}).` });
 				return;
 			}
 			folderSel.empty();
@@ -7136,36 +7186,36 @@ class MailView extends ItemView {
 			const a = s.imapAccounts.find((x) => x.id === accSel.value);
 			if (!a || !folder) return;
 			listEl.empty();
-			listEl.createDiv({ cls: "pcal-empty", text: "Loading..." });
+			listEl.createDiv({ cls: "nya-empty", text: "Loading..." });
 			try {
 				const msgs = searchInput.value.trim() ? await searchImapSubjects(a, folder, searchInput.value.trim()) : await fetchImapMessages(a, folder, 50);
 				listEl.empty();
 				for (const m of msgs) {
-					const row = listEl.createDiv("pcal-imap-row" + (m.unread ? " is-unread" : ""));
-					row.createDiv({ cls: "pcal-imap-from", text: m.from });
-					row.createDiv({ cls: "pcal-imap-subject", text: m.subject });
+					const row = listEl.createDiv("nya-imap-row" + (m.unread ? " is-unread" : ""));
+					row.createDiv({ cls: "nya-imap-from", text: m.from });
+					row.createDiv({ cls: "nya-imap-subject", text: m.subject });
 					row.addEventListener("click", async () => {
 						readEl.empty();
-						readEl.createDiv({ cls: "pcal-empty", text: "Loading..." });
+						readEl.createDiv({ cls: "nya-empty", text: "Loading..." });
 						const a2 = s.imapAccounts.find((x) => x.id === accSel.value)!;
 						try {
 							const body = await fetchImapBody(a2, folder, m.uid);
 							readEl.empty();
-							readEl.createDiv({ cls: "pcal-imap-read-head", text: `${m.subject} — ${m.from}` });
-							const pre = readEl.createDiv("pcal-imap-read-body");
+							readEl.createDiv({ cls: "nya-imap-read-head", text: `${m.subject} — ${m.from}` });
+							const pre = readEl.createDiv("nya-imap-read-body");
 							pre.setText(body.text || "(empty message)");
-							const btns = readEl.createDiv("pcal-modal-btns pcal-left");
+							const btns = readEl.createDiv("nya-modal-btns nya-left");
 							btns.createEl("button", { text: "Mark as read" }).addEventListener("click", () => void markImapRead(a2, folder, m.uid, true));
 							btns.createEl("button", { text: "Reply", cls: "mod-cta" }).addEventListener("click", () => new ImapRichComposeModal(this.app, this.plugin, a2, null, { to: m.from, cc: "", bcc: "", subject: /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`, html: "", attachments: [] }).open());
 						} catch (e) {
 							readEl.empty();
-							readEl.createDiv({ cls: "pcal-empty", text: `Could not read the message (${e instanceof Error ? e.message : String(e)}).` });
+							readEl.createDiv({ cls: "nya-empty", text: `Could not read the message (${e instanceof Error ? e.message : String(e)}).` });
 						}
 					});
 				}
 			} catch (e) {
 				listEl.empty();
-				listEl.createDiv({ cls: "pcal-empty", text: `Fetch failed (${e instanceof Error ? e.message : String(e)}).` });
+				listEl.createDiv({ cls: "nya-empty", text: `Fetch failed (${e instanceof Error ? e.message : String(e)}).` });
 			}
 		};
 		accSel.addEventListener("change", () => void drawFolders());
@@ -7187,26 +7237,26 @@ class MailView extends ItemView {
 		if (!host) return;
 		host.empty();
 		this.mailToolBtns = [];
-		const newMail = host.createEl("button", { cls: "pcal-new-btn", text: "New mail" });
+		const newMail = host.createEl("button", { cls: "nya-new-btn", text: "New mail" });
 		newMail.addEventListener("click", () => this.plugin.openNewMailCompose());
 		const catalog = new Map(this.toolActions().map((a) => [a.id, a]));
 		for (const id of this.plugin.settings.mailToolbar) {
 			const a = catalog.get(id);
 			if (!a) continue;
-			const b = host.createEl("button", { cls: "pcal-icon-btn pcal-mail-tool", attr: { "aria-label": a.label } });
+			const b = host.createEl("button", { cls: "nya-icon-btn nya-mail-tool", attr: { "aria-label": a.label } });
 			setIcon(b.createSpan(), a.icon);
-			b.createSpan({ cls: "pcal-mail-tool-label", text: a.label });
+			b.createSpan({ cls: "nya-mail-tool-label", text: a.label });
 			b.addEventListener("click", () => {
 				const targets = this.multiTargets();
 				if (!targets.length && !a.solo) {
-					new Notice("AmberNyaDesk: select a message first.");
+					new Notice("NyaHome: select a message first.");
 					return;
 				}
 				a.run(targets);
 			});
 			if (!a.solo) this.mailToolBtns.push(b);
 		}
-		const more = host.createEl("button", { cls: "pcal-icon-btn pcal-mail-tool-more", attr: { "aria-label": "Customize the toolbar" } });
+		const more = host.createEl("button", { cls: "nya-icon-btn nya-mail-tool-more", attr: { "aria-label": "Customize the toolbar" } });
 		setIcon(more, "settings-2");
 		more.addEventListener("click", () =>
 			new ToolbarModal(this.app, this.plugin, this.toolActions(), { get: () => this.plugin.settings.mailToolbar, set: (v) => (this.plugin.settings.mailToolbar = v), fallback: DEFAULT_SETTINGS.mailToolbar, leads: "New mail" }, () => {
@@ -7295,7 +7345,7 @@ class MailView extends ItemView {
 						"Report junk",
 						() => {
 							void this.plugin.reportJunk(targets).then((n) => {
-								if (n) new Notice(`AmberNyaDesk: reported ${n} message${n === 1 ? "" : "s"} as junk.`);
+								if (n) new Notice(`NyaHome: reported ${n} message${n === 1 ? "" : "s"} as junk.`);
 								if (targets.some((t) => t.id === this.selected?.id)) this.selected = null;
 								this.multiSel.clear();
 								this.render();
@@ -7313,10 +7363,10 @@ class MailView extends ItemView {
 					.onClick(() => {
 						new ConfirmModal(this.app, heading, body, title, () => {
 							void this.plugin.reportPreview(targets, action).then((r) => {
-								if (r.done) new Notice(action === "phish" ? `AmberNyaDesk: reported ${r.done} message${r.done === 1 ? "" : "s"} as phishing.` : `AmberNyaDesk: told your mailbox ${r.done} message${r.done === 1 ? "" : "s"} were not junk.`);
+								if (r.done) new Notice(action === "phish" ? `NyaHome: reported ${r.done} message${r.done === 1 ? "" : "s"} as phishing.` : `NyaHome: told your mailbox ${r.done} message${r.done === 1 ? "" : "s"} were not junk.`);
 								if (r.error)
 									new Notice(
-										`AmberNyaDesk: that report did not go through. ${r.error} This one runs on Microsoft's preview API, which they can change without notice; Report as junk uses the supported one and still works.`,
+										`NyaHome: that report did not go through. ${r.error} This one runs on Microsoft's preview API, which they can change without notice; Report as junk uses the supported one and still works.`,
 										14000
 									);
 								if (targets.some((t) => t.id === this.selected?.id)) this.selected = null;
@@ -7409,7 +7459,7 @@ class MailView extends ItemView {
 	 *  in advance which menu item you wanted. */
 	private async openPrintWindow(prefer: "memo" | "table", m?: PCMail | null) {
 		if (!Platform.isDesktopApp) {
-			new Notice("AmberNyaDesk: printing needs the desktop app.");
+			new Notice("NyaHome: printing needs the desktop app.");
 			return;
 		}
 		const styles: PrintStyle[] = [];
@@ -7418,7 +7468,7 @@ class MailView extends ItemView {
 		const list = this.listStyle();
 		if (list) styles.push(list);
 		if (!styles.length) {
-			new Notice("AmberNyaDesk: open a message or a list first, so there is something to print.");
+			new Notice("NyaHome: open a message or a list first, so there is something to print.");
 			return;
 		}
 		new PrintModal(this.app, styles, prefer).open();
@@ -7476,10 +7526,10 @@ class MailView extends ItemView {
 		const todayKey = keyOfDate(new Date());
 		if (this.drill && this.screen === "read" && !this.selected) this.screen = "list";
 		const root = this.contentEl;
-		root.toggleClass("pcal-mail-drill", this.drill);
-		root.toggleClass("pcal-screen-folders", this.drill && this.screen === "folders");
-		root.toggleClass("pcal-screen-list", this.drill && this.screen === "list");
-		root.toggleClass("pcal-screen-read", this.drill && this.screen === "read");
+		root.toggleClass("nya-mail-drill", this.drill);
+		root.toggleClass("nya-screen-folders", this.drill && this.screen === "folders");
+		root.toggleClass("nya-screen-list", this.drill && this.screen === "list");
+		root.toggleClass("nya-screen-read", this.drill && this.screen === "read");
 		this.backBtn.toggle(this.drill && this.screen !== "folders");
 		this.foldToggleBtn.toggle(!this.drill);
 		this.refreshBtn.toggleClass("is-loading", this.plugin.anyMailInFlight());
@@ -7487,7 +7537,7 @@ class MailView extends ItemView {
 		if (!accounts.length) {
 			this.listEl.empty();
 			this.drawnItems.clear();
-			const empty = this.listEl.createDiv("pcal-empty");
+			const empty = this.listEl.createDiv("nya-empty");
 			empty.createDiv({ text: "No mail-enabled account. Reconnect a Microsoft account in settings to grant mail access." });
 			const b = empty.createEl("button", { text: "Open settings", cls: "mod-cta" });
 			b.addEventListener("click", () => this.plugin.openOwnSettings());
@@ -7622,7 +7672,7 @@ class MailView extends ItemView {
 		for (const d of ["compact", "cozy", "comfortable"]) this.listEl.toggleClass(`density-${d}`, s.mailDensity === d);
 		// the preview clamp rides a custom property so the rows themselves stay
 		// identical whether one line is showing or three
-		this.listEl.style.setProperty("--pcal-preview-lines", String(s.mailPreviewLines || 1));
+		this.listEl.style.setProperty("--nya-preview-lines", String(s.mailPreviewLines || 1));
 
 		// Nothing below here is free. A row is about twenty elements and a dozen
 		// listeners, and notify() fires on every poll, every body that lands and
@@ -7642,8 +7692,8 @@ class MailView extends ItemView {
 			`${s.mailDensity}|${s.mailPreviewLines}|${this.multiSel.size}`,
 		].join(SIG_FIELD);
 		const items: ListItem[] = [];
-		errors.forEach((err, i) => items.push({ key: `err:${i}`, sig: err, make: () => this.listEl.createDiv({ cls: "pcal-mail-error", text: err }) }));
-		if (emptyText) items.push({ key: "empty", sig: emptyText, make: () => this.listEl.createDiv({ cls: "pcal-embed-empty", text: emptyText }) });
+		errors.forEach((err, i) => items.push({ key: `err:${i}`, sig: err, make: () => this.listEl.createDiv({ cls: "nya-mail-error", text: err }) }));
+		if (emptyText) items.push({ key: "empty", sig: emptyText, make: () => this.listEl.createDiv({ cls: "nya-embed-empty", text: emptyText }) });
 		for (const part of plan) {
 			if (part.header) {
 				const sec = part.header;
@@ -7729,9 +7779,9 @@ class MailView extends ItemView {
 			return;
 		}
 		bar.show();
-		setIcon(bar.createSpan("pcal-ooo-bar-icon"), "megaphone");
+		setIcon(bar.createSpan("nya-ooo-bar-icon"), "megaphone");
 		bar.createSpan({
-			cls: "pcal-ooo-bar-text",
+			cls: "nya-ooo-bar-text",
 			text: on.length === 1 ? `Automatic replies are on for ${this.plugin.nameOf(on[0])}.` : `Automatic replies are on for ${on.map((a) => this.plugin.nameOf(a)).join(" and ")}.`,
 		});
 		bar.createEl("button", { text: "Change" }).addEventListener("click", () => new OutOfOfficeModal(this.app, this.plugin).open());
@@ -7746,13 +7796,13 @@ class MailView extends ItemView {
 	/** A section band in the split inbox: what it is, how much is in it, how
 	 *  much of that is unread, and a twisty to fold it away. */
 	private renderSectionHeader(sec: MailSection, collapsed: boolean): HTMLElement {
-		const head = this.listEl.createDiv("pcal-mail-section");
+		const head = this.listEl.createDiv("nya-mail-section");
 		head.toggleClass("is-collapsed", collapsed);
-		const tw = head.createSpan("pcal-mail-section-twist");
+		const tw = head.createSpan("nya-mail-section-twist");
 		setIcon(tw, collapsed ? "chevron-right" : "chevron-down");
-		head.createSpan({ cls: "pcal-mail-section-name", text: sec.label });
+		head.createSpan({ cls: "nya-mail-section-name", text: sec.label });
 		const unread = sec.messages.filter((m) => m.unread).length;
-		head.createSpan({ cls: "pcal-mail-section-count", text: unread ? `${unread} of ${sec.messages.length}` : String(sec.messages.length) });
+		head.createSpan({ cls: "nya-mail-section-count", text: unread ? `${unread} of ${sec.messages.length}` : String(sec.messages.length) });
 		head.setAttribute("aria-label", `${sec.label}, ${sec.messages.length} messages${unread ? `, ${unread} unread` : ""}`);
 		head.addEventListener("click", () => {
 			const set = new Set(this.plugin.settings.mailSectionsCollapsed);
@@ -7781,7 +7831,7 @@ class MailView extends ItemView {
 		const collapsed = !!t && !open;
 		const anyUnread = collapsed && t ? t.unread > 0 : m.unread;
 		{
-			const row = this.listEl.createDiv("pcal-mail-row");
+			const row = this.listEl.createDiv("nya-mail-row");
 			// whether the picked row below this one continues the block, so a run
 			// of them drops its inner separators. Decided here, where the row's
 			// neighbour is already known, rather than by a pass over the whole
@@ -7802,8 +7852,8 @@ class MailView extends ItemView {
 			// hollow bar on hover so marking one back unread is the same gesture
 			// in the same place. Absolutely positioned, so widening it is paint
 			// alone and the row never reflows as the mouse crosses the list.
-			const gutter = row.createDiv("pcal-mail-readbar");
-			gutter.createDiv("pcal-mail-readbar-fill");
+			const gutter = row.createDiv("nya-mail-readbar");
+			gutter.createDiv("nya-mail-readbar-fill");
 			gutter.setAttribute("aria-label", anyUnread ? (collapsed ? "Mark conversation read" : "Mark read") : collapsed ? "Mark conversation unread" : "Mark unread");
 			gutter.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -7812,7 +7862,7 @@ class MailView extends ItemView {
 			// the twisty column exists on every row so the avatars line up
 			// whether or not a given row heads a conversation; CSS drops it
 			// entirely when the list is not grouped at all
-			const tw = row.createDiv("pcal-mail-twisty");
+			const tw = row.createDiv("nya-mail-twisty");
 			if (t) {
 				setIcon(tw, open ? "chevron-down" : "chevron-right");
 				tw.setAttribute("aria-label", open ? "Collapse conversation" : `Expand conversation, ${t.messages.length} messages`);
@@ -7826,8 +7876,8 @@ class MailView extends ItemView {
 			// the avatar and the checkbox share a box, so the checkbox is
 			// centered on the avatar by construction rather than by an offset
 			// that anything added earlier in the row would silently break
-			const avwrap = row.createDiv("pcal-mail-avatarwrap");
-			const av = avwrap.createDiv("pcal-mail-avatar");
+			const avwrap = row.createDiv("nya-mail-avatarwrap");
+			const av = avwrap.createDiv("nya-mail-avatar");
 			// a real face when the directory has one, initials otherwise: the
 			// colored circle is a stand-in, not the goal
 			const photo = s.mailPhotos ? this.plugin.photoFor(m.fromAddress) : null;
@@ -7841,7 +7891,7 @@ class MailView extends ItemView {
 			av.setAttribute("aria-label", m.accountLabel);
 			// the Outlook checkbox: over the avatar on hover, or always while a
 			// selection is active; clicking it never changes the reading pane
-			const check = avwrap.createDiv("pcal-mail-check");
+			const check = avwrap.createDiv("nya-mail-check");
 			const allSel = r.targets.every((x) => this.multiSel.has(x.id));
 			setIcon(check, allSel ? "check-square" : "square");
 			check.addEventListener("click", (e) => {
@@ -7850,14 +7900,14 @@ class MailView extends ItemView {
 				this.selAnchorId = m.id;
 				this.render();
 			});
-			const mid = row.createDiv("pcal-mail-mid");
-			const top = mid.createDiv("pcal-mail-top");
+			const mid = row.createDiv("nya-mail-mid");
+			const top = mid.createDiv("nya-mail-top");
 			// collapsed, the name line is everyone who wrote, newest first;
 			// open, the head is just the newest message and its own sender
-			top.createSpan({ cls: "pcal-mail-from", text: collapsed && t && t.senders.length > 1 ? t.senders.join(", ") : m.from });
-			if (t) top.createSpan({ cls: "pcal-mail-count", text: String(t.messages.length), attr: { "aria-label": `${t.messages.length} messages in this conversation` } });
+			top.createSpan({ cls: "nya-mail-from", text: collapsed && t && t.senders.length > 1 ? t.senders.join(", ") : m.from });
+			if (t) top.createSpan({ cls: "nya-mail-count", text: String(t.messages.length), attr: { "aria-label": `${t.messages.length} messages in this conversation` } });
 			const srcFolder = nameMaps && m.folderId ? nameMaps.get(m.accountId)?.get(m.folderId) : null;
-			if (srcFolder) top.createSpan({ cls: "pcal-mail-tag", text: srcFolder });
+			if (srcFolder) top.createSpan({ cls: "nya-mail-tag", text: srcFolder });
 			// Outlook's arrangement: the sender line carries the marks, the
 			// subject line carries the date. The quick actions land on the
 			// sender line on hover, so the marks are what steps aside for them
@@ -7865,12 +7915,12 @@ class MailView extends ItemView {
 			// a collapsed conversation wears the marks of everything inside it,
 			// so an attachment three replies down is still visible from here
 			const mk = collapsed && t ? t : m;
-			const marks = top.createDiv("pcal-mail-marks");
-			if (mk.hasAttachments) setIcon(marks.createSpan({ cls: "pcal-mail-clip", attr: { "aria-label": "Has attachments" } }), "paperclip");
+			const marks = top.createDiv("nya-mail-marks");
+			if (mk.hasAttachments) setIcon(marks.createSpan({ cls: "nya-mail-clip", attr: { "aria-label": "Has attachments" } }), "paperclip");
 			if (mk.flagged) {
 				// the flag is its own target, the way Outlook's flag column
 				// is: clicking it clears it without opening anything
-				const fl = marks.createSpan({ cls: "pcal-mail-flagmark", attr: { "aria-label": "Flagged, click to clear" } });
+				const fl = marks.createSpan({ cls: "nya-mail-flagmark", attr: { "aria-label": "Flagged, click to clear" } });
 				setIcon(fl, "flag");
 				fl.addEventListener("click", (e) => {
 					e.stopPropagation();
@@ -7878,20 +7928,20 @@ class MailView extends ItemView {
 					this.render();
 				});
 			}
-			if (mk.priority) marks.createSpan({ cls: "pcal-mail-bang", text: "!", attr: { "aria-label": "High importance" } });
+			if (mk.priority) marks.createSpan({ cls: "nya-mail-bang", text: "!", attr: { "aria-label": "High importance" } });
 			// categories as colored squares at the end of the marks, which is
 			// where Outlook puts them and where the eye already looks
 			for (const cat of m.categories ?? []) {
-				const dot = marks.createSpan({ cls: "pcal-mail-cat", attr: { "aria-label": cat } });
+				const dot = marks.createSpan({ cls: "nya-mail-cat", attr: { "aria-label": cat } });
 				dot.style.backgroundColor = this.plugin.categoryColorFor(m.accountId, cat);
 			}
-			const subj = mid.createDiv("pcal-mail-subject");
-			subj.createSpan({ cls: "pcal-mail-subject-text", text: m.subject });
-			subj.createSpan({ cls: "pcal-mail-time", text: fmtMailTime(m.receivedMs, todayKey, s.use24h) });
-			if (s.mailPreviewLines > 0) mid.createDiv({ cls: "pcal-mail-preview", text: m.preview });
-			const actions = row.createDiv("pcal-mail-actions");
+			const subj = mid.createDiv("nya-mail-subject");
+			subj.createSpan({ cls: "nya-mail-subject-text", text: m.subject });
+			subj.createSpan({ cls: "nya-mail-time", text: fmtMailTime(m.receivedMs, todayKey, s.use24h) });
+			if (s.mailPreviewLines > 0) mid.createDiv({ cls: "nya-mail-preview", text: m.preview });
+			const actions = row.createDiv("nya-mail-actions");
 			const act = (icon: string, label: string, cb: () => void) => {
-				const b = actions.createEl("button", { cls: "pcal-mail-act", attr: { "aria-label": label } });
+				const b = actions.createEl("button", { cls: "nya-mail-act", attr: { "aria-label": label } });
 				setIcon(b, icon);
 				b.addEventListener("click", (e) => {
 					e.stopPropagation();
@@ -8078,11 +8128,11 @@ class MailView extends ItemView {
 		// mailbox it is a row that is never right, and the palette still opens
 		// the unified list, so hiding it removes a row rather than a capability
 		if (!this.plugin.settings.mailHideAllInboxes) {
-			const allRow = host.createDiv("pcal-folder-row");
+			const allRow = host.createDiv("nya-folder-row");
 			allRow.toggleClass("is-selected", !this.folderSel);
-			const allIc = allRow.createSpan("pcal-folder-ic");
+			const allIc = allRow.createSpan("nya-folder-ic");
 			setIcon(allIc, "inbox");
-			allRow.createSpan({ cls: "pcal-folder-name", text: "All inboxes" });
+			allRow.createSpan({ cls: "nya-folder-name", text: "All inboxes" });
 			allRow.addEventListener("click", () => {
 				this.plugin.clearMailSearch();
 				this.folderSel = null;
@@ -8103,7 +8153,7 @@ class MailView extends ItemView {
 							this.plugin.settings.mailHideAllInboxes = true;
 							this.plugin.queueSave();
 							this.plugin.refreshSettingsTab?.();
-							new Notice("AmberNyaDesk: All inboxes hidden. The command palette still opens it.");
+							new Notice("NyaHome: All inboxes hidden. The command palette still opens it.");
 							this.render();
 						})
 				);
@@ -8123,7 +8173,7 @@ class MailView extends ItemView {
 		// account, in the user's own order, reordered by dragging
 		const favs = this.plugin.settings.mailFavorites.filter((f) => accounts.some((x) => x.id === f.accountId));
 		if (favs.length) {
-			host.createDiv({ cls: "pcal-folder-favhead", text: "Favorites" });
+			host.createDiv({ cls: "nya-folder-favhead", text: "Favorites" });
 			// the account tag only earns its place when two favorites collide
 			// on the same display name (two accounts' Unread Mail, say)
 			const dispCounts = new Map<string, number>();
@@ -8142,8 +8192,8 @@ class MailView extends ItemView {
 				const realName = cat ?? (isUnread ? "Unread Mail" : this.plugin.folderNamesFor(acc.id).get(fav.folderId) ?? "...");
 				const name = fav.name?.trim() || realName;
 				const count = cat ? this.plugin.categoryCount(acc.id, cat) : isUnread ? this.plugin.unreadSubtreeCount(acc) : this.plugin.folderUnreadRollup(acc.id, fav.folderId);
-				const row = host.createDiv("pcal-folder-row pcal-fav-row");
-				row.toggleClass("pcal-fav-indent", !!fav.indent);
+				const row = host.createDiv("nya-folder-row nya-fav-row");
+				row.toggleClass("nya-fav-indent", !!fav.indent);
 				row.toggleClass("is-selected", this.folderSel?.accountId === acc.id && this.folderSel?.folderId === fav.folderId);
 				// favorites are the folders filed into most, so they take a
 				// dropped message too. A category takes one as well, and labels
@@ -8152,15 +8202,15 @@ class MailView extends ItemView {
 				if (cat) this.acceptCategoryDrop(row, acc.id, cat);
 				else if (!isUnread) this.acceptMailDrop(row, acc.id, fav.folderId, name);
 				if (cat) {
-					const dot = row.createSpan({ cls: "pcal-folder-catdot" });
+					const dot = row.createSpan({ cls: "nya-folder-catdot" });
 					dot.style.backgroundColor = this.plugin.categoryColorFor(acc.id, cat);
 				} else {
-					const ic = row.createSpan("pcal-folder-ic");
+					const ic = row.createSpan("nya-folder-ic");
 					setIcon(ic, isUnread ? "mail-open" : fav.folderId === this.plugin.inboxIdFor(acc) ? "inbox" : "folder");
 				}
-				row.createSpan({ cls: "pcal-folder-name", text: name });
-				if ((dispCounts.get(name) ?? 0) > 1) row.createSpan({ cls: "pcal-fav-acct", text: this.plugin.nameOf(acc) });
-				if (count > 0) row.createSpan({ cls: "pcal-folder-count", text: String(count) });
+				row.createSpan({ cls: "nya-folder-name", text: name });
+				if ((dispCounts.get(name) ?? 0) > 1) row.createSpan({ cls: "nya-fav-acct", text: this.plugin.nameOf(acc) });
+				if (count > 0) row.createSpan({ cls: "nya-folder-count", text: String(count) });
 				row.addEventListener("click", () => {
 					this.plugin.clearMailSearch();
 					this.folderSel = { accountId: acc.id, folderId: fav.folderId, name };
@@ -8198,12 +8248,12 @@ class MailView extends ItemView {
 				row.addEventListener("dragstart", () => (this.favDragIdx = idx));
 				row.addEventListener("dragover", (e) => {
 					e.preventDefault();
-					row.addClass("pcal-drop-target");
+					row.addClass("nya-drop-target");
 				});
-				row.addEventListener("dragleave", () => row.removeClass("pcal-drop-target"));
+				row.addEventListener("dragleave", () => row.removeClass("nya-drop-target"));
 				row.addEventListener("drop", (e) => {
 					e.preventDefault();
-					row.removeClass("pcal-drop-target");
+					row.removeClass("nya-drop-target");
 					const from = this.favDragIdx;
 					this.favDragIdx = null;
 					if (from == null || from === idx) return;
@@ -8218,22 +8268,22 @@ class MailView extends ItemView {
 			// favorites are a shortlist over the top of the real mailboxes, so
 			// they get a rule under them rather than running straight into the
 			// first account's tree
-			host.createDiv("pcal-folder-sep");
+			host.createDiv("nya-folder-sep");
 		}
 
 		for (const a of accounts) {
 			// the whole mailbox folds at the account level, Outlook-style
 			const acctKey = `acct:${a.id}`;
 			const acctCollapsed = collapsed.has(acctKey);
-			const head = host.createDiv("pcal-folder-account");
-			const twist = head.createSpan("pcal-folder-twist");
+			const head = host.createDiv("nya-folder-account");
+			const twist = head.createSpan("nya-folder-twist");
 			setIcon(twist, acctCollapsed ? "chevron-right" : "chevron-down");
-			const dot = head.createSpan("pcal-status-dot");
+			const dot = head.createSpan("nya-status-dot");
 			dot.style.backgroundColor = colorOf.get(a.id) ?? "var(--interactive-accent)";
-			head.createSpan({ cls: "pcal-folder-acctname", text: this.plugin.nameOf(a) });
+			head.createSpan({ cls: "nya-folder-acctname", text: this.plugin.nameOf(a) });
 			if (acctCollapsed) {
 				const n = this.plugin.unreadSubtreeCount(a);
-				if (n > 0) head.createSpan({ cls: "pcal-folder-count", text: String(n) });
+				if (n > 0) head.createSpan({ cls: "nya-folder-count", text: String(n) });
 			}
 			head.addEventListener("click", () => toggleCollapse(acctKey));
 			head.addEventListener("contextmenu", (e) => {
@@ -8253,7 +8303,7 @@ class MailView extends ItemView {
 			if (acctCollapsed) continue;
 			const tree = this.plugin.folderTreeFor(a);
 			if (!tree.length) {
-				host.createDiv({ cls: "pcal-folder-empty", text: "Loading folders..." });
+				host.createDiv({ cls: "nya-folder-empty", text: "Loading folders..." });
 				continue;
 			}
 			const inboxId = this.plugin.inboxIdFor(a);
@@ -8265,7 +8315,7 @@ class MailView extends ItemView {
 					hideBelow = depth;
 					continue;
 				}
-				const row = host.createDiv("pcal-folder-row");
+				const row = host.createDiv("nya-folder-row");
 				row.style.paddingLeft = `${6 + depth * 14}px`;
 				row.toggleClass("is-selected", this.folderSel?.accountId === a.id && this.folderSel?.folderId === folder.id);
 				this.acceptMailDrop(row, a.id, folder.id, folder.name);
@@ -8279,18 +8329,18 @@ class MailView extends ItemView {
 				});
 				row.addEventListener("dragend", () => {
 					this.folderDrag = null;
-					row.removeClass("pcal-drop-target");
+					row.removeClass("nya-drop-target");
 				});
 				row.addEventListener("dragover", (e) => {
 					const d = this.folderDrag;
 					if (!d || d.accountId !== a.id || d.folderId === folder.id) return;
 					e.preventDefault();
-					row.addClass("pcal-drop-target");
+					row.addClass("nya-drop-target");
 				});
-				row.addEventListener("dragleave", () => row.removeClass("pcal-drop-target"));
+				row.addEventListener("dragleave", () => row.removeClass("nya-drop-target"));
 				row.addEventListener("drop", (e) => {
 					const d = this.folderDrag;
-					row.removeClass("pcal-drop-target");
+					row.removeClass("nya-drop-target");
 					if (!d || d.accountId !== a.id) return;
 					e.preventDefault();
 					e.stopPropagation();
@@ -8298,7 +8348,7 @@ class MailView extends ItemView {
 					this.plugin.reorderFolder(a.id, d.folderId, folder.id);
 				});
 				const isCollapsed = collapsed.has(folder.id);
-				const twist = row.createSpan("pcal-folder-twist");
+				const twist = row.createSpan("nya-folder-twist");
 				if (expandable) {
 					setIcon(twist, isCollapsed ? "chevron-right" : "chevron-down");
 					twist.setAttribute("aria-label", isCollapsed ? "Expand" : "Collapse");
@@ -8307,12 +8357,12 @@ class MailView extends ItemView {
 						toggleCollapse(folder.id);
 					});
 				}
-				const ic = row.createSpan("pcal-folder-ic");
+				const ic = row.createSpan("nya-folder-ic");
 				setIcon(ic, folder.id === inboxId ? "inbox" : "folder");
-				row.createSpan({ cls: "pcal-folder-name", text: folder.name });
+				row.createSpan({ cls: "nya-folder-name", text: folder.name });
 				// a collapsed branch rolls its subtree's unread up onto itself
 				const count = isCollapsed && expandable ? this.plugin.folderUnreadRollup(a.id, folder.id) : folder.unread;
-				if (count > 0) row.createSpan({ cls: "pcal-folder-count", text: String(count) });
+				if (count > 0) row.createSpan({ cls: "nya-folder-count", text: String(count) });
 				row.addEventListener("click", () => {
 					this.plugin.clearMailSearch();
 					this.folderSel = { accountId: a.id, folderId: folder.id, name: folder.name };
@@ -8363,13 +8413,13 @@ class MailView extends ItemView {
 			// hidden folders come back through their own quiet row
 			const hidden = this.plugin.settings.mailHiddenFolders.filter((h) => h.accountId === a.id);
 			if (hidden.length) {
-				const hr = host.createDiv("pcal-folder-row pcal-folder-hiddenrow");
-				hr.addClass("pcal-depth-0");
-				hr.createSpan("pcal-folder-twist");
-				const hic = hr.createSpan("pcal-folder-ic");
+				const hr = host.createDiv("nya-folder-row nya-folder-hiddenrow");
+				hr.addClass("nya-depth-0");
+				hr.createSpan("nya-folder-twist");
+				const hic = hr.createSpan("nya-folder-ic");
 				setIcon(hic, "eye-off");
-				hr.createSpan({ cls: "pcal-folder-name", text: "Hidden folders" });
-				hr.createSpan({ cls: "pcal-folder-count", text: String(hidden.length) });
+				hr.createSpan({ cls: "nya-folder-name", text: "Hidden folders" });
+				hr.createSpan({ cls: "nya-folder-count", text: String(hidden.length) });
 				hr.addEventListener("click", (e) => {
 					const names = this.plugin.folderNamesFor(a.id);
 					const menu = new Menu();
@@ -8398,13 +8448,13 @@ class MailView extends ItemView {
 			{
 				const catKey = `cats:${a.id}`;
 				const catCollapsed = collapsed.has(catKey);
-				const chead = host.createDiv("pcal-folder-row pcal-folder-catroot");
-				chead.addClass("pcal-depth-0");
-				const ctw = chead.createSpan("pcal-folder-twist");
+				const chead = host.createDiv("nya-folder-row nya-folder-catroot");
+				chead.addClass("nya-depth-0");
+				const ctw = chead.createSpan("nya-folder-twist");
 				setIcon(ctw, catCollapsed ? "chevron-right" : "chevron-down");
-				const cic = chead.createSpan("pcal-folder-ic");
+				const cic = chead.createSpan("nya-folder-ic");
 				setIcon(cic, "tag");
-				chead.createSpan({ cls: "pcal-folder-name", text: "Categories" });
+				chead.createSpan({ cls: "nya-folder-name", text: "Categories" });
 				chead.addEventListener("click", () => toggleCollapse(catKey));
 				chead.addEventListener("contextmenu", (e) => {
 					e.preventDefault();
@@ -8427,15 +8477,15 @@ class MailView extends ItemView {
 				if (!catCollapsed) {
 					for (const cat of cats) {
 						const fid = categoryFolderId(cat.displayName);
-						const row = host.createDiv("pcal-folder-row");
-						row.addClass("pcal-depth-1");
+						const row = host.createDiv("nya-folder-row");
+						row.addClass("nya-depth-1");
 						row.toggleClass("is-selected", this.folderSel?.accountId === a.id && this.folderSel?.folderId === fid);
-						row.createSpan("pcal-folder-twist"); // the empty chevron slot every tree row keeps
-						const dot = row.createSpan({ cls: "pcal-folder-catdot" });
+						row.createSpan("nya-folder-twist"); // the empty chevron slot every tree row keeps
+						const dot = row.createSpan({ cls: "nya-folder-catdot" });
 						dot.style.backgroundColor = categoryColor(cat.color);
-						row.createSpan({ cls: "pcal-folder-name", text: cat.displayName });
+						row.createSpan({ cls: "nya-folder-name", text: cat.displayName });
 						const held = this.plugin.categoryCount(a.id, cat.displayName);
-						if (held > 0) row.createSpan({ cls: "pcal-folder-count", text: String(held) });
+						if (held > 0) row.createSpan({ cls: "nya-folder-count", text: String(held) });
 						this.acceptCategoryDrop(row, a.id, cat.displayName);
 						// categories rearrange by dragging one onto another, a
 						// display order only that never touches the mailbox; the
@@ -8449,18 +8499,18 @@ class MailView extends ItemView {
 						});
 						row.addEventListener("dragend", () => {
 							this.categoryDrag = null;
-							row.removeClass("pcal-drop-target");
+							row.removeClass("nya-drop-target");
 						});
 						row.addEventListener("dragover", (e) => {
 							const d = this.categoryDrag;
 							if (!d || d.accountId !== a.id || d.name === cat.displayName) return;
 							e.preventDefault();
-							row.addClass("pcal-drop-target");
+							row.addClass("nya-drop-target");
 						});
-						row.addEventListener("dragleave", () => row.removeClass("pcal-drop-target"));
+						row.addEventListener("dragleave", () => row.removeClass("nya-drop-target"));
 						row.addEventListener("drop", (e) => {
 							const d = this.categoryDrag;
-							row.removeClass("pcal-drop-target");
+							row.removeClass("nya-drop-target");
 							if (!d || d.accountId !== a.id) return;
 							e.preventDefault();
 							e.stopPropagation();
@@ -8488,20 +8538,20 @@ class MailView extends ItemView {
 					// as one with none, and saying "New category" to the first
 					// would offer something the mailbox is going to refuse
 					if (!cats.length && !this.plugin.canReadCategories(a.id)) {
-						const note = host.createDiv("pcal-folder-row pcal-folder-addcat");
-						note.addClass("pcal-depth-1");
-						note.createSpan("pcal-folder-twist");
-						const ic = note.createSpan("pcal-folder-ic");
+						const note = host.createDiv("nya-folder-row nya-folder-addcat");
+						note.addClass("nya-depth-1");
+						note.createSpan("nya-folder-twist");
+						const ic = note.createSpan("nya-folder-ic");
 						setIcon(ic, "key-round");
-						note.createSpan({ cls: "pcal-folder-name", text: "Reconnect to read categories" });
+						note.createSpan({ cls: "nya-folder-name", text: "Reconnect to read categories" });
 						note.addEventListener("click", () => this.plugin.openOwnSettings());
 					} else if (!cats.length) {
-						const add = host.createDiv("pcal-folder-row pcal-folder-addcat");
-						add.addClass("pcal-depth-1");
-						add.createSpan("pcal-folder-twist");
-						const ic = add.createSpan("pcal-folder-ic");
+						const add = host.createDiv("nya-folder-row nya-folder-addcat");
+						add.addClass("nya-depth-1");
+						add.createSpan("nya-folder-twist");
+						const ic = add.createSpan("nya-folder-ic");
 						setIcon(ic, "plus");
-						add.createSpan({ cls: "pcal-folder-name", text: "New category" });
+						add.createSpan({ cls: "nya-folder-name", text: "New category" });
 						add.addEventListener("click", () => this.askNewCategory(a.id));
 					}
 				}
@@ -8511,24 +8561,24 @@ class MailView extends ItemView {
 			// branch holding the virtual Unread view and any saved searches
 			const searchKey = `search:${a.id}`;
 			const searchCollapsed = collapsed.has(searchKey);
-			const shead = host.createDiv("pcal-folder-row pcal-folder-searchroot");
-			shead.addClass("pcal-depth-0");
-			const stw = shead.createSpan("pcal-folder-twist");
+			const shead = host.createDiv("nya-folder-row nya-folder-searchroot");
+			shead.addClass("nya-depth-0");
+			const stw = shead.createSpan("nya-folder-twist");
 			setIcon(stw, searchCollapsed ? "chevron-right" : "chevron-down");
-			const sic = shead.createSpan("pcal-folder-ic");
+			const sic = shead.createSpan("nya-folder-ic");
 			setIcon(sic, "search");
-			shead.createSpan({ cls: "pcal-folder-name", text: "Search Folders" });
+			shead.createSpan({ cls: "nya-folder-name", text: "Search Folders" });
 			shead.addEventListener("click", () => toggleCollapse(searchKey));
 			if (searchCollapsed) continue;
-			const unreadRow = host.createDiv("pcal-folder-row pcal-folder-unread");
-			unreadRow.addClass("pcal-depth-1");
+			const unreadRow = host.createDiv("nya-folder-row nya-folder-unread");
+			unreadRow.addClass("nya-depth-1");
 			unreadRow.toggleClass("is-selected", this.folderSel?.accountId === a.id && this.folderSel?.folderId === UNREAD_FOLDER);
-			unreadRow.createSpan("pcal-folder-twist"); // the empty chevron slot every tree row keeps
-			const uic = unreadRow.createSpan("pcal-folder-ic");
+			unreadRow.createSpan("nya-folder-twist"); // the empty chevron slot every tree row keeps
+			const uic = unreadRow.createSpan("nya-folder-ic");
 			setIcon(uic, "mail-open");
-			unreadRow.createSpan({ cls: "pcal-folder-name", text: "Unread Mail" });
+			unreadRow.createSpan({ cls: "nya-folder-name", text: "Unread Mail" });
 			const unreadTotal = this.plugin.unreadSubtreeCount(a);
-			if (unreadTotal > 0) unreadRow.createSpan({ cls: "pcal-folder-count", text: String(unreadTotal) });
+			if (unreadTotal > 0) unreadRow.createSpan({ cls: "nya-folder-count", text: String(unreadTotal) });
 			unreadRow.addEventListener("click", () => {
 				this.plugin.clearMailSearch();
 				this.folderSel = { accountId: a.id, folderId: UNREAD_FOLDER, name: "Unread Mail" };
@@ -8545,12 +8595,12 @@ class MailView extends ItemView {
 				menu.showAtMouseEvent(e);
 			});
 			for (const sf of this.plugin.settings.mailSearchFolders.filter((x) => x.accountId === a.id)) {
-				const row = host.createDiv("pcal-folder-row");
-				row.addClass("pcal-depth-1");
-				row.createSpan("pcal-folder-twist");
-				const ic = row.createSpan("pcal-folder-ic");
+				const row = host.createDiv("nya-folder-row");
+				row.addClass("nya-depth-1");
+				row.createSpan("nya-folder-twist");
+				const ic = row.createSpan("nya-folder-ic");
 				setIcon(ic, "search");
-				row.createSpan({ cls: "pcal-folder-name", text: sf.name });
+				row.createSpan({ cls: "nya-folder-name", text: sf.name });
 				row.addEventListener("click", () => {
 					this.screen = "list";
 					if (this.searchInputEl) this.searchInputEl.value = sf.query;
@@ -8571,12 +8621,12 @@ class MailView extends ItemView {
 					menu.showAtMouseEvent(e);
 				});
 			}
-			const addSearch = host.createDiv("pcal-folder-row pcal-folder-addsearch");
-			addSearch.addClass("pcal-depth-1");
-			addSearch.createSpan("pcal-folder-twist");
-			const asIc = addSearch.createSpan("pcal-folder-ic");
+			const addSearch = host.createDiv("nya-folder-row nya-folder-addsearch");
+			addSearch.addClass("nya-depth-1");
+			addSearch.createSpan("nya-folder-twist");
+			const asIc = addSearch.createSpan("nya-folder-ic");
 			setIcon(asIc, "plus");
-			addSearch.createSpan({ cls: "pcal-folder-name", text: "New search folder" });
+			addSearch.createSpan({ cls: "nya-folder-name", text: "New search folder" });
 			addSearch.addEventListener("click", () => new SearchFolderModal(this.app, this.plugin, a, null, () => this.render()).open());
 		}
 		if (scroll > 0) host.scrollTop = scroll;
@@ -8627,18 +8677,18 @@ class MailView extends ItemView {
 			if (!mine().length) return;
 			e.preventDefault();
 			if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-			row.addClass("pcal-mail-drop");
+			row.addClass("nya-mail-drop");
 		});
-		row.addEventListener("dragleave", () => row.removeClass("pcal-mail-drop"));
+		row.addEventListener("dragleave", () => row.removeClass("nya-mail-drop"));
 		row.addEventListener("drop", (e) => {
-			row.removeClass("pcal-mail-drop");
+			row.removeClass("nya-mail-drop");
 			const targets = mine();
 			if (!targets.length) return;
 			e.preventDefault();
 			e.stopPropagation();
 			this.mailDrag = null;
 			void this.plugin.moveMail(targets, accountId, folderId, name).then((n) => {
-				if (n) new Notice(n > 1 ? `AmberNyaDesk: moved ${n} messages to ${name}.` : `AmberNyaDesk: moved to ${name}.`);
+				if (n) new Notice(n > 1 ? `NyaHome: moved ${n} messages to ${name}.` : `NyaHome: moved to ${name}.`);
 				if (targets.some((t) => t.id === this.selected?.id)) this.selected = null;
 				this.multiSel.clear();
 				this.render();
@@ -8658,11 +8708,11 @@ class MailView extends ItemView {
 			e.preventDefault();
 			// copy, not move: the message is not going anywhere
 			if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-			row.addClass("pcal-mail-drop");
+			row.addClass("nya-mail-drop");
 		});
-		row.addEventListener("dragleave", () => row.removeClass("pcal-mail-drop"));
+		row.addEventListener("dragleave", () => row.removeClass("nya-mail-drop"));
 		row.addEventListener("drop", (e) => {
-			row.removeClass("pcal-mail-drop");
+			row.removeClass("nya-mail-drop");
 			const dragged = mine();
 			if (!dragged.length) return;
 			e.preventDefault();
@@ -8670,7 +8720,7 @@ class MailView extends ItemView {
 			this.mailDrag = null;
 			const fresh = dragged.filter((m) => !inCategory(m, category));
 			for (const t of fresh) void this.plugin.setMailCategories(t, toggleCategory(t.categories, category));
-			if (fresh.length) new Notice(fresh.length > 1 ? `AmberNyaDesk: tagged ${fresh.length} messages ${category}.` : `AmberNyaDesk: tagged ${category}.`);
+			if (fresh.length) new Notice(fresh.length > 1 ? `NyaHome: tagged ${fresh.length} messages ${category}.` : `NyaHome: tagged ${category}.`);
 			this.multiSel.clear();
 			this.render();
 		});
@@ -8818,7 +8868,7 @@ class MailView extends ItemView {
 	 *  render that follows a click does not rebuild the list just to move two
 	 *  classes; this is what puts them where they belong instead. */
 	private syncSelectedRowClasses(): boolean {
-		const rows = this.listEl?.querySelectorAll(".pcal-mail-row");
+		const rows = this.listEl?.querySelectorAll(".nya-mail-row");
 		if (!rows || rows.length !== this.lastList.length) return false;
 		for (let i = 0; i < rows.length; i++) (rows[i] as HTMLElement).toggleClass("is-selected", this.lastList[i].id === this.selected?.id);
 		return true;
@@ -8863,7 +8913,7 @@ class MailView extends ItemView {
 	private async openAttachment(m: PCMail, att: MailAttachment, open: boolean) {
 		const path = await this.plugin.saveMailAttachment(m, att);
 		if (!path) return;
-		new Notice(`AmberNyaDesk: saved ${path}.`);
+		new Notice(`NyaHome: saved ${path}.`);
 		if (open) (this.app as unknown as { openWithDefaultApp?: (p: string) => void }).openWithDefaultApp?.(path);
 	}
 
@@ -8884,14 +8934,14 @@ class MailView extends ItemView {
 		const plan = unsubscribePlan(u);
 		const what =
 			plan.kind === "post"
-				? `AmberNyaDesk will tell ${plan.target} to stop sending. Nothing else about you is sent with it.`
+				? `NyaHome will tell ${plan.target} to stop sending. Nothing else about you is sent with it.`
 				: plan.kind === "open"
 					? `This opens ${plan.target} in your browser, where the sender finishes it. Check the address looks like it belongs to them.`
 					: `This sends mail from your mailbox to ${plan.target}, which tells the sender your address is real and read.`;
 		new ConfirmModal(
 			this.app,
 			`Unsubscribe from ${m.from}?`,
-			`${what} This came from the message itself, so it is the sender's own claim about where to go rather than anything AmberNyaDesk can vouch for.`,
+			`${what} This came from the message itself, so it is the sender's own claim about where to go rather than anything NyaHome can vouch for.`,
 			"Unsubscribe",
 			() => void this.doUnsubscribe(m, u)
 		).open();
@@ -8906,22 +8956,22 @@ class MailView extends ItemView {
 		if (plan.kind === "post") {
 			try {
 				await postOneClickUnsubscribe(plan.target);
-				new Notice(`AmberNyaDesk: asked ${m.from} to stop sending. It can take a few days to take effect.`);
+				new Notice(`NyaHome: asked ${m.from} to stop sending. It can take a few days to take effect.`);
 			} catch (e) {
-				new Notice(`AmberNyaDesk: that unsubscribe did not go through. ${e instanceof Error ? e.message : String(e)}${u.webUrl ? " Try the link in the message itself." : ""}`, 9000);
+				new Notice(`NyaHome: that unsubscribe did not go through. ${e instanceof Error ? e.message : String(e)}${u.webUrl ? " Try the link in the message itself." : ""}`, 9000);
 			}
 			return;
 		}
 		const sender = this.plugin.mailSender(m.accountId);
 		if (!sender || !u.mailto) {
-			new Notice("AmberNyaDesk: no account can send the unsubscribe mail.");
+			new Notice("NyaHome: no account can send the unsubscribe mail.");
 			return;
 		}
 		try {
 			await sender.send({ to: [u.mailto.to], subject: u.mailto.subject, html: u.mailto.body });
-			new Notice(`AmberNyaDesk: unsubscribe request sent to ${u.mailto.to}.`);
+			new Notice(`NyaHome: unsubscribe request sent to ${u.mailto.to}.`);
 		} catch (e) {
-			new Notice("AmberNyaDesk: " + (e instanceof Error ? e.message : String(e)));
+			new Notice("NyaHome: " + (e instanceof Error ? e.message : String(e)));
 		}
 	}
 
@@ -8934,7 +8984,7 @@ class MailView extends ItemView {
 			await this.app.workspace.getLeaf(true).openFile(f);
 			return;
 		}
-		new Notice(`AmberNyaDesk: saved ${path}.`);
+		new Notice(`NyaHome: saved ${path}.`);
 		(this.app as unknown as { openWithDefaultApp?: (p: string) => void }).openWithDefaultApp?.(path);
 	}
 
@@ -8944,8 +8994,8 @@ class MailView extends ItemView {
 			const path = await this.plugin.saveMailAttachment(m, att);
 			if (path) saved.push(path);
 		}
-		if (!saved.length) new Notice("AmberNyaDesk: none of those attachments carried a file to save.");
-		else new Notice(`AmberNyaDesk: saved ${saved.length} attachment${saved.length === 1 ? "" : "s"} to ${saved[0].replace(/\/[^/]*$/, "") || "the vault"}.`);
+		if (!saved.length) new Notice("NyaHome: none of those attachments carried a file to save.");
+		else new Notice(`NyaHome: saved ${saved.length} attachment${saved.length === 1 ? "" : "s"} to ${saved[0].replace(/\/[^/]*$/, "") || "the vault"}.`);
 	}
 
 	/** An attachment's actions, in Outlook's order, dropped directly under the
@@ -8972,8 +9022,8 @@ class MailView extends ItemView {
 		const r = chip.getBoundingClientRect();
 		const dom = (menu as unknown as { dom?: HTMLElement }).dom;
 		if (dom) {
-			dom.addClass("pcal-att-menu");
-			dom.style.setProperty("--pcal-att-menu-w", `${Math.round(r.width)}px`);
+			dom.addClass("nya-att-menu");
+			dom.style.setProperty("--nya-att-menu-w", `${Math.round(r.width)}px`);
 		}
 		menu.showAtPosition({ x: r.left, y: r.bottom + 1 });
 	}
@@ -9000,14 +9050,14 @@ class MailView extends ItemView {
 		this.lastReadSig = sig;
 		host.empty();
 		if (!m) {
-			host.createDiv({ cls: "pcal-embed-empty", text: "Select a message." });
+			host.createDiv({ cls: "nya-embed-empty", text: "Select a message." });
 			return;
 		}
-		host.createDiv({ cls: "pcal-mail-read-subject", text: m.subject });
-		const fromRow = host.createDiv({ cls: "pcal-mail-read-meta" });
+		host.createDiv({ cls: "nya-mail-read-subject", text: m.subject });
+		const fromRow = host.createDiv({ cls: "nya-mail-read-meta" });
 		fromRow.createSpan({ text: `${m.from}${m.fromAddress ? ` <${m.fromAddress}>` : ""}` });
 		if (m.fromAddress) {
-			const contact = fromRow.createEl("button", { cls: "pcal-icon-btn pcal-contact-save", attr: { "aria-label": this.plugin.isContactSaved(m.fromAddress) ? "Edit contact" : "Save sender to contacts" } });
+			const contact = fromRow.createEl("button", { cls: "nya-icon-btn nya-contact-save", attr: { "aria-label": this.plugin.isContactSaved(m.fromAddress) ? "Edit contact" : "Save sender to contacts" } });
 			setIcon(contact, this.plugin.isContactSaved(m.fromAddress) ? "check" : "user-plus");
 			contact.addEventListener("click", () => {
 				const existing = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === m.fromAddress?.toLowerCase());
@@ -9015,7 +9065,7 @@ class MailView extends ItemView {
 				else {
 					this.plugin.saveContact({ name: m.from, email: m.fromAddress! });
 					setIcon(contact, "check");
-					new Notice(`AmberNyaDesk: saved ${m.fromAddress}.`);
+					new Notice(`NyaHome: saved ${m.fromAddress}.`);
 				}
 			});
 		}
@@ -9024,18 +9074,18 @@ class MailView extends ItemView {
 		// mail in six-point grey, which is the whole reason it is hard to find
 		const unsub = this.selectedBody?.unsub;
 		if (unsub) {
-			const link = fromRow.createSpan({ cls: "pcal-unsub", text: "Unsubscribe" });
+			const link = fromRow.createSpan({ cls: "nya-unsub", text: "Unsubscribe" });
 			link.setAttribute("aria-label", "Unsubscribe from this sender");
 			link.addEventListener("click", () => this.confirmUnsubscribe(m, unsub));
 		}
-		if (this.selectedBody?.toLine) host.createDiv({ cls: "pcal-mail-read-meta", text: `To: ${this.selectedBody.toLine}` });
+		if (this.selectedBody?.toLine) host.createDiv({ cls: "nya-mail-read-meta", text: `To: ${this.selectedBody.toLine}` });
 		// categories read as named pills here, where there is room for words
 		if ((m.categories ?? []).length) {
-			const bar = host.createDiv("pcal-mail-cats");
+			const bar = host.createDiv("nya-mail-cats");
 			for (const cat of m.categories ?? []) {
-				const pill = bar.createSpan({ cls: "pcal-mail-cat-pill", text: cat });
+				const pill = bar.createSpan({ cls: "nya-mail-cat-pill", text: cat });
 				const color = this.plugin.categoryColorFor(m.accountId, cat);
-				pill.style.setProperty("--pcal-cat-color", color);
+				pill.style.setProperty("--nya-cat-color", color);
 			}
 		}
 
@@ -9044,14 +9094,14 @@ class MailView extends ItemView {
 		const convo = this.lastThreads.find((t) => t.messages.length > 1 && t.messages.some((x) => x.id === m.id));
 		if (convo) {
 			const todayKey = keyOfDate(new Date());
-			const strip = host.createDiv("pcal-mail-convo");
-			strip.createDiv({ cls: "pcal-mail-convo-head", text: `Conversation, ${convo.messages.length} messages` });
+			const strip = host.createDiv("nya-mail-convo");
+			strip.createDiv({ cls: "nya-mail-convo-head", text: `Conversation, ${convo.messages.length} messages` });
 			for (const x of convo.messages) {
-				const it = strip.createDiv("pcal-mail-convo-item");
+				const it = strip.createDiv("nya-mail-convo-item");
 				it.toggleClass("is-current", x.id === m.id);
 				it.toggleClass("is-unread", x.unread);
-				it.createSpan({ cls: "pcal-mail-convo-from", text: x.from });
-				it.createSpan({ cls: "pcal-mail-convo-time", text: fmtMailTime(x.receivedMs, todayKey, this.plugin.settings.use24h) });
+				it.createSpan({ cls: "nya-mail-convo-from", text: x.from });
+				it.createSpan({ cls: "nya-mail-convo-time", text: fmtMailTime(x.receivedMs, todayKey, this.plugin.settings.use24h) });
 				if (x.id !== m.id) it.addEventListener("click", () => void this.select(x));
 			}
 		}
@@ -9062,24 +9112,24 @@ class MailView extends ItemView {
 		// attachments ride their own bar, Outlook-style
 		const files = (this.selectedAtts ?? []).filter((a) => !a.isInline);
 		if ((m.hasAttachments && !this.selectedAtts) || files.length) {
-			const bar = host.createDiv("pcal-mail-atts");
-			if (!this.selectedAtts) bar.createSpan({ cls: "pcal-mail-att-note", text: "Loading attachments..." });
+			const bar = host.createDiv("nya-mail-atts");
+			if (!this.selectedAtts) bar.createSpan({ cls: "nya-mail-att-note", text: "Loading attachments..." });
 			if (files.length > 1) {
-				const all = bar.createDiv("pcal-mail-att-all");
-				setIcon(all.createSpan("pcal-mail-att-all-icon"), "download");
+				const all = bar.createDiv("nya-mail-att-all");
+				setIcon(all.createSpan("nya-mail-att-all-icon"), "download");
 				all.createSpan({ text: `Save all ${files.length}` });
 				all.setAttribute("aria-label", "Save every attachment to the vault");
 				all.addEventListener("click", () => void this.saveAllAttachments(m, files));
 			}
 			for (const att of files) {
-				const chip = bar.createDiv("pcal-mail-att");
+				const chip = bar.createDiv("nya-mail-att");
 				const badge = attachmentBadge(att.name, att.contentType);
-				const ic = chip.createSpan({ cls: "pcal-mail-att-icon", text: badge.label });
-				ic.style.setProperty("--pcal-att-color", badge.color);
-				const tx = chip.createDiv("pcal-mail-att-text");
-				tx.createDiv({ cls: "pcal-mail-att-name", text: att.name });
-				tx.createDiv({ cls: "pcal-mail-att-size", text: fmtAttachmentSize(att.size) });
-				const chev = chip.createSpan({ cls: "pcal-mail-att-chevron", attr: { "aria-label": `Actions for ${att.name}` } });
+				const ic = chip.createSpan({ cls: "nya-mail-att-icon", text: badge.label });
+				ic.style.setProperty("--nya-att-color", badge.color);
+				const tx = chip.createDiv("nya-mail-att-text");
+				tx.createDiv({ cls: "nya-mail-att-name", text: att.name });
+				tx.createDiv({ cls: "nya-mail-att-size", text: fmtAttachmentSize(att.size) });
+				const chev = chip.createSpan({ cls: "nya-mail-att-chevron", attr: { "aria-label": `Actions for ${att.name}` } });
 				setIcon(chev, "chevron-down");
 				chip.setAttribute("aria-label", `${att.name}, ${fmtAttachmentSize(att.size)}`);
 				// the whole chip opens the menu, exactly as the chevron does:
@@ -9092,12 +9142,12 @@ class MailView extends ItemView {
 		// HTML mail renders sanitized on its own light card; plain text stays text
 		let html = this.selectedBody?.html ?? "";
 		if (html && this.inlineCids) for (const [cid, url] of this.inlineCids) html = html.split(`cid:${cid}`).join(url);
-		const bodyHost = host.createDiv("pcal-mail-read-body");
-		if (html) bodyHost.createDiv("pcal-mail-html").appendChild(sanitizeHTMLToDom(html));
+		const bodyHost = host.createDiv("nya-mail-read-body");
+		if (html) bodyHost.createDiv("nya-mail-html").appendChild(sanitizeHTMLToDom(html));
 		else if (this.selectedBody) bodyHost.setText(this.selectedBody.text);
 		// the list already knows the first line or two, so a cold message shows
 		// its own opening while the rest travels, rather than the word Loading
-		else if (this.selected?.preview) bodyHost.createDiv({ cls: "pcal-mail-read-pending", text: this.selected.preview });
+		else if (this.selected?.preview) bodyHost.createDiv({ cls: "nya-mail-read-pending", text: this.selected.preview });
 		else bodyHost.setText("Loading...");
 	}
 
@@ -9179,14 +9229,14 @@ class PrintModal extends Modal {
 	}
 
 	private restore() {
-		const raw = this.store().loadLocalStorage("powerdesk:print-opts") as { scale?: string; orient?: Record<string, boolean> } | null;
+		const raw = this.store().loadLocalStorage("nyahome:print-opts") as { scale?: string; orient?: Record<string, boolean> } | null;
 		if (!raw) return;
 		if (PRINT_SCALES.some((s) => s.id === raw.scale)) this.scale = raw.scale as PrintScaleId;
 		for (const [id, v] of Object.entries(raw.orient ?? {})) if (typeof v === "boolean") this.orient.set(id, v);
 	}
 
 	private remember() {
-		this.store().saveLocalStorage("powerdesk:print-opts", { scale: this.scale, orient: Object.fromEntries(this.orient) });
+		this.store().saveLocalStorage("nyahome:print-opts", { scale: this.scale, orient: Object.fromEntries(this.orient) });
 	}
 
 	private style(): PrintStyle {
@@ -9200,20 +9250,20 @@ class PrintModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Print");
-		makeMovable(this.app, this, "powerdesk:print-window", { w: 920, h: 660 });
+		makeMovable(this.app, this, "nyahome:print-window", { w: 920, h: 660 });
 		const c = this.contentEl;
-		c.addClass("pcal-print-wrap");
-		const split = c.createDiv("pcal-print");
+		c.addClass("nya-print-wrap");
+		const split = c.createDiv("nya-print");
 
-		const side = split.createDiv("pcal-print-side");
+		const side = split.createDiv("nya-print-side");
 
-		side.createDiv({ cls: "pcal-print-label", text: "Style" });
-		const list = side.createDiv("pcal-print-styles");
+		side.createDiv({ cls: "nya-print-label", text: "Style" });
+		const list = side.createDiv("nya-print-styles");
 		for (const st of this.styles) {
 			const b = list.createEl("button", { attr: { "aria-label": st.hint ?? st.label } });
-			setIcon(b.createSpan("pcal-print-styleicon"), st.icon);
+			setIcon(b.createSpan("nya-print-styleicon"), st.icon);
 			b.createSpan({ text: st.label });
-			if (st.hint) b.createSpan({ cls: "pcal-print-stylehint", text: st.hint });
+			if (st.hint) b.createSpan({ cls: "nya-print-stylehint", text: st.hint });
 			b.addEventListener("click", () => {
 				this.styleId = st.id;
 				this.sync();
@@ -9221,7 +9271,7 @@ class PrintModal extends Modal {
 			this.styleBtns.set(st.id, b);
 		}
 
-		side.createDiv({ cls: "pcal-print-label", text: "Size" });
+		side.createDiv({ cls: "nya-print-label", text: "Size" });
 		const size = side.createEl("select", { cls: "dropdown" });
 		for (const s of PRINT_SCALES) size.createEl("option", { value: s.id, text: s.label });
 		size.value = this.scale;
@@ -9230,8 +9280,8 @@ class PrintModal extends Modal {
 			this.sync();
 		});
 
-		side.createDiv({ cls: "pcal-print-label", text: "Paper" });
-		const orient = side.createDiv("pcal-print-orient");
+		side.createDiv({ cls: "nya-print-label", text: "Paper" });
+		const orient = side.createDiv("nya-print-orient");
 		for (const [label, land] of [
 			["Portrait", false],
 			["Landscape", true],
@@ -9240,7 +9290,7 @@ class PrintModal extends Modal {
 			// the shape itself rather than an icon of one: two rectangles say
 			// which way up the paper goes better than any glyph, and neither
 			// depends on which Lucide set this Obsidian happens to ship
-			b.createSpan({ cls: `pcal-print-paper${land ? " is-wide" : ""}` });
+			b.createSpan({ cls: `nya-print-paper${land ? " is-wide" : ""}` });
 			b.createSpan({ text: label });
 			b.addEventListener("click", () => {
 				this.orient.set(this.style().id, land);
@@ -9250,21 +9300,21 @@ class PrintModal extends Modal {
 		}
 
 		side.createDiv({
-			cls: "pcal-print-note",
+			cls: "nya-print-note",
 			text: "The preview is the document. Print sends exactly this to the printer, where the paper size and the printer itself are chosen.",
 		});
 
-		this.stage = split.createDiv("pcal-print-stage");
-		this.frame = this.stage.createEl("iframe", { cls: "pcal-print-preview", attr: { title: "Print preview" } });
+		this.stage = split.createDiv("nya-print-stage");
+		this.frame = this.stage.createEl("iframe", { cls: "nya-print-preview", attr: { title: "Print preview" } });
 		// registered before anything can ask to print, so the flag is already
 		// true by the time a waiting print is woken by the same event
 		this.frame.addEventListener("load", () => {
 			this.ready = true;
 		});
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createEl("button", { text: "Print", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => this.print());
-		btns.createSpan("pcal-compose-btns-gap");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createEl("button", { text: "Print", cls: "mod-cta nya-send-btn" }).addEventListener("click", () => this.print());
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 
 		this.sync();
@@ -9344,7 +9394,7 @@ function insertAtCaret(editor: HTMLElement, node: Node) {
  *  in. The two calls that could leave, image insertion, have. */
 function richToolbar(app: App, bar: HTMLElement, editor: () => HTMLElement, extra?: { label: string; icon: string; run: () => void }[]) {
 	const tb = (icon: string, label: string, run: () => void) => {
-		const b = bar.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+		const b = bar.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 		setIcon(b, icon);
 		b.addEventListener("mousedown", (e) => e.preventDefault());
 		b.addEventListener("click", () => {
@@ -9396,7 +9446,7 @@ const HIGHLIGHTS: [string, string][] = [
  *  basic bar so the signature editor is not asked to be a word processor. */
 function richToolbarFull(app: App, bar: HTMLElement, editor: () => HTMLElement) {
 	const btn = (icon: string, label: string, run: (e: MouseEvent) => void) => {
-		const b = bar.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+		const b = bar.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 		setIcon(b, icon);
 		b.addEventListener("mousedown", (e) => e.preventDefault());
 		b.addEventListener("click", (e) => {
@@ -9426,7 +9476,7 @@ function richToolbarFull(app: App, bar: HTMLElement, editor: () => HTMLElement) 
 				i.setTitle(name).onClick(() => apply(hex));
 				const dom = (i as unknown as { dom?: HTMLElement }).dom;
 				if (dom) {
-					const dot = dom.createSpan("pcal-cat-swatch");
+					const dot = dom.createSpan("nya-cat-swatch");
 					dot.style.backgroundColor = hex === "transparent" ? "var(--background-modifier-border)" : hex;
 					dom.prepend(dot);
 				}
@@ -9479,7 +9529,7 @@ function makeDraggable(
 	reset = false
 ): () => void {
 	const store = app as unknown as { loadLocalStorage: (k: string) => unknown; saveLocalStorage: (k: string, v: unknown) => void };
-	el.addClass("pcal-movable");
+	el.addClass("nya-movable");
 
 	const saved = reset ? null : (store.loadLocalStorage(key) as { x?: number; y?: number; w?: number; h?: number } | null);
 	const w = Math.min(Math.max(saved?.w ?? fallback.w, 380), window.innerWidth - 20);
@@ -9506,7 +9556,7 @@ function makeDraggable(
 
 	// dragging by the grip
 	const bar = grip;
-	bar.addClass("pcal-movable-grip");
+	bar.addClass("nya-movable-grip");
 	bar.addEventListener("mousedown", (e) => {
 		if (e.button !== 0) return;
 		e.preventDefault();
@@ -9557,7 +9607,7 @@ class AddressSuggest {
 
 	constructor(
 		private input: HTMLInputElement,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		void this.plugin.ensureSentContacts();
 		input.setAttribute("autocomplete", "off");
@@ -9604,7 +9654,7 @@ class AddressSuggest {
 
 	private paint() {
 		if (!this.listEl) {
-			this.listEl = document.body.createDiv("pcal-addr-suggest");
+			this.listEl = document.body.createDiv("nya-addr-suggest");
 			this.listEl.addEventListener("mousedown", (e) => e.preventDefault());
 		}
 		const el = this.listEl;
@@ -9614,10 +9664,10 @@ class AddressSuggest {
 		el.style.top = `${r.bottom + 2}px`;
 		el.style.width = `${r.width}px`;
 		this.hits.forEach((c, i) => {
-			const row = el.createDiv("pcal-addr-row");
+			const row = el.createDiv("nya-addr-row");
 			row.toggleClass("is-active", i === this.active);
-			row.createSpan({ cls: "pcal-addr-name", text: c.name || c.email });
-			if (c.name) row.createSpan({ cls: "pcal-addr-email", text: c.email });
+			row.createSpan({ cls: "nya-addr-name", text: c.name || c.email });
+			if (c.name) row.createSpan({ cls: "nya-addr-email", text: c.email });
 			row.addEventListener("click", () => this.take(c));
 		});
 	}
@@ -9656,19 +9706,19 @@ class WhenModal extends Modal {
 	onOpen() {
 		this.titleEl.setText(this.heading);
 		const c = this.contentEl;
-		c.addClass("pcal-when");
+		c.addClass("nya-when");
 		const now = Date.now();
 		for (const p of whenPresets(now)) {
-			const row = c.createEl("button", { cls: "pcal-when-row" });
-			row.createSpan({ cls: "pcal-when-label", text: p.label });
-			row.createSpan({ cls: "pcal-when-time", text: fmtWhen(p.ms, this.use24h) });
+			const row = c.createEl("button", { cls: "nya-when-row" });
+			row.createSpan({ cls: "nya-when-label", text: p.label });
+			row.createSpan({ cls: "nya-when-time", text: fmtWhen(p.ms, this.use24h) });
 			row.addEventListener("click", () => {
 				this.close();
 				this.onPick(p.ms);
 			});
 		}
-		const custom = c.createDiv("pcal-when-custom");
-		custom.createDiv({ cls: "pcal-when-head", text: "Or pick a time" });
+		const custom = c.createDiv("nya-when-custom");
+		custom.createDiv({ cls: "nya-when-head", text: "Or pick a time" });
 		const input = custom.createEl("input", { attr: { type: "datetime-local" } });
 		// default the picker an hour out, rounded, so it opens somewhere sane
 		const soon = new Date(now + 3600000);
@@ -9679,11 +9729,11 @@ class WhenModal extends Modal {
 		const submit = () => {
 			const ms = new Date(input.value).getTime();
 			if (!Number.isFinite(ms)) {
-				new Notice("AmberNyaDesk: that is not a time.");
+				new Notice("NyaHome: that is not a time.");
 				return;
 			}
 			if (ms <= Date.now()) {
-				new Notice("AmberNyaDesk: pick a time in the future.");
+				new Notice("NyaHome: pick a time in the future.");
 				return;
 			}
 			this.close();
@@ -9693,7 +9743,7 @@ class WhenModal extends Modal {
 		input.addEventListener("keydown", (e) => {
 			if (e.key === "Enter") submit();
 		});
-		if (this.note) c.createDiv({ cls: "pcal-when-note", text: this.note });
+		if (this.note) c.createDiv({ cls: "nya-when-note", text: this.note });
 	}
 
 	onClose() {
@@ -9722,9 +9772,9 @@ class VaultFilePickModal extends FuzzySuggestModal<TFile> {
 	}
 
 	renderSuggestion(m: { item: TFile }, el: HTMLElement): void {
-		el.addClass("pcal-palette-row");
-		el.createSpan({ cls: "pcal-palette-label", text: m.item.path });
-		el.createSpan({ cls: "pcal-palette-hint", text: fmtAttachmentSize(m.item.stat.size) });
+		el.addClass("nya-palette-row");
+		el.createSpan({ cls: "nya-palette-label", text: m.item.path });
+		el.createSpan({ cls: "nya-palette-hint", text: fmtAttachmentSize(m.item.stat.size) });
 	}
 
 	onChooseItem(f: TFile): void {
@@ -9754,9 +9804,9 @@ class VaultImagePickModal extends FuzzySuggestModal<TFile> {
 	}
 
 	renderSuggestion(m: { item: TFile }, el: HTMLElement): void {
-		el.addClass("pcal-palette-row");
-		el.createSpan({ cls: "pcal-palette-label", text: m.item.path });
-		el.createSpan({ cls: "pcal-palette-hint", text: fmtAttachmentSize(m.item.stat.size) });
+		el.addClass("nya-palette-row");
+		el.createSpan({ cls: "nya-palette-label", text: m.item.path });
+		el.createSpan({ cls: "nya-palette-hint", text: fmtAttachmentSize(m.item.stat.size) });
 	}
 
 	onChooseItem(f: TFile): void {
@@ -9779,7 +9829,7 @@ class SignaturesModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app);
 		this.accountId = plugin.mailAccounts()[0]?.id ?? "";
@@ -9788,8 +9838,8 @@ class SignaturesModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Signatures");
-		this.modalEl.addClass("pcal-sig-window");
-		makeMovable(this.app, this, "powerdesk:signatures-window", { w: 760, h: 640 });
+		this.modalEl.addClass("nya-sig-window");
+		makeMovable(this.app, this, "nyahome:signatures-window", { w: 760, h: 640 });
 		this.draw();
 	}
 
@@ -9806,15 +9856,15 @@ class SignaturesModal extends Modal {
 	private draw() {
 		const c = this.contentEl;
 		c.empty();
-		c.addClass("pcal-sig");
+		c.addClass("nya-sig");
 		const sigs = this.plugin.settings.mailSignatures;
 
 		// the list of signatures, and what can be done to one
-		const top = c.createDiv("pcal-sig-top");
-		const list = top.createDiv("pcal-sig-list");
-		if (!sigs.length) list.createDiv({ cls: "pcal-when-note", text: "No signatures yet." });
+		const top = c.createDiv("nya-sig-top");
+		const list = top.createDiv("nya-sig-list");
+		if (!sigs.length) list.createDiv({ cls: "nya-when-note", text: "No signatures yet." });
 		for (const s of sigs) {
-			const row = list.createDiv("pcal-sig-item");
+			const row = list.createDiv("nya-sig-item");
 			row.toggleClass("is-current", s.id === this.editing);
 			row.createSpan({ text: s.name });
 			row.addEventListener("click", () => {
@@ -9823,7 +9873,7 @@ class SignaturesModal extends Modal {
 				this.draw();
 			});
 		}
-		const side = top.createDiv("pcal-sig-side");
+		const side = top.createDiv("nya-sig-side");
 		side.createEl("button", { text: "New" }).addEventListener("click", () => {
 			this.commit();
 			new PromptModal(this.app, "New signature", [{ label: "Name", value: "", placeholder: "Work" }], ([name]) => {
@@ -9867,8 +9917,8 @@ class SignaturesModal extends Modal {
 
 		// the editor
 		if (cur) {
-			const bar = c.createDiv("pcal-compose-bar");
-			this.editorEl = c.createDiv({ cls: "pcal-compose-editor pcal-sig-editor", attr: { contenteditable: "true" } });
+			const bar = c.createDiv("nya-compose-bar");
+			this.editorEl = c.createDiv({ cls: "nya-compose-editor nya-sig-editor", attr: { contenteditable: "true" } });
 			richToolbar(this.app, bar, () => this.editorEl, [
 				{
 					label: "Insert an image",
@@ -9880,13 +9930,13 @@ class SignaturesModal extends Modal {
 									const bytes = await this.app.vault.readBinary(f);
 									const mime = mimeForExtension(f.extension);
 									if (!mime.startsWith("image/")) {
-										new Notice("AmberNyaDesk: pick an image file.");
+										new Notice("NyaHome: pick an image file.");
 										return;
 									}
 									const url = `data:${mime};base64,${arrayBufferToBase64(bytes)}`;
 									insertAtCaret(this.editorEl, createEl("img", { attr: { src: url, alt: f.basename } }));
 								} catch (err) {
-									new Notice("AmberNyaDesk: could not read that image. " + (err instanceof Error ? err.message : String(err)));
+									new Notice("NyaHome: could not read that image. " + (err instanceof Error ? err.message : String(err)));
 								}
 							})();
 						}).open(),
@@ -9899,7 +9949,7 @@ class SignaturesModal extends Modal {
 		// which signature this account uses, and when
 		const accounts = this.plugin.mailAccounts();
 		if (accounts.length) {
-			c.createDiv({ cls: "pcal-shortcuts-head", text: "Use" });
+			c.createDiv({ cls: "nya-shortcuts-head", text: "Use" });
 			if (accounts.length > 1) {
 				new Setting(c).setName("Account").addDropdown((d) => {
 					for (const a of accounts) d.addOption(a.id, this.plugin.nameOf(a));
@@ -9927,7 +9977,7 @@ class SignaturesModal extends Modal {
 			pick("Replies and forwards", "Often shorter than the one on a first message.", () => use.replyId, (v) => (use.replyId = v));
 		}
 
-		const btns = c.createDiv("pcal-modal-btns");
+		const btns = c.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "Done", cls: "mod-cta" }).addEventListener("click", () => this.close());
 	}
 
@@ -9952,7 +10002,7 @@ class CategoriesModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onChange: () => void
 	) {
 		super(app);
@@ -9961,7 +10011,7 @@ class CategoriesModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Categories");
-		makeMovable(this.app, this, "powerdesk:categories-window", { w: 620, h: 540 });
+		makeMovable(this.app, this, "nyahome:categories-window", { w: 620, h: 540 });
 		this.draw();
 		void this.load();
 	}
@@ -9985,7 +10035,7 @@ class CategoriesModal extends Modal {
 				// a swatch beside the name, since the names alone are a quiz
 				const dom = (it as unknown as { dom?: HTMLElement }).dom;
 				if (dom) {
-					const dot = dom.createSpan("pcal-cat-swatch");
+					const dot = dom.createSpan("nya-cat-swatch");
 					dot.style.backgroundColor = categoryColor(preset);
 					dom.prepend(dot);
 				}
@@ -10001,7 +10051,7 @@ class CategoriesModal extends Modal {
 		new PromptModal(this.app, `Replace "${cat.displayName}" with`, [{ label: "New name", value: cat.displayName }], ([name]) => {
 			const to = name.trim();
 			if (!to || to.toLowerCase() === cat.displayName.toLowerCase()) return;
-			const counting = new Notice(`AmberNyaDesk: finding everything tagged ${cat.displayName}...`, 0);
+			const counting = new Notice(`NyaHome: finding everything tagged ${cat.displayName}...`, 0);
 			void this.plugin.countCategoryUse(this.accountId, cat.displayName).then((found) => {
 				counting.hide();
 				if (!found) return;
@@ -10010,16 +10060,16 @@ class CategoriesModal extends Modal {
 				new ConfirmModal(
 					this.app,
 					`Replace "${cat.displayName}" with "${to}" on ${n} message${n === 1 ? "" : "s"}?`,
-					`AmberNyaDesk will make "${to}" in the same color, retag ${n === 1 ? "that message" : `those ${n} messages`}, and then retire "${cat.displayName}". This reaches mail only: calendar events, tasks, and contacts carrying the old name keep it, and you would have to change those in Outlook. If any message cannot be rewritten the old category is left in place, so nothing ends up orphaned.${capped}`,
+					`NyaHome will make "${to}" in the same color, retag ${n === 1 ? "that message" : `those ${n} messages`}, and then retire "${cat.displayName}". This reaches mail only: calendar events, tasks, and contacts carrying the old name keep it, and you would have to change those in Outlook. If any message cannot be rewritten the old category is left in place, so nothing ends up orphaned.${capped}`,
 					n ? `Replace on ${n}` : "Replace",
 					() => {
-						const bar = new Notice(`AmberNyaDesk: replacing 0 of ${n}...`, 0);
+						const bar = new Notice(`NyaHome: replacing 0 of ${n}...`, 0);
 						void this.plugin
-							.replaceCategoryEverywhere(this.accountId, cat, to, found.hits, (done, total) => bar.setMessage(`AmberNyaDesk: replacing ${done} of ${total}...`))
+							.replaceCategoryEverywhere(this.accountId, cat, to, found.hits, (done, total) => bar.setMessage(`NyaHome: replacing ${done} of ${total}...`))
 							.then((r) => {
 								bar.hide();
-								if (r.failed) new Notice(`AmberNyaDesk: retagged ${r.changed}, but ${r.failed} could not be rewritten, so "${cat.displayName}" was kept. Run it again to finish.`, 12000);
-								else new Notice(r.retired ? `AmberNyaDesk: "${cat.displayName}" is now "${to}" on ${r.changed} message${r.changed === 1 ? "" : "s"}.` : `AmberNyaDesk: retagged ${r.changed}, but the old category could not be removed.`, 9000);
+								if (r.failed) new Notice(`NyaHome: retagged ${r.changed}, but ${r.failed} could not be rewritten, so "${cat.displayName}" was kept. Run it again to finish.`, 12000);
+								else new Notice(r.retired ? `NyaHome: "${cat.displayName}" is now "${to}" on ${r.changed} message${r.changed === 1 ? "" : "s"}.` : `NyaHome: retagged ${r.changed}, but the old category could not be removed.`, 9000);
 								this.draw();
 								this.onChange();
 							});
@@ -10032,7 +10082,7 @@ class CategoriesModal extends Modal {
 	private draw() {
 		const c = this.contentEl;
 		c.empty();
-		c.addClass("pcal-cats");
+		c.addClass("nya-cats");
 		const accounts = this.plugin.mailAccounts();
 		if (accounts.length > 1) {
 			new Setting(c).setName("Account").addDropdown((d) => {
@@ -10045,21 +10095,21 @@ class CategoriesModal extends Modal {
 		}
 		const acc = this.plugin.accountById(this.accountId);
 		if (acc && !acc.grantedScope.includes("MailboxSettings")) {
-			c.createDiv({ cls: "pcal-mail-error", text: `Reconnect ${this.plugin.nameOf(acc)} in settings to let AmberNyaDesk manage its categories.` });
+			c.createDiv({ cls: "nya-mail-error", text: `Reconnect ${this.plugin.nameOf(acc)} in settings to let NyaHome manage its categories.` });
 			return;
 		}
 		if (this.loading) {
-			c.createDiv({ cls: "pcal-when-note", text: "Reading the mailbox..." });
+			c.createDiv({ cls: "nya-when-note", text: "Reading the mailbox..." });
 			return;
 		}
 
 		const cats = this.plugin.categoriesFor(this.accountId);
-		if (!cats.length) c.createDiv({ cls: "pcal-when-note", text: "No categories yet." });
+		if (!cats.length) c.createDiv({ cls: "nya-when-note", text: "No categories yet." });
 		for (const cat of cats) {
-			const row = c.createDiv("pcal-cat-row");
-			const dot = row.createSpan("pcal-cat-swatch");
+			const row = c.createDiv("nya-cat-row");
+			const dot = row.createSpan("nya-cat-swatch");
 			dot.style.backgroundColor = categoryColor(cat.color);
-			row.createSpan({ cls: "pcal-cat-name", text: cat.displayName });
+			row.createSpan({ cls: "nya-cat-name", text: cat.displayName });
 			row.createEl("button", { text: "Color" }).addEventListener("click", (e) => this.colorMenu(e, cat.color, (preset) => void this.plugin.recolorCategory(this.accountId, cat.id, preset).then(() => {
 				this.draw();
 				this.onChange();
@@ -10082,11 +10132,11 @@ class CategoriesModal extends Modal {
 		}
 
 		c.createDiv({
-			cls: "pcal-when-note",
+			cls: "nya-when-note",
 			text: "A category's name cannot be changed once it is made: Graph allows only the color to be edited. Replace everywhere is the honest substitute, and it says so: it makes the new name in the same color, retags every message carrying the old one, and retires the old only if every rewrite worked. It reaches mail alone, so calendar events, tasks, and contacts keep the old name and need Outlook.",
 		});
 
-		const btns = c.createDiv("pcal-modal-btns");
+		const btns = c.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "New category", cls: "mod-cta" }).addEventListener("click", () => {
 			new PromptModal(this.app, "New category", [{ label: "Name", value: "", placeholder: "Waiting on" }], ([name]) => {
 				if (!name.trim()) return;
@@ -10120,7 +10170,7 @@ class OutOfOfficeModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app);
 		this.accountId = plugin.mailAccounts()[0]?.id ?? "";
@@ -10129,7 +10179,7 @@ class OutOfOfficeModal extends Modal {
 	onOpen() {
 		this.titleEl.setText("Automatic replies");
 		// taller than it looks: two message boxes appear once it is switched on
-		makeMovable(this.app, this, "powerdesk:ooo-window", { w: 660, h: 620 });
+		makeMovable(this.app, this, "nyahome:ooo-window", { w: 660, h: 620 });
 		void this.load();
 		this.draw();
 	}
@@ -10158,7 +10208,7 @@ class OutOfOfficeModal extends Modal {
 	private draw() {
 		const c = this.contentEl;
 		c.empty();
-		c.addClass("pcal-ooo");
+		c.addClass("nya-ooo");
 		const accounts = this.plugin.mailAccounts();
 		if (accounts.length > 1) {
 			new Setting(c).setName("Account").addDropdown((d) => {
@@ -10171,11 +10221,11 @@ class OutOfOfficeModal extends Modal {
 		}
 		const acc = this.plugin.accountById(this.accountId);
 		if (acc && !acc.grantedScope.includes("MailboxSettings")) {
-			c.createDiv({ cls: "pcal-mail-error", text: `Reconnect ${this.plugin.nameOf(acc)} in settings to let AmberNyaDesk read and set its automatic replies.` });
+			c.createDiv({ cls: "nya-mail-error", text: `Reconnect ${this.plugin.nameOf(acc)} in settings to let NyaHome read and set its automatic replies.` });
 			return;
 		}
 		if (this.loading) {
-			c.createDiv({ cls: "pcal-when-note", text: "Reading the mailbox..." });
+			c.createDiv({ cls: "nya-when-note", text: "Reading the mailbox..." });
 			return;
 		}
 
@@ -10210,7 +10260,7 @@ class OutOfOfficeModal extends Modal {
 					.addTextArea((t) => {
 						t.setValue(get()).onChange(set);
 						t.inputEl.rows = 5;
-						t.inputEl.addClass("pcal-ooo-text");
+						t.inputEl.addClass("nya-ooo-text");
 					});
 			area("Reply to colleagues", "Sent to people inside your organization.", () => this.draft.internalReplyMessage, (v) => (this.draft.internalReplyMessage = v));
 			new Setting(c)
@@ -10228,17 +10278,17 @@ class OutOfOfficeModal extends Modal {
 			if (this.draft.externalAudience !== "none")
 				area("Message to outsiders", "Sent to people outside your organization.", () => this.draft.externalReplyMessage, (v) => (this.draft.externalReplyMessage = v));
 			c.createDiv({
-				cls: "pcal-when-note",
+				cls: "nya-when-note",
 				text: "Plain text is fine; paste HTML if you want formatting. The mailbox sends these, so they go out whether or not Obsidian is open, and they are the same replies Outlook shows.",
 			});
 		}
 
-		const btns = c.createDiv("pcal-modal-btns");
+		const btns = c.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			if (this.draft.status === "scheduled") {
 				if (!(this.endMs > this.startMs)) {
-					new Notice("AmberNyaDesk: the end has to come after the start.");
+					new Notice("NyaHome: the end has to come after the start.");
 					return;
 				}
 				this.draft.scheduledStartDateTime = toGraphDateTime(this.startMs);
@@ -10263,7 +10313,7 @@ class OutOfOfficeModal extends Modal {
 class ToolbarModal extends Modal {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private catalog: { id: string; label: string; icon: string }[],
 		/** Which toolbar this is editing: read it, write it, and the order to
 		 *  fall back to. Passed in rather than hardcoded, so mail and the
@@ -10276,7 +10326,7 @@ class ToolbarModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Customize the toolbar");
-		makeMovable(this.app, this, "powerdesk:toolbar-window", { w: 560, h: 620 });
+		makeMovable(this.app, this, "nyahome:toolbar-window", { w: 560, h: 620 });
 		this.draw();
 	}
 
@@ -10290,21 +10340,21 @@ class ToolbarModal extends Modal {
 	private draw() {
 		const c = this.contentEl;
 		c.empty();
-		c.addClass("pcal-toolbar-edit");
+		c.addClass("nya-toolbar-edit");
 		const shown = this.slot.get().filter((id) => this.catalog.some((a) => a.id === id));
 		c.createDiv({
-			cls: "pcal-when-note",
+			cls: "nya-when-note",
 			text: `${this.slot.leads} always leads. Everything left off is still on a keyboard shortcut, the right-click menu, and the command palette, so a short toolbar gives nothing up.`,
 		});
 
-		c.createDiv({ cls: "pcal-shortcuts-head", text: "On the toolbar" });
-		if (!shown.length) c.createDiv({ cls: "pcal-when-note", text: "Nothing yet." });
+		c.createDiv({ cls: "nya-shortcuts-head", text: "On the toolbar" });
+		if (!shown.length) c.createDiv({ cls: "nya-when-note", text: "Nothing yet." });
 		shown.forEach((id, idx) => {
 			const a = this.catalog.find((x) => x.id === id);
 			if (!a) return;
-			const row = c.createDiv("pcal-toolbar-row");
-			setIcon(row.createSpan("pcal-toolbar-ic"), a.icon);
-			row.createSpan({ cls: "pcal-toolbar-label", text: a.label });
+			const row = c.createDiv("nya-toolbar-row");
+			setIcon(row.createSpan("nya-toolbar-ic"), a.icon);
+			row.createSpan({ cls: "nya-toolbar-label", text: a.label });
 			const move = (to: number) => {
 				const next = [...shown];
 				next.splice(to, 0, next.splice(idx, 1)[0]);
@@ -10325,18 +10375,18 @@ class ToolbarModal extends Modal {
 
 		const rest = this.catalog.filter((a) => !shown.includes(a.id));
 		if (rest.length) {
-			c.createDiv({ cls: "pcal-shortcuts-head", text: "Available" });
+			c.createDiv({ cls: "nya-shortcuts-head", text: "Available" });
 			for (const a of rest) {
-				const row = c.createDiv("pcal-toolbar-row");
-				setIcon(row.createSpan("pcal-toolbar-ic"), a.icon);
-				row.createSpan({ cls: "pcal-toolbar-label", text: a.label });
+				const row = c.createDiv("nya-toolbar-row");
+				setIcon(row.createSpan("nya-toolbar-ic"), a.icon);
+				row.createSpan({ cls: "nya-toolbar-label", text: a.label });
 				const add = row.createEl("button", { attr: { "aria-label": `Add ${a.label}` } });
 				setIcon(add, "plus");
 				add.addEventListener("click", () => this.save([...shown, a.id]));
 			}
 		}
 
-		const btns = c.createDiv("pcal-modal-btns");
+		const btns = c.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "Reset to default" }).addEventListener("click", () => this.save([...this.slot.fallback]));
 		btns.createEl("button", { text: "Done", cls: "mod-cta" }).addEventListener("click", () => this.close());
 	}
@@ -10357,7 +10407,7 @@ class ShortcutsModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onFolder: (accountId: string, folderId: string, name: string) => void,
 		private onSearch: (q: string) => void
 	) {
@@ -10366,15 +10416,15 @@ class ShortcutsModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Shortcuts");
-		makeMovable(this.app, this, "powerdesk:shortcuts-window", { w: 620, h: 660 });
+		makeMovable(this.app, this, "nyahome:shortcuts-window", { w: 620, h: 660 });
 		const c = this.contentEl;
-		c.addClass("pcal-shortcuts-modal");
-		this.listEl = c.createDiv("pcal-notes-list");
+		c.addClass("nya-shortcuts-modal");
+		this.listEl = c.createDiv("nya-notes-list");
 		this.draw();
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createEl("button", { text: "Add", cls: "mod-cta pcal-send-btn" }).addEventListener("click", (e) => this.addMenu(e));
-		btns.createSpan("pcal-compose-btns-gap");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createEl("button", { text: "Add", cls: "mod-cta nya-send-btn" }).addEventListener("click", (e) => this.addMenu(e));
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 	}
 
@@ -10398,7 +10448,7 @@ class ShortcutsModal extends Modal {
 				.onClick(() => {
 					const targets = this.plugin.moveTargets([]);
 					if (!targets.length) {
-						new Notice("AmberNyaDesk: open the inbox once so the folders are known.");
+						new Notice("NyaHome: open the inbox once so the folders are known.");
 						return;
 					}
 					new FolderPickModal(this.app, this.plugin, this.plugin.mailAccounts()[0]?.id ?? "", (folderId, name) => this.add("folder", folderId, this.plugin.mailAccounts()[0]?.id, name)).open();
@@ -10433,7 +10483,7 @@ class ShortcutsModal extends Modal {
 						{ label: "Name", value: "", placeholder: "optional" },
 					], ([url, name]) => {
 						if (/^https?:\/\//i.test(url.trim())) this.add("url", url.trim(), undefined, name);
-						else if (url.trim()) new Notice("AmberNyaDesk: a link shortcut needs an http or https address.");
+						else if (url.trim()) new Notice("NyaHome: a link shortcut needs an http or https address.");
 					}).open();
 				})
 		);
@@ -10446,7 +10496,7 @@ class ShortcutsModal extends Modal {
 		else if (s.kind === "note") {
 			const f = this.app.vault.getAbstractFileByPath(s.target);
 			if (f instanceof TFile) void this.plugin.showNote(f, false);
-			else new Notice(`AmberNyaDesk: ${s.target} is not in the vault any more.`);
+			else new Notice(`NyaHome: ${s.target} is not in the vault any more.`);
 		} else if (s.kind === "url") window.open(s.target, "_blank");
 		this.close();
 	}
@@ -10456,21 +10506,21 @@ class ShortcutsModal extends Modal {
 		host.empty();
 		const all = this.plugin.settings.shortcuts;
 		if (!all.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "No shortcuts yet. Add points at a mail folder, a saved search, a note, or a link." });
+			host.createDiv({ cls: "nya-when-note", text: "No shortcuts yet. Add points at a mail folder, a saved search, a note, or a link." });
 			return;
 		}
 		const icons: Record<Shortcut["kind"], string> = { folder: "folder", search: "search", note: "file-text", url: "link" };
 		for (const g of groupShortcuts(all)) {
-			if (g.name) host.createDiv({ cls: "pcal-shortcuts-head", text: g.name });
+			if (g.name) host.createDiv({ cls: "nya-shortcuts-head", text: g.name });
 			for (const s of g.items) {
-				const row = host.createDiv("pcal-folders-row");
-				setIcon(row.createSpan("pcal-folder-ic"), icons[s.kind]);
-				const mid = row.createDiv("pcal-folders-mid");
-				mid.createDiv({ cls: "pcal-folders-name", text: s.label });
-				mid.createDiv({ cls: "pcal-folders-counts", text: s.kind === "note" ? s.target : s.kind === "folder" ? "Mail folder" : s.target });
-				const acts = row.createDiv("pcal-people-acts");
+				const row = host.createDiv("nya-folders-row");
+				setIcon(row.createSpan("nya-folder-ic"), icons[s.kind]);
+				const mid = row.createDiv("nya-folders-mid");
+				mid.createDiv({ cls: "nya-folders-name", text: s.label });
+				mid.createDiv({ cls: "nya-folders-counts", text: s.kind === "note" ? s.target : s.kind === "folder" ? "Mail folder" : s.target });
+				const acts = row.createDiv("nya-people-acts");
 				const act = (icon: string, label: string, run: () => void) => {
-					const b = acts.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+					const b = acts.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 					setIcon(b, icon);
 					b.addEventListener("click", (e) => {
 						e.stopPropagation();
@@ -10525,7 +10575,7 @@ class FoldersModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onOpenFolder: (accountId: string, folderId: string, name: string) => void
 	) {
 		super(app);
@@ -10533,18 +10583,18 @@ class FoldersModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Folders");
-		makeMovable(this.app, this, "powerdesk:folders-window", { w: 680, h: 700 });
+		makeMovable(this.app, this, "nyahome:folders-window", { w: 680, h: 700 });
 		const c = this.contentEl;
-		c.addClass("pcal-folders-modal");
-		const search = c.createEl("input", { cls: "pcal-people-search", attr: { type: "search", placeholder: "Filter folders..." } });
+		c.addClass("nya-folders-modal");
+		const search = c.createEl("input", { cls: "nya-people-search", attr: { type: "search", placeholder: "Filter folders..." } });
 		search.addEventListener("input", () => {
 			this.filter = search.value.toLowerCase();
 			this.draw();
 		});
-		this.listEl = c.createDiv("pcal-notes-list");
+		this.listEl = c.createDiv("nya-notes-list");
 		this.draw();
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createSpan("pcal-compose-btns-gap");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 	}
 
@@ -10553,37 +10603,37 @@ class FoldersModal extends Modal {
 		host.empty();
 		const accounts = this.plugin.mailAccounts();
 		if (!accounts.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "No mail accounts connected." });
+			host.createDiv({ cls: "nya-when-note", text: "No mail accounts connected." });
 			return;
 		}
 		for (const a of accounts) {
 			const tree = this.plugin.folderTreeFor(a);
 			const hidden = this.plugin.settings.mailHiddenFolders.filter((h) => h.accountId === a.id);
 			const rows = tree.filter((n) => !this.filter || n.folder.name.toLowerCase().includes(this.filter));
-			host.createDiv({ cls: "pcal-shortcuts-head", text: this.plugin.nameOf(a) });
+			host.createDiv({ cls: "nya-shortcuts-head", text: this.plugin.nameOf(a) });
 			if (!tree.length) {
-				host.createDiv({ cls: "pcal-when-note", text: "Folders are still loading. Open the inbox once." });
+				host.createDiv({ cls: "nya-when-note", text: "Folders are still loading. Open the inbox once." });
 				continue;
 			}
 			if (!rows.length) {
-				host.createDiv({ cls: "pcal-when-note", text: "Nothing matches that." });
+				host.createDiv({ cls: "nya-when-note", text: "Nothing matches that." });
 				continue;
 			}
 			const inboxId = this.plugin.inboxIdFor(a);
 			for (const { folder, depth } of rows) {
-				const row = host.createDiv("pcal-folders-row");
+				const row = host.createDiv("nya-folders-row");
 				// the filter flattens the tree, since indenting a filtered
 				// list by a parent you cannot see is just a ragged left edge
 				row.style.paddingLeft = `${8 + (this.filter ? 0 : depth * 14)}px`;
 				const isHidden = hidden.some((h) => h.folderId === folder.id);
 				row.toggleClass("is-hidden-folder", isHidden);
-				setIcon(row.createSpan("pcal-folder-ic"), folder.id === inboxId ? "inbox" : "folder");
-				const mid = row.createDiv("pcal-folders-mid");
-				mid.createDiv({ cls: "pcal-folders-name", text: folder.name + (isHidden ? " (hidden)" : "") });
-				mid.createDiv({ cls: "pcal-folders-counts", text: `${folder.total} item${folder.total === 1 ? "" : "s"}${folder.unread ? `, ${folder.unread} unread` : ""}` });
-				const acts = row.createDiv("pcal-people-acts");
+				setIcon(row.createSpan("nya-folder-ic"), folder.id === inboxId ? "inbox" : "folder");
+				const mid = row.createDiv("nya-folders-mid");
+				mid.createDiv({ cls: "nya-folders-name", text: folder.name + (isHidden ? " (hidden)" : "") });
+				mid.createDiv({ cls: "nya-folders-counts", text: `${folder.total} item${folder.total === 1 ? "" : "s"}${folder.unread ? `, ${folder.unread} unread` : ""}` });
+				const acts = row.createDiv("nya-people-acts");
 				const act = (icon: string, label: string, run: () => void, disabled = false) => {
-					const b = acts.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+					const b = acts.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 					setIcon(b, icon);
 					b.disabled = disabled;
 					b.addEventListener("click", (e) => {
@@ -10620,7 +10670,7 @@ class FoldersModal extends Modal {
 					this.close();
 				});
 			}
-			const add = host.createDiv("pcal-modal-btns");
+			const add = host.createDiv("nya-modal-btns");
 			add.createEl("button", { text: `New folder in ${this.plugin.nameOf(a)}` }).addEventListener("click", () => {
 				new PromptModal(this.app, `New folder in ${this.plugin.nameOf(a)}`, [{ label: "Name", value: "" }], ([name]) => {
 					if (name.trim()) void this.plugin.newFolder(a.id, name, null).then(() => this.draw());
@@ -10636,14 +10686,14 @@ class FoldersModal extends Modal {
 			`${folder.unread} message${folder.unread === 1 ? "" : "s"} will be marked read. There is no bulk flag for this in the mailbox, so it is one write per message and a large folder takes a moment.`,
 			"Mark all read",
 			() => {
-				const bar = new Notice(`AmberNyaDesk: marking 0 of ${folder.unread}...`, 0);
+				const bar = new Notice(`NyaHome: marking 0 of ${folder.unread}...`, 0);
 				void this.plugin
-					.markFolderRead(accountId, folder.id, (done, total) => bar.setMessage(`AmberNyaDesk: marking ${done} of ${total}...`))
+					.markFolderRead(accountId, folder.id, (done, total) => bar.setMessage(`NyaHome: marking ${done} of ${total}...`))
 					.then((r) => {
 						bar.hide();
-						if (r.failed) new Notice(`AmberNyaDesk: marked ${r.done} read, ${r.failed} would not. Run it again to finish.`, 9000);
-						else if (!r.complete) new Notice(`AmberNyaDesk: marked ${r.done} read. That folder holds more than one pass covers, so run it again.`, 9000);
-						else if (r.done) new Notice(`AmberNyaDesk: marked ${r.done} message${r.done === 1 ? "" : "s"} read.`);
+						if (r.failed) new Notice(`NyaHome: marked ${r.done} read, ${r.failed} would not. Run it again to finish.`, 9000);
+						else if (!r.complete) new Notice(`NyaHome: marked ${r.done} read. That folder holds more than one pass covers, so run it again.`, 9000);
+						else if (r.done) new Notice(`NyaHome: marked ${r.done} message${r.done === 1 ? "" : "s"} read.`);
 						this.draw();
 					});
 			}
@@ -10669,7 +10719,7 @@ class JournalModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app);
 		this.key = keyOfDate(new Date());
@@ -10677,11 +10727,11 @@ class JournalModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Journal");
-		makeMovable(this.app, this, "powerdesk:journal-window", { w: 660, h: 700 });
+		makeMovable(this.app, this, "nyahome:journal-window", { w: 660, h: 700 });
 		const c = this.contentEl;
-		c.addClass("pcal-journal");
+		c.addClass("nya-journal");
 
-		const head = c.createDiv("pcal-tasks-head");
+		const head = c.createDiv("nya-tasks-head");
 		const back = head.createEl("button", { attr: { "aria-label": "Previous day" } });
 		setIcon(back, "chevron-left");
 		back.addEventListener("click", () => this.go(-1));
@@ -10703,15 +10753,15 @@ class JournalModal extends Modal {
 		});
 		this.dateInput = date;
 
-		this.bodyEl = c.createDiv("pcal-journal-body");
+		this.bodyEl = c.createDiv("nya-journal-body");
 		void this.load();
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createEl("button", { text: "Add to the daily note", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => void this.toDailyNote());
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createEl("button", { text: "Add to the daily note", cls: "mod-cta nya-send-btn" }).addEventListener("click", () => void this.toDailyNote());
 		btns.createEl("button", { text: "Copy" }).addEventListener("click", () => {
-			void navigator.clipboard.writeText(journalMarkdown(this.day())).then(() => new Notice("AmberNyaDesk: the day is on the clipboard."));
+			void navigator.clipboard.writeText(journalMarkdown(this.day())).then(() => new Notice("NyaHome: the day is on the clipboard."));
 		});
-		btns.createSpan("pcal-compose-btns-gap");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 	}
 
@@ -10749,19 +10799,19 @@ class JournalModal extends Modal {
 		const c = this.bodyEl;
 		c.empty();
 		const d = this.day();
-		c.createDiv({ cls: "pcal-shortcuts-head", text: fmtDayHeading(this.key) });
-		if (this.loading) c.createDiv({ cls: "pcal-when-note", text: "Reading the day..." });
+		c.createDiv({ cls: "nya-shortcuts-head", text: fmtDayHeading(this.key) });
+		if (this.loading) c.createDiv({ cls: "nya-when-note", text: "Reading the day..." });
 
 		const section = (title: string, rows: { when?: string; main: string; sub?: string }[]) => {
 			if (!rows.length) return;
-			c.createDiv({ cls: "pcal-shortcuts-head", text: title });
-			const box = c.createDiv("pcal-tasks-list");
+			c.createDiv({ cls: "nya-shortcuts-head", text: title });
+			const box = c.createDiv("nya-tasks-list");
 			for (const r of rows) {
-				const row = box.createDiv("pcal-tasks-row");
-				if (r.when) row.createDiv({ cls: "pcal-eventsearch-when", text: r.when });
-				const mid = row.createDiv("pcal-tasks-mid");
-				mid.createDiv({ cls: "pcal-tasks-title", text: r.main });
-				if (r.sub) mid.createDiv({ cls: "pcal-tasks-due", text: r.sub });
+				const row = box.createDiv("nya-tasks-row");
+				if (r.when) row.createDiv({ cls: "nya-eventsearch-when", text: r.when });
+				const mid = row.createDiv("nya-tasks-mid");
+				mid.createDiv({ cls: "nya-tasks-title", text: r.main });
+				if (r.sub) mid.createDiv({ cls: "nya-tasks-due", text: r.sub });
 			}
 		};
 		section(
@@ -10781,7 +10831,7 @@ class JournalModal extends Modal {
 			d.notes.map((n) => ({ main: n.title }))
 		);
 		if (!this.loading && !d.meetings.length && !d.sent.length && !d.received.length && !d.notes.length)
-			c.createDiv({ cls: "pcal-when-note", text: "Nothing recorded for this day. Mail is only described as far back as it has been fetched." });
+			c.createDiv({ cls: "nya-when-note", text: "Nothing recorded for this day. Mail is only described as far back as it has been fetched." });
 	}
 
 	private async toDailyNote() {
@@ -10809,18 +10859,18 @@ class NotesModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app);
 	}
 
 	onOpen() {
 		this.titleEl.setText("Outlook notes");
-		makeMovable(this.app, this, "powerdesk:notes-window", { w: 640, h: 680 });
+		makeMovable(this.app, this, "nyahome:notes-window", { w: 640, h: 680 });
 		const c = this.contentEl;
-		c.addClass("pcal-notes");
+		c.addClass("nya-notes");
 
-		const add = c.createDiv("pcal-tasks-add");
+		const add = c.createDiv("nya-tasks-add");
 		const input = add.createEl("input", { attr: { type: "text", placeholder: "Write a note and press Enter" } });
 		const submit = () => {
 			const text = input.value.trim();
@@ -10833,21 +10883,21 @@ class NotesModal extends Modal {
 		});
 		add.createEl("button", { text: "Add", cls: "mod-cta" }).addEventListener("click", submit);
 
-		const search = c.createEl("input", { cls: "pcal-people-search", attr: { type: "search", placeholder: "Search notes..." } });
+		const search = c.createEl("input", { cls: "nya-people-search", attr: { type: "search", placeholder: "Search notes..." } });
 		search.addEventListener("input", () => {
 			this.filter = search.value.toLowerCase();
 			this.draw();
 		});
 
-		this.listEl = c.createDiv("pcal-notes-list");
-		this.listEl.createDiv({ cls: "pcal-when-note", text: "Reading your notes..." });
+		this.listEl = c.createDiv("nya-notes-list");
+		this.listEl.createDiv({ cls: "nya-when-note", text: "Reading your notes..." });
 		void this.plugin.loadStickyNotes().then((r) => {
 			this.problem = r.ok ? "" : r.reason;
 			this.draw();
 		});
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createSpan("pcal-compose-btns-gap");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 	}
 
@@ -10855,29 +10905,29 @@ class NotesModal extends Modal {
 		const host = this.listEl;
 		host.empty();
 		if (this.problem) {
-			host.createDiv({ cls: "pcal-mail-error", text: this.problem });
+			host.createDiv({ cls: "nya-mail-error", text: this.problem });
 			return;
 		}
 		const all = this.plugin.stickyNotes();
 		const notes = this.filter ? all.filter((n) => `${n.title} ${n.preview}`.toLowerCase().includes(this.filter)) : all;
 		if (!all.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "No notes in this mailbox yet. Write one above and it appears in Outlook too." });
+			host.createDiv({ cls: "nya-when-note", text: "No notes in this mailbox yet. Write one above and it appears in Outlook too." });
 			return;
 		}
 		if (!notes.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "Nothing matches that." });
+			host.createDiv({ cls: "nya-when-note", text: "Nothing matches that." });
 			return;
 		}
 		for (const n of notes) {
-			const row = host.createDiv("pcal-notes-row");
+			const row = host.createDiv("nya-notes-row");
 			row.toggleClass("is-open", this.openId === n.id);
-			const mid = row.createDiv("pcal-notes-mid");
-			mid.createDiv({ cls: "pcal-notes-title", text: n.title });
-			mid.createDiv({ cls: "pcal-notes-sub", text: `${fmtDayShort(keyOfMs(n.changedMs || Date.now()), true)}${n.preview ? ` · ${n.preview.slice(0, 90)}` : ""}` });
-			if (this.openId === n.id) mid.createDiv({ cls: "pcal-notes-body", text: this.openBody || "..." });
-			const acts = row.createDiv("pcal-people-acts");
+			const mid = row.createDiv("nya-notes-mid");
+			mid.createDiv({ cls: "nya-notes-title", text: n.title });
+			mid.createDiv({ cls: "nya-notes-sub", text: `${fmtDayShort(keyOfMs(n.changedMs || Date.now()), true)}${n.preview ? ` · ${n.preview.slice(0, 90)}` : ""}` });
+			if (this.openId === n.id) mid.createDiv({ cls: "nya-notes-body", text: this.openBody || "..." });
+			const acts = row.createDiv("nya-people-acts");
 			const act = (icon: string, label: string, run: () => void) => {
-				const b = acts.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+				const b = acts.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 				setIcon(b, icon);
 				b.addEventListener("click", (e) => {
 					e.stopPropagation();
@@ -10926,7 +10976,7 @@ class TasksModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onOpenMail: (m: PCMail) => void
 	) {
 		super(app);
@@ -10934,8 +10984,8 @@ class TasksModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Tasks");
-		makeMovable(this.app, this, "powerdesk:tasks-window", { w: 640, h: 700 });
-		this.contentEl.addClass("pcal-tasks");
+		makeMovable(this.app, this, "nyahome:tasks-window", { w: 640, h: 700 });
+		this.contentEl.addClass("nya-tasks");
 		this.bodyEl = this.contentEl.createDiv();
 		this.draw();
 		void this.plugin.loadTaskLists().then(async (lists) => {
@@ -10954,10 +11004,10 @@ class TasksModal extends Modal {
 		const lists = this.plugin.todoListsFor();
 
 		if (this.plugin.tasksNeedReconnect())
-			c.createDiv({ cls: "pcal-mail-error", text: "Reconnect your accounts in settings to see your Microsoft To Do lists here. Flagged mail below needs no permission and works either way." });
+			c.createDiv({ cls: "nya-mail-error", text: "Reconnect your accounts in settings to see your Microsoft To Do lists here. Flagged mail below needs no permission and works either way." });
 
 		if (lists.length) {
-			const head = c.createDiv("pcal-tasks-head");
+			const head = c.createDiv("nya-tasks-head");
 			const sel = head.createEl("select", { cls: "dropdown" });
 			for (const l of lists) sel.createEl("option", { value: l.id, text: l.name });
 			sel.value = this.listId;
@@ -10972,7 +11022,7 @@ class TasksModal extends Modal {
 			});
 
 			// adding one is a line and a return, not a dialog
-			const add = c.createDiv("pcal-tasks-add");
+			const add = c.createDiv("nya-tasks-add");
 			const input = add.createEl("input", { attr: { type: "text", placeholder: "Add a task and press Enter" } });
 			const due = add.createEl("input", { attr: { type: "date" } });
 			const submit = () => {
@@ -10988,37 +11038,37 @@ class TasksModal extends Modal {
 			add.createEl("button", { text: "Add", cls: "mod-cta" }).addEventListener("click", submit);
 
 			const tasks = this.plugin.tasksIn(this.listId).filter((t) => this.showDone || !t.done);
-			const box = c.createDiv("pcal-tasks-list");
-			if (!tasks.length) box.createDiv({ cls: "pcal-when-note", text: this.showDone ? "Nothing in this list." : "Nothing left in this list." });
+			const box = c.createDiv("nya-tasks-list");
+			if (!tasks.length) box.createDiv({ cls: "nya-when-note", text: this.showDone ? "Nothing in this list." : "Nothing left in this list." });
 			// overdue first, then by due date, then the undated
 			const today = msOfKey(keyOfDate(new Date()));
 			for (const t of [...tasks].sort((a, b) => (a.dueMs ?? Infinity) - (b.dueMs ?? Infinity))) {
-				const row = box.createDiv("pcal-tasks-row");
+				const row = box.createDiv("nya-tasks-row");
 				row.toggleClass("is-done", t.done);
-				const tick = row.createSpan("pcal-tasks-tick");
+				const tick = row.createSpan("nya-tasks-tick");
 				setIcon(tick, t.done ? "check-square" : "square");
 				tick.addEventListener("click", () => void this.plugin.setTaskDone(t, !t.done).then(() => this.draw()));
-				const mid = row.createDiv("pcal-tasks-mid");
-				mid.createDiv({ cls: "pcal-tasks-title", text: t.title });
+				const mid = row.createDiv("nya-tasks-mid");
+				mid.createDiv({ cls: "nya-tasks-title", text: t.title });
 				if (t.dueMs != null) {
 					const late = !t.done && t.dueMs < today;
-					const when = mid.createDiv({ cls: "pcal-tasks-due", text: `${late ? "Overdue, " : "Due "}${fmtDayShort(keyOfMs(t.dueMs), true)}` });
+					const when = mid.createDiv({ cls: "nya-tasks-due", text: `${late ? "Overdue, " : "Due "}${fmtDayShort(keyOfMs(t.dueMs), true)}` });
 					when.toggleClass("is-late", late);
 				}
-				if (t.importance === "high") row.createSpan({ cls: "pcal-mail-bang", text: "!" });
-				const del = row.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Delete task" } });
+				if (t.importance === "high") row.createSpan({ cls: "nya-mail-bang", text: "!" });
+				const del = row.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Delete task" } });
 				setIcon(del, "trash-2");
 				del.addEventListener("click", () => void this.plugin.removeTask(t).then(() => this.draw()));
 			}
 		}
 
 		const flagged = this.plugin.flaggedMail();
-		c.createDiv({ cls: "pcal-shortcuts-head", text: `Flagged mail${flagged.length ? ` (${flagged.length})` : ""}` });
-		const fbox = c.createDiv("pcal-tasks-list");
-		if (!flagged.length) fbox.createDiv({ cls: "pcal-when-note", text: "Nothing flagged. Press S on a message to flag it." });
+		c.createDiv({ cls: "nya-shortcuts-head", text: `Flagged mail${flagged.length ? ` (${flagged.length})` : ""}` });
+		const fbox = c.createDiv("nya-tasks-list");
+		if (!flagged.length) fbox.createDiv({ cls: "nya-when-note", text: "Nothing flagged. Press S on a message to flag it." });
 		for (const m of flagged) {
-			const row = fbox.createDiv("pcal-tasks-row");
-			const tick = row.createSpan("pcal-tasks-tick");
+			const row = fbox.createDiv("nya-tasks-row");
+			const tick = row.createSpan("nya-tasks-tick");
 			setIcon(tick, "flag");
 			tick.addClass("is-flag");
 			tick.setAttribute("aria-label", "Clear the flag");
@@ -11027,18 +11077,18 @@ class TasksModal extends Modal {
 				void this.plugin.setMailFlag(m, false);
 				this.draw();
 			});
-			const mid = row.createDiv("pcal-tasks-mid");
-			mid.createDiv({ cls: "pcal-tasks-title", text: m.subject });
-			mid.createDiv({ cls: "pcal-tasks-due", text: `${m.from} · ${fmtDayShort(keyOfMs(m.receivedMs), true)}` });
+			const mid = row.createDiv("nya-tasks-mid");
+			mid.createDiv({ cls: "nya-tasks-title", text: m.subject });
+			mid.createDiv({ cls: "nya-tasks-due", text: `${m.from} · ${fmtDayShort(keyOfMs(m.receivedMs), true)}` });
 			row.addEventListener("click", () => {
 				this.onOpenMail(m);
 				this.close();
 			});
 		}
 
-		const btns = this.contentEl.querySelector(".pcal-tasks-btns") ?? this.contentEl.createDiv("pcal-modal-btns pcal-compose-btns pcal-tasks-btns");
+		const btns = this.contentEl.querySelector(".nya-tasks-btns") ?? this.contentEl.createDiv("nya-modal-btns nya-compose-btns nya-tasks-btns");
 		btns.empty();
-		btns.createSpan("pcal-compose-btns-gap");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 	}
 
@@ -11062,7 +11112,7 @@ class PeopleModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onSearchMail: (q: string) => void,
 		private onSearchEvents: (name: string) => void
 	) {
@@ -11071,30 +11121,30 @@ class PeopleModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("People");
-		makeMovable(this.app, this, "powerdesk:people-window", { w: 640, h: 680 });
+		makeMovable(this.app, this, "nyahome:people-window", { w: 640, h: 680 });
 		const c = this.contentEl;
-		c.addClass("pcal-people");
+		c.addClass("nya-people");
 		void this.plugin.ensureSentContacts();
 		void this.plugin.ensureSavedContacts().then(() => this.draw());
 		if (this.plugin.contactsNeedReconnect())
 		c.createDiv({
-			cls: "pcal-mail-error",
+			cls: "nya-mail-error",
 			text: "Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission.",
 		});
 
-		const head = c.createDiv("pcal-people-head");
+		const head = c.createDiv("nya-people-head");
 		head.createEl("button", { text: "Add contact", cls: "mod-cta" }).addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => this.draw()).open());
 
-		const search = c.createEl("input", { cls: "pcal-people-search", attr: { type: "search", placeholder: "Search people..." } });
+		const search = c.createEl("input", { cls: "nya-people-search", attr: { type: "search", placeholder: "Search people..." } });
 		search.addEventListener("input", () => {
 			this.filter = search.value;
 			this.draw();
 		});
-		this.listEl = c.createDiv("pcal-people-list");
+		this.listEl = c.createDiv("nya-people-list");
 		this.draw();
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createSpan("pcal-compose-btns-gap");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 		window.setTimeout(() => search.focus(), 20);
 	}
@@ -11105,17 +11155,17 @@ class PeopleModal extends Modal {
 		const index = this.plugin.people();
 		const hits = matchContacts(index, this.filter, 300) as PersonCard[];
 		if (!index.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "Nobody yet. Open the inbox once so there is some correspondence to read." });
+			host.createDiv({ cls: "nya-when-note", text: "Nobody yet. Open the inbox once so there is some correspondence to read." });
 			return;
 		}
 		if (!hits.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "Nobody matches that." });
+			host.createDiv({ cls: "nya-when-note", text: "Nobody matches that." });
 			return;
 		}
-		host.createDiv({ cls: "pcal-when-note", text: `${hits.length} of ${index.length}` });
+		host.createDiv({ cls: "nya-when-note", text: `${hits.length} of ${index.length}` });
 		for (const p of hits) {
-			const row = host.createDiv("pcal-people-row");
-			const av = row.createDiv("pcal-mail-avatar");
+			const row = host.createDiv("nya-people-row");
+			const av = row.createDiv("nya-mail-avatar");
 			const photo = this.plugin.settings.mailPhotos ? this.plugin.photoFor(p.email) : null;
 			if (photo) {
 				av.addClass("has-photo");
@@ -11124,20 +11174,20 @@ class PeopleModal extends Modal {
 				av.style.backgroundColor = avatarColor(p.name || p.email);
 				av.setText(avatarInitials(p.name || p.email));
 			}
-			const mid = row.createDiv("pcal-people-mid");
-			const nameRow = mid.createDiv("pcal-people-name");
+			const mid = row.createDiv("nya-people-mid");
+			const nameRow = mid.createDiv("nya-people-name");
 			nameRow.createSpan({ text: p.name || p.email });
 			// a saved contact is marked, so it is clear which names came from
 			// the address book and which were inferred from correspondence
-			if (p.saved) nameRow.createSpan({ cls: "pcal-people-saved", text: "contact" });
+			if (p.saved) nameRow.createSpan({ cls: "nya-people-saved", text: "contact" });
 			const bits = [p.email];
 			if (p.title || p.company) bits.push([p.title, p.company].filter(Boolean).join(", "));
 			if (p.phone) bits.push(p.phone);
 			bits.push(p.count ? `${p.count} message${p.count === 1 ? "" : "s"}, last ${fmtDayShort(keyOfMs(p.lastMs), true)}` : "no mail either way");
-			mid.createDiv({ cls: "pcal-people-sub", text: bits.join(" · ") });
-			const acts = row.createDiv("pcal-people-acts");
+			mid.createDiv({ cls: "nya-people-sub", text: bits.join(" · ") });
+			const acts = row.createDiv("nya-people-acts");
 			const act = (icon: string, label: string, run: () => void) => {
-				const b = acts.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+				const b = acts.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 				setIcon(b, icon);
 				b.addEventListener("click", (e) => {
 					e.stopPropagation();
@@ -11176,7 +11226,7 @@ class PeopleModal extends Modal {
 				void this.plugin.openPersonPage(p.name || p.email);
 				this.close();
 			});
-			row.addEventListener("click", () => void navigator.clipboard.writeText(p.email).then(() => new Notice(`AmberNyaDesk: copied ${p.email}.`)));
+			row.addEventListener("click", () => void navigator.clipboard.writeText(p.email).then(() => new Notice(`NyaHome: copied ${p.email}.`)));
 		}
 	}
 
@@ -11200,7 +11250,7 @@ class EventSearchModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onPick: (key: string) => void,
 		startPerson?: string
 	) {
@@ -11215,9 +11265,9 @@ class EventSearchModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Find events");
-		makeMovable(this.app, this, "powerdesk:event-search-window", { w: 680, h: 700 });
+		makeMovable(this.app, this, "nyahome:event-search-window", { w: 680, h: 700 });
 		const c = this.contentEl;
-		c.addClass("pcal-search-modal");
+		c.addClass("nya-search-modal");
 
 		const text = (name: string, desc: string, key: "words" | "title" | "people" | "location", placeholder: string) =>
 			new Setting(c)
@@ -11272,12 +11322,12 @@ class EventSearchModal extends Modal {
 		range("From", () => this.fromKey, (v) => (this.fromKey = v));
 		range("To", () => this.toKey, (v) => (this.toKey = v));
 
-		c.createDiv({ cls: "pcal-shortcuts-head", text: "Results" });
-		this.resultsEl = c.createDiv("pcal-eventsearch-results");
+		c.createDiv({ cls: "nya-shortcuts-head", text: "Results" });
+		this.resultsEl = c.createDiv("nya-eventsearch-results");
 		this.run();
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createSpan("pcal-compose-btns-gap");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 	}
 
@@ -11285,7 +11335,7 @@ class EventSearchModal extends Modal {
 		const host = this.resultsEl;
 		host.empty();
 		if (eventQueryIsEmpty(this.q)) {
-			host.createDiv({ cls: "pcal-when-note", text: "Fill something in above and the matches appear here." });
+			host.createDiv({ cls: "nya-when-note", text: "Fill something in above and the matches appear here." });
 			return;
 		}
 		// the range has to be fetched before it can be searched; what is
@@ -11293,25 +11343,25 @@ class EventSearchModal extends Modal {
 		this.plugin.ensureWindow(this.fromKey, this.toKey, false);
 		const hits = matchEvents(this.plugin.eventsForWindow(this.fromKey, this.toKey), this.q);
 		if (!hits.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "Nothing in this range matches." });
+			host.createDiv({ cls: "nya-when-note", text: "Nothing in this range matches." });
 			return;
 		}
 		const s = this.plugin.settings;
-		host.createDiv({ cls: "pcal-when-note", text: `${hits.length} event${hits.length === 1 ? "" : "s"}` });
+		host.createDiv({ cls: "nya-when-note", text: `${hits.length} event${hits.length === 1 ? "" : "s"}` });
 		for (const ev of hits.slice(0, 300)) {
 			const key = eventDaySpan(ev).startKey;
-			const row = host.createDiv("pcal-eventsearch-row");
-			row.createDiv({ cls: "pcal-eventsearch-when", text: `${fmtDayShort(key, true)}${ev.allDay ? "" : ` ${fmtTimeOfMs(ev.startMs, s.use24h, true)}`}` });
-			const mid = row.createDiv("pcal-eventsearch-mid");
-			mid.createDiv({ cls: "pcal-eventsearch-title", text: ev.title });
+			const row = host.createDiv("nya-eventsearch-row");
+			row.createDiv({ cls: "nya-eventsearch-when", text: `${fmtDayShort(key, true)}${ev.allDay ? "" : ` ${fmtTimeOfMs(ev.startMs, s.use24h, true)}`}` });
+			const mid = row.createDiv("nya-eventsearch-mid");
+			mid.createDiv({ cls: "nya-eventsearch-title", text: ev.title });
 			const bits = [ev.calendarName, ev.location, (ev.attendees ?? []).slice(0, 3).join(", ")].filter(Boolean).join(" · ");
-			if (bits) mid.createDiv({ cls: "pcal-eventsearch-sub", text: bits });
+			if (bits) mid.createDiv({ cls: "nya-eventsearch-sub", text: bits });
 			row.addEventListener("click", () => {
 				this.onPick(key);
 				this.close();
 			});
 		}
-		if (hits.length > 300) host.createDiv({ cls: "pcal-when-note", text: `Showing the first 300. Narrow the range or add a word to see the rest.` });
+		if (hits.length > 300) host.createDiv({ cls: "nya-when-note", text: `Showing the first 300. Narrow the range or add a word to see the rest.` });
 	}
 
 	onClose() {
@@ -11330,7 +11380,7 @@ class SearchModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private view: MailView,
 		start?: string
 	) {
@@ -11340,9 +11390,9 @@ class SearchModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Search mail");
-		makeMovable(this.app, this, "powerdesk:search-window", { w: 620, h: 620 });
+		makeMovable(this.app, this, "nyahome:search-window", { w: 620, h: 620 });
 		const c = this.contentEl;
-		c.addClass("pcal-search-modal");
+		c.addClass("nya-search-modal");
 
 		const text = (name: string, desc: string, key: "words" | "from" | "subject" | "phrase", placeholder: string) =>
 			new Setting(c)
@@ -11384,14 +11434,14 @@ class SearchModal extends Modal {
 		date("On or after", "after");
 		date("On or before", "before");
 
-		c.createDiv({ cls: "pcal-shortcuts-head", text: "This searches for" });
-		this.previewEl = c.createDiv("pcal-search-preview");
+		c.createDiv({ cls: "nya-shortcuts-head", text: "This searches for" });
+		this.previewEl = c.createDiv("nya-search-preview");
 		this.paint();
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
-		btns.createEl("button", { text: "Search the mailbox", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => this.run(true));
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createEl("button", { text: "Search the mailbox", cls: "mod-cta nya-send-btn" }).addEventListener("click", () => this.run(true));
 		btns.createEl("button", { text: "Search this device" }).addEventListener("click", () => this.run(false));
-		btns.createSpan("pcal-compose-btns-gap");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
 	}
 
@@ -11408,7 +11458,7 @@ class SearchModal extends Modal {
 	private run(everywhere: boolean) {
 		const q = this.query();
 		if (!q) {
-			new Notice("AmberNyaDesk: fill in something to search for.");
+			new Notice("NyaHome: fill in something to search for.");
 			return;
 		}
 		this.view.runSearch(q, everywhere);
@@ -11424,7 +11474,7 @@ class SearchModal extends Modal {
 class FolderPickModal extends FuzzySuggestModal<{ folderId: string; name: string; path: string }> {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private accountId: string,
 		private onPick: (folderId: string, name: string) => void
 	) {
@@ -11449,7 +11499,7 @@ class FolderPickModal extends FuzzySuggestModal<{ folderId: string; name: string
 class RulesModal extends Modal {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app);
 	}
@@ -11458,7 +11508,7 @@ class RulesModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Inbox rules");
-		makeMovable(this.app, this, "powerdesk:rules-window", { w: 760, h: 600 });
+		makeMovable(this.app, this, "nyahome:rules-window", { w: 760, h: 600 });
 		this.draw();
 		void (async () => {
 			for (const a of this.plugin.mailAccounts()) await this.plugin.loadRules(a.id);
@@ -11470,26 +11520,26 @@ class RulesModal extends Modal {
 	private draw() {
 		const c = this.contentEl;
 		c.empty();
-		c.addClass("pcal-rules");
+		c.addClass("nya-rules");
 		c.createDiv({
-			cls: "pcal-when-note",
+			cls: "nya-when-note",
 			text: "Rules run in your mailbox, not in Obsidian, so they file mail whether or not this is open and on every device you read mail from. They are the same rules Outlook shows.",
 		});
 		for (const a of this.plugin.mailAccounts()) {
-			c.createDiv({ cls: "pcal-shortcuts-head", text: this.plugin.nameOf(a) });
+			c.createDiv({ cls: "nya-shortcuts-head", text: this.plugin.nameOf(a) });
 			const rules = this.plugin.rulesFor(a.id);
 			const err = this.plugin.rulesErrorFor(a.id);
-			if (err) c.createDiv({ cls: "pcal-mail-error", text: err });
-			else if (!rules.length) c.createDiv({ cls: "pcal-when-note", text: this.loading ? "Reading the rules from your mailbox..." : "No rules yet." });
+			if (err) c.createDiv({ cls: "nya-mail-error", text: err });
+			else if (!rules.length) c.createDiv({ cls: "nya-when-note", text: this.loading ? "Reading the rules from your mailbox..." : "No rules yet." });
 			for (const r of rules) {
-				const row = c.createDiv("pcal-rule-row");
+				const row = c.createDiv("nya-rule-row");
 				row.toggleClass("is-off", !r.isEnabled);
-				const tx = row.createDiv("pcal-rule-text");
-				tx.createDiv({ cls: "pcal-rule-name", text: r.displayName });
+				const tx = row.createDiv("nya-rule-text");
+				tx.createDiv({ cls: "nya-rule-name", text: r.displayName });
 				const edit = ruleToEdit(r);
 				const dest = edit.moveToFolderId ? this.plugin.moveTargets([a.id]).find((f) => f.folderId === edit.moveToFolderId)?.name : undefined;
-				tx.createDiv({ cls: "pcal-rule-what", text: `${r.isEnabled ? "" : "Off. "}${ruleSummary(edit, dest)}` });
-				if (ruleHasUnknownParts(r)) tx.createDiv({ cls: "pcal-rule-warn", text: "This rule also does things AmberNyaDesk does not show. Editing it here keeps them." });
+				tx.createDiv({ cls: "nya-rule-what", text: `${r.isEnabled ? "" : "Off. "}${ruleSummary(edit, dest)}` });
+				if (ruleHasUnknownParts(r)) tx.createDiv({ cls: "nya-rule-warn", text: "This rule also does things NyaHome does not show. Editing it here keeps them." });
 				row.createEl("button", { text: r.isEnabled ? "Turn off" : "Turn on" }).addEventListener("click", () => {
 					void this.plugin.saveRule(a.id, { ...edit, enabled: !r.isEnabled }, r).then(() => this.draw());
 				});
@@ -11502,7 +11552,7 @@ class RulesModal extends Modal {
 			}
 			// creating would fail the same way reading did, so do not offer it
 			if (err) continue;
-			const add = c.createDiv("pcal-modal-btns");
+			const add = c.createDiv("nya-modal-btns");
 			add.createEl("button", { text: "New rule", cls: "mod-cta" }).addEventListener("click", () => new RuleEditModal(this.app, this.plugin, a.id, null, null, () => this.draw()).open());
 		}
 	}
@@ -11521,7 +11571,7 @@ class RuleEditModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private accountId: string,
 		private existing: GraphRule | null,
 		prefill: Partial<RuleEdit> | null,
@@ -11536,9 +11586,9 @@ class RuleEditModal extends Modal {
 		this.titleEl.setText(this.existing ? "Edit rule" : "New rule");
 		// its own key: the editor is a tall form and the list beside it is
 		// not, so they should not have to agree on a size
-		makeMovable(this.app, this, "powerdesk:rule-edit-window", { w: 660, h: 680 });
+		makeMovable(this.app, this, "nyahome:rule-edit-window", { w: 660, h: 680 });
 		const c = this.contentEl;
-		c.addClass("pcal-rule-edit");
+		c.addClass("nya-rule-edit");
 
 		new Setting(c).setName("Name").addText((t) =>
 			t.setValue(this.edit.name).onChange((v) => {
@@ -11546,7 +11596,7 @@ class RuleEditModal extends Modal {
 			})
 		);
 
-		c.createDiv({ cls: "pcal-shortcuts-head", text: "When a message arrives and" });
+		c.createDiv({ cls: "nya-shortcuts-head", text: "When a message arrives and" });
 		const text = (label: string, key: "fromContains" | "subjectContains" | "bodyContains" | "toContains", placeholder: string) =>
 			new Setting(c)
 				.setName(label)
@@ -11577,7 +11627,7 @@ class RuleEditModal extends Modal {
 			})
 		);
 
-		c.createDiv({ cls: "pcal-shortcuts-head", text: "Then" });
+		c.createDiv({ cls: "nya-shortcuts-head", text: "Then" });
 		const moveSt = new Setting(c).setName("Move to folder").setDesc(this.destName || "Not set");
 		moveSt.addButton((b) =>
 			b.setButtonText("Choose...").onClick(() =>
@@ -11635,16 +11685,16 @@ class RuleEditModal extends Modal {
 				})
 			);
 
-		this.summaryEl = c.createDiv("pcal-rule-summary");
+		this.summaryEl = c.createDiv("nya-rule-summary");
 		this.paintSummary();
 		if (this.existing && ruleHasUnknownParts(this.existing)) {
 			c.createDiv({
-				cls: "pcal-when-note",
-				text: "This rule also carries conditions or actions AmberNyaDesk does not show, set in Outlook. They are kept exactly as they are when you save here.",
+				cls: "nya-when-note",
+				text: "This rule also carries conditions or actions NyaHome does not show, set in Outlook. They are kept exactly as they are when you save here.",
 			});
 		}
 
-		const btns = c.createDiv("pcal-modal-btns");
+		const btns = c.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			void this.plugin.saveRule(this.accountId, this.edit, this.existing ?? undefined).then((ok) => {
@@ -11684,7 +11734,7 @@ interface MoveChoice {
 class MoveToFolderModal extends FuzzySuggestModal<MoveChoice> {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private targets: PCMail[],
 		private onDone: () => void
 	) {
@@ -11713,17 +11763,17 @@ class MoveToFolderModal extends FuzzySuggestModal<MoveChoice> {
 	}
 
 	renderSuggestion(m: { item: MoveChoice }, el: HTMLElement): void {
-		el.addClass("pcal-palette-row");
-		el.createSpan({ cls: "pcal-palette-label", text: m.item.path });
-		el.createSpan({ cls: "pcal-palette-hint", text: m.item.recent ? `${m.item.accountLabel} — recent` : m.item.accountLabel });
+		el.addClass("nya-palette-row");
+		el.createSpan({ cls: "nya-palette-label", text: m.item.path });
+		el.createSpan({ cls: "nya-palette-hint", text: m.item.recent ? `${m.item.accountLabel} — recent` : m.item.accountLabel });
 	}
 
 	onChooseItem(c: MoveChoice): void {
 		const mine = this.targets.filter((t) => t.accountId === c.accountId);
 		const skipped = this.targets.length - mine.length;
 		void this.plugin.moveMail(this.targets, c.accountId, c.folderId, c.name).then((n) => {
-			if (n) new Notice(n > 1 ? `AmberNyaDesk: moved ${n} messages to ${c.name}.` : `AmberNyaDesk: moved to ${c.name}.`);
-			if (skipped) new Notice(`AmberNyaDesk: ${skipped} message${skipped === 1 ? "" : "s"} stayed put, being in another account. A move cannot cross mailboxes.`, 8000);
+			if (n) new Notice(n > 1 ? `NyaHome: moved ${n} messages to ${c.name}.` : `NyaHome: moved to ${c.name}.`);
+			if (skipped) new Notice(`NyaHome: ${skipped} message${skipped === 1 ? "" : "s"} stayed put, being in another account. A move cannot cross mailboxes.`, 8000);
 			this.onDone();
 		});
 	}
@@ -11735,7 +11785,7 @@ class MoveToFolderModal extends FuzzySuggestModal<MoveChoice> {
 class SnoozedModal extends Modal {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onChange: () => void
 	) {
 		super(app);
@@ -11749,17 +11799,17 @@ class SnoozedModal extends Modal {
 	private draw() {
 		const c = this.contentEl;
 		c.empty();
-		c.addClass("pcal-snoozed");
+		c.addClass("nya-snoozed");
 		const rows = this.plugin.snoozedFor();
 		if (!rows.length) {
-			c.createDiv({ cls: "pcal-when-note", text: "Nothing is snoozed." });
+			c.createDiv({ cls: "nya-when-note", text: "Nothing is snoozed." });
 			return;
 		}
 		for (const rec of rows) {
-			const row = c.createDiv("pcal-snoozed-row");
-			const txt = row.createDiv("pcal-snoozed-text");
-			txt.createDiv({ cls: "pcal-snoozed-subject", text: rec.subject });
-			txt.createDiv({ cls: "pcal-snoozed-when", text: `Back ${fmtWhen(rec.dueMs, this.plugin.settings.use24h)}` });
+			const row = c.createDiv("nya-snoozed-row");
+			const txt = row.createDiv("nya-snoozed-text");
+			txt.createDiv({ cls: "nya-snoozed-subject", text: rec.subject });
+			txt.createDiv({ cls: "nya-snoozed-when", text: `Back ${fmtWhen(rec.dueMs, this.plugin.settings.use24h)}` });
 			row.createEl("button", { text: "Bring back now" }).addEventListener("click", () => {
 				void this.plugin.unsnooze(rec).then(() => {
 					this.draw();
@@ -11768,7 +11818,7 @@ class SnoozedModal extends Modal {
 			});
 		}
 		c.createDiv({
-			cls: "pcal-when-note",
+			cls: "nya-when-note",
 			text: "Snoozed mail waits in the Snoozed folder in your mailbox. It returns to the inbox when its time comes and Obsidian is running; if it is closed, the message comes back the next time you open it.",
 		});
 	}
@@ -11800,7 +11850,7 @@ interface PaletteItem {
 class MailPaletteModal extends FuzzySuggestModal<PaletteItem> {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private view: MailView
 	) {
 		super(app);
@@ -11821,9 +11871,9 @@ class MailPaletteModal extends FuzzySuggestModal<PaletteItem> {
 	}
 
 	renderSuggestion(m: { item: PaletteItem }, el: HTMLElement): void {
-		el.addClass("pcal-palette-row");
-		el.createSpan({ cls: "pcal-palette-label", text: m.item.label });
-		if (m.item.hint) el.createSpan({ cls: "pcal-palette-hint", text: m.item.hint });
+		el.addClass("nya-palette-row");
+		el.createSpan({ cls: "nya-palette-label", text: m.item.label });
+		if (m.item.hint) el.createSpan({ cls: "nya-palette-hint", text: m.item.hint });
 	}
 
 	onChooseItem(i: PaletteItem): void {
@@ -11836,7 +11886,7 @@ class MailShortcutsModal extends Modal {
 	onOpen() {
 		this.titleEl.setText("Mail shortcuts");
 		const c = this.contentEl;
-		c.addClass("pcal-shortcuts");
+		c.addClass("nya-shortcuts");
 		const groups: [string, [string, string][]][] = [
 			[
 				"Moving",
@@ -11880,14 +11930,14 @@ class MailShortcutsModal extends Modal {
 			],
 		];
 		for (const [title, rows] of groups) {
-			c.createDiv({ cls: "pcal-shortcuts-head", text: title });
+			c.createDiv({ cls: "nya-shortcuts-head", text: title });
 			for (const [k, what] of rows) {
-				const row = c.createDiv("pcal-shortcuts-row");
-				row.createSpan({ cls: "pcal-shortcuts-key", text: k });
-				row.createSpan({ cls: "pcal-shortcuts-what", text: what });
+				const row = c.createDiv("nya-shortcuts-row");
+				row.createSpan({ cls: "nya-shortcuts-key", text: k });
+				row.createSpan({ cls: "nya-shortcuts-what", text: what });
 			}
 		}
-		c.createDiv({ cls: "pcal-shortcuts-head", text: "Search terms" });
+		c.createDiv({ cls: "nya-shortcuts-head", text: "Search terms" });
 		for (const [k, what] of [
 			["from:name", "The sender's name or address"],
 			["subject:word", "The subject only"],
@@ -11896,12 +11946,12 @@ class MailShortcutsModal extends Modal {
 			["has:attachment", "Carries a file"],
 			['"exact words"', "That run, in that order"],
 		] as [string, string][]) {
-			const row = c.createDiv("pcal-shortcuts-row");
-			row.createSpan({ cls: "pcal-shortcuts-key", text: k });
-			row.createSpan({ cls: "pcal-shortcuts-what", text: what });
+			const row = c.createDiv("nya-shortcuts-row");
+			row.createSpan({ cls: "nya-shortcuts-key", text: k });
+			row.createSpan({ cls: "nya-shortcuts-what", text: what });
 		}
 		c.createDiv({
-			cls: "pcal-shortcuts-note",
+			cls: "nya-shortcuts-note",
 			text: "Shortcuts work while the message list has focus, never while you are typing in a field. Typing in the search box searches the mail already on this device, which is instant; Enter runs the same words against the whole mailbox.",
 		});
 	}
@@ -11999,7 +12049,7 @@ class ImapMailView extends ItemView {
 
 	constructor(
 		leaf: WorkspaceLeaf,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(leaf);
 		this.selectedAccountId = this.plugin.settings.imapAccounts[0]?.id ?? "";
@@ -12020,25 +12070,26 @@ class ImapMailView extends ItemView {
 	async onOpen() {
 		const root = this.contentEl;
 		root.empty();
-		root.addClass("pcal-imap-mail");
-		const header = root.createDiv("pcal-mail-header");
-		const foldToggle = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
+		root.removeClass("nya-root", "nya-mail-root");
+		root.addClass("nya-imap-mail");
+		const header = root.createDiv("nya-mail-header");
+		const foldToggle = header.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
 		setIcon(foldToggle, "panel-left");
 		foldToggle.toggleClass("is-active", this.plugin.focusOn());
 		foldToggle.addEventListener("click", () => {
 			this.plugin.toggleFocus();
 			foldToggle.toggleClass("is-active", this.plugin.focusOn());
 		});
-		const calSwap = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Open calendar" } });
+		const calSwap = header.createEl("button", { cls: "nya-icon-btn nya-primary-swap", attr: { "aria-label": "Open calendar" } });
 		setIcon(calSwap, "calendar-days");
 		calSwap.addEventListener("click", () => {
 			void this.leaf.setViewState({ type: VIEW_TYPE, active: true });
 		});
-		header.createDiv({ cls: "pcal-mail-title", text: "IMAP" });
-		const right = header.createDiv("pcal-header-right");
-		const actions = right.createDiv("pcal-imap-actions");
+		header.createDiv({ cls: "nya-mail-title", text: "IMAP" });
+		const right = header.createDiv("nya-header-right");
+		const actions = right.createDiv("nya-imap-actions");
 		const addHeaderAction = (key: string, icon: string, label: string, onClick: () => void) => {
-			const b = actions.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": label } });
+			const b = actions.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
 			setIcon(b, icon);
 			b.addEventListener("click", () => {
 				if (!b.disabled) onClick();
@@ -12065,27 +12116,27 @@ class ImapMailView extends ItemView {
 			if (a) this.pickFolderForTargets(a);
 		});
 		addHeaderAction("delete", "trash-2", "Delete selected", () => void this.deleteTargets(this.targetMessages().map((m) => m.uid)));
-		const newBtn = right.createEl("button", { cls: "pcal-new-btn", text: "New mail" });
+		const newBtn = right.createEl("button", { cls: "nya-new-btn", text: "New mail" });
 		newBtn.addEventListener("click", () => this.compose());
-		const orderBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Reorder IMAP accounts" } });
+		const orderBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Reorder IMAP accounts" } });
 		setIcon(orderBtn, "arrow-up-down");
 		orderBtn.addEventListener("click", () => new ImapAccountOrderModal(this.app, this.plugin, () => this.refreshFolders()).open());
-		const outlookBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Open Outlook mail" } });
+		const outlookBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Open Outlook mail" } });
 		setIcon(outlookBtn, "mail");
 		outlookBtn.addEventListener("click", () => {
 			void this.leaf.setViewState({ type: VIEW_TYPE_MAIL, active: true });
 		});
-		const settingsBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "IMAP settings" } });
+		const settingsBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "IMAP settings" } });
 		setIcon(settingsBtn, "settings");
 		settingsBtn.addEventListener("click", () => this.plugin.openOwnSettings());
-		const refreshBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Refresh folders and mail" } });
+		const refreshBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Refresh folders and mail" } });
 		setIcon(refreshBtn, "refresh-cw");
 		refreshBtn.addEventListener("click", () => void this.refreshFolders());
-		const draftBtn = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Saved drafts" } });
+		const draftBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Saved drafts" } });
 		setIcon(draftBtn, "file-edit");
 		draftBtn.addEventListener("click", () => new ImapDraftListModal(this.app, this.plugin, (draft) => this.openDraft(draft)).open());
 
-		const searchRow = root.createDiv("pcal-imap-search");
+		const searchRow = root.createDiv("nya-imap-search");
 		const search = searchRow.createEl("input", { type: "search", attr: { placeholder: "Search mail..." } });
 		search.addEventListener("change", () => {
 			this.query = search.value;
@@ -12098,10 +12149,10 @@ class ImapMailView extends ItemView {
 			}
 		});
 
-		const body = root.createDiv("pcal-imap-mail-body");
-		this.foldersEl = body.createDiv("pcal-imap-folders");
-		const middle = body.createDiv("pcal-imap-middle");
-		const handle = middle.createEl("button", { cls: "pcal-imap-list-handle", attr: { "aria-label": "Fold or unfold the message list" } });
+		const body = root.createDiv("nya-imap-mail-body");
+		this.foldersEl = body.createDiv("nya-imap-folders");
+		const middle = body.createDiv("nya-imap-middle");
+		const handle = middle.createEl("button", { cls: "nya-imap-list-handle", attr: { "aria-label": "Fold or unfold the message list" } });
 		setIcon(handle, "panel-left-close");
 		handle.addEventListener("click", () => {
 			const folded = root.hasClass("is-list-collapsed");
@@ -12109,8 +12160,8 @@ class ImapMailView extends ItemView {
 			handle.empty();
 			setIcon(handle, folded ? "panel-left-close" : "panel-left-open");
 		});
-		this.listEl = middle.createDiv("pcal-imap-list");
-		this.readEl = body.createDiv("pcal-imap-read");
+		this.listEl = middle.createDiv("nya-imap-list");
+		this.readEl = body.createDiv("nya-imap-read");
 		this.attachListScroll();
 		this.restoreSelection();
 		// Local data first. No server connection, login, or metadata fetch can
@@ -12128,14 +12179,14 @@ class ImapMailView extends ItemView {
 
 	private restoreSelection() {
 		const store = this.app as unknown as { loadLocalStorage: (k: string) => string | null };
-		this.selectedAccountId = store.loadLocalStorage("ambernyadesk:imap-account") ?? this.selectedAccountId;
-		this.selectedFolder = store.loadLocalStorage("ambernyadesk:imap-folder") ?? this.selectedFolder;
+		this.selectedAccountId = store.loadLocalStorage("nyahome:imap-account") ?? this.selectedAccountId;
+		this.selectedFolder = store.loadLocalStorage("nyahome:imap-folder") ?? this.selectedFolder;
 	}
 
 	private rememberSelection() {
 		const store = this.app as unknown as { saveLocalStorage: (k: string, v: unknown) => void };
-		store.saveLocalStorage("ambernyadesk:imap-account", this.selectedAccountId);
-		store.saveLocalStorage("ambernyadesk:imap-folder", this.selectedFolder);
+		store.saveLocalStorage("nyahome:imap-account", this.selectedAccountId);
+		store.saveLocalStorage("nyahome:imap-folder", this.selectedFolder);
 	}
 
 	private accounts(): ImapAccount[] {
@@ -12158,7 +12209,7 @@ class ImapMailView extends ItemView {
 		const all = this.accounts();
 		if (!all.length) {
 			this.foldersEl.empty();
-			this.foldersEl.createDiv({ cls: "pcal-empty", text: "No IMAP accounts connected." });
+			this.foldersEl.createDiv({ cls: "nya-empty", text: "No IMAP accounts connected." });
 			const b = this.foldersEl.createEl("button", { text: "Open settings", cls: "mod-cta" });
 			b.addEventListener("click", () => this.plugin.openOwnSettings());
 			return;
@@ -12172,7 +12223,7 @@ class ImapMailView extends ItemView {
 				} catch (e) {
 					const cached = this.folderCache.get(a.id) ?? [];
 					if (!cached.length) this.folderCache.set(a.id, []);
-					new Notice(`AmberNyaDesk: could not list folders for ${imapLabel(a)} (${e instanceof Error ? e.message : String(e)}).`);
+					new Notice(`NyaHome: could not list folders for ${imapLabel(a)} (${e instanceof Error ? e.message : String(e)}).`);
 				}
 			})
 		);
@@ -12234,18 +12285,18 @@ class ImapMailView extends ItemView {
 		host.empty();
 		const accounts = this.accounts();
 		if (!accounts.length) {
-			host.createDiv({ cls: "pcal-empty", text: "No IMAP accounts connected." });
+			host.createDiv({ cls: "nya-empty", text: "No IMAP accounts connected." });
 			return;
 		}
-		const orderBtn = host.createEl("button", { cls: "pcal-imap-order-btn", text: "Adjust account order" });
+		const orderBtn = host.createEl("button", { cls: "nya-imap-order-btn", text: "Adjust account order" });
 		orderBtn.addEventListener("click", () => new ImapAccountOrderModal(this.app, this.plugin, () => this.refreshFolders()).open());
 		for (const a of accounts) {
 			const infos = this.folderCache.get(a.id) ?? [];
 			const folders = infos.map((f) => f.path);
 			const open = this.expanded.has(a.id) || a.id === this.selectedAccountId;
-			const head = host.createDiv("pcal-imap-account" + (open ? " is-open" : ""));
-			head.createSpan({ cls: "pcal-imap-account-name", text: imapLabel(a) });
-			head.createSpan({ cls: "pcal-imap-account-count", text: String(folders.length) });
+			const head = host.createDiv("nya-imap-account" + (open ? " is-open" : ""));
+			head.createSpan({ cls: "nya-imap-account-name", text: imapLabel(a) });
+			head.createSpan({ cls: "nya-imap-account-count", text: String(folders.length) });
 			head.addEventListener("click", () => {
 				if (this.expanded.has(a.id)) this.expanded.delete(a.id);
 				else this.expanded.add(a.id);
@@ -12259,11 +12310,11 @@ class ImapMailView extends ItemView {
 			});
 			if (!open) continue;
 			if (this.loadingFolders && !folders.length) {
-				host.createDiv({ cls: "pcal-empty", text: "Loading folders..." });
+				host.createDiv({ cls: "nya-empty", text: "Loading folders..." });
 				continue;
 			}
 			if (!folders.length) {
-				host.createDiv({ cls: "pcal-empty", text: "No folders loaded." });
+				host.createDiv({ cls: "nya-empty", text: "No folders loaded." });
 				continue;
 			}
 			const sorted = [...folders].sort((x, y) => {
@@ -12271,11 +12322,11 @@ class ImapMailView extends ItemView {
 				return weight(x) - weight(y) || x.localeCompare(y);
 			});
 			for (const f of sorted) {
-				const row = host.createDiv("pcal-imap-folder");
+				const row = host.createDiv("nya-imap-folder");
 				row.toggleClass("is-selected", a.id === this.selectedAccountId && f === this.selectedFolder);
 				const depth = f.split("/").length - 1;
 				row.style.paddingLeft = `${8 + depth * 12}px`;
-				row.createSpan({ cls: "pcal-imap-folder-name", text: (infos.find((x) => x.path === f)?.name) || f.split("/").pop() || f });
+				row.createSpan({ cls: "nya-imap-folder-name", text: (infos.find((x) => x.path === f)?.name) || f.split("/").pop() || f });
 				row.addEventListener("click", () => void this.selectFolder(a.id, f));
 			}
 		}
@@ -12287,7 +12338,7 @@ class ImapMailView extends ItemView {
 		if (!host) return;
 		if (!a || !this.selectedFolder) {
 			host.empty();
-			host.createDiv({ cls: "pcal-empty", text: "Pick a folder to read." });
+			host.createDiv({ cls: "nya-empty", text: "Pick a folder to read." });
 			return;
 		}
 		try {
@@ -12299,7 +12350,7 @@ class ImapMailView extends ItemView {
 			this.renderList(host);
 		} catch (e) {
 			host.empty();
-			host.createDiv({ cls: "pcal-empty", text: `Could not load messages (${e instanceof Error ? e.message : String(e)}).` });
+			host.createDiv({ cls: "nya-empty", text: `Could not load messages (${e instanceof Error ? e.message : String(e)}).` });
 		}
 	}
 
@@ -12314,11 +12365,11 @@ class ImapMailView extends ItemView {
 			const q = this.query.trim().toLowerCase();
 			this.messages = q ? raw.filter((m) => `${m.subject}\n${m.from}\n${m.snippet ?? ""}`.toLowerCase().includes(q)) : raw;
 			this.renderList(this.listEl);
-			if (this.plugin.settings.mailDebugLog) console.debug(`AmberNyaDesk IMAP: render after sync took ${(performance.now() - started).toFixed(1)} ms.`);
+			if (this.plugin.settings.mailDebugLog) console.debug(`NyaHome IMAP: render after sync took ${(performance.now() - started).toFixed(1)} ms.`);
 		} catch (e) {
 			const host = this.listEl;
-			if (host && !host.querySelector(".pcal-imap-message"))
-				host.createDiv({ cls: "pcal-empty", text: `Could not refresh messages (${e instanceof Error ? e.message : String(e)}).` });
+			if (host && !host.querySelector(".nya-imap-message"))
+				host.createDiv({ cls: "nya-empty", text: `Could not refresh messages (${e instanceof Error ? e.message : String(e)}).` });
 		}
 	}
 
@@ -12335,10 +12386,10 @@ class ImapMailView extends ItemView {
 		this.rowPool.clear();
 		this.listInner = null;
 		if (!this.messages.length) {
-			host.createDiv({ cls: "pcal-empty", text: this.selectedFolder ? "No cached messages yet." : "Pick a folder to read." });
+			host.createDiv({ cls: "nya-empty", text: this.selectedFolder ? "No cached messages yet." : "Pick a folder to read." });
 			return;
 		}
-		const bar = host.createDiv("pcal-imap-listbar");
+		const bar = host.createDiv("nya-imap-listbar");
 		const allCheck = bar.createEl("input", { type: "checkbox" });
 		allCheck.checked = this.checked.size > 0 && this.checked.size === this.messages.length;
 		allCheck.addEventListener("change", () => {
@@ -12346,20 +12397,20 @@ class ImapMailView extends ItemView {
 			if (allCheck.checked) for (const m of this.messages) this.checked.add(m.uid);
 			this.renderBatchBar();
 		});
-		bar.createSpan({ cls: "pcal-imap-listcount", text: `${this.messages.length}` });
+		bar.createSpan({ cls: "nya-imap-listcount", text: `${this.messages.length}` });
 		this.batchBar = bar;
-		const tools = bar.createDiv("pcal-imap-listtools");
-		const del = tools.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Delete selected" } });
+		const tools = bar.createDiv("nya-imap-listtools");
+		const del = tools.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Delete selected" } });
 		setIcon(del, "trash-2");
 		del.addEventListener("click", () => void this.deleteChecked());
-		const inner = host.createDiv("pcal-imap-listinner");
+		const inner = host.createDiv("nya-imap-listinner");
 		this.listInner = inner;
 		inner.style.height = `${this.messages.length * this.listRowHeight}px`;
 		if (id === this.loadId) {
 			host.scrollTop = scrollTop;
 			this.renderWindow();
 		}
-		if (this.plugin.settings.mailDebugLog) console.debug(`AmberNyaDesk IMAP: render visible rows took ${(performance.now() - started).toFixed(1)} ms.`);
+		if (this.plugin.settings.mailDebugLog) console.debug(`NyaHome IMAP: render visible rows took ${(performance.now() - started).toFixed(1)} ms.`);
 	}
 
 	/** Paint the rows the viewport needs, reusing pooled row nodes. */
@@ -12385,7 +12436,7 @@ class ImapMailView extends ItemView {
 			row.style.top = `${i * this.listRowHeight}px`;
 			row.toggleClass("is-selected", this.selectedMessage?.uid === m.uid);
 			row.toggleClass("is-unread", m.unread);
-			const check = row.querySelector(".pcal-imap-check") as HTMLInputElement | null;
+			const check = row.querySelector(".nya-imap-check") as HTMLInputElement | null;
 			if (check) check.checked = this.checked.has(m.uid);
 		}
 		for (const [uid, row] of [...this.rowPool]) {
@@ -12464,12 +12515,12 @@ class ImapMailView extends ItemView {
 	}
 
 	private messageRow(host: HTMLElement, a: ImapAccount, m: ImapMessage): HTMLElement {
-		const row = host.createDiv("pcal-imap-message");
+		const row = host.createDiv("nya-imap-message");
 		row.dataset.uid = String(m.uid);
 		row.toggleClass("is-unread", m.unread);
 		row.toggleClass("is-selected", this.selectedMessage?.uid === m.uid);
-		const top = row.createDiv("pcal-imap-message-top");
-		const check = top.createEl("input", { type: "checkbox", cls: "pcal-imap-check" });
+		const top = row.createDiv("nya-imap-message-top");
+		const check = top.createEl("input", { type: "checkbox", cls: "nya-imap-check" });
 		check.checked = this.checked.has(m.uid);
 		check.addEventListener("click", (e) => e.stopPropagation());
 		check.addEventListener("change", () => {
@@ -12477,12 +12528,12 @@ class ImapMailView extends ItemView {
 			else this.checked.delete(m.uid);
 			this.renderBatchBar();
 		});
-		if (m.flagged) top.createSpan({ cls: "pcal-imap-flag", attr: { "aria-label": "Starred" }, text: "★" });
-		top.createDiv({ cls: "pcal-imap-from", text: m.from || "(unknown sender)" });
-		top.createDiv({ cls: "pcal-imap-date", text: fmtDayShort(keyOfMs(new Date(m.date).getTime()), this.plugin.settings.use24h) });
-		row.createDiv({ cls: "pcal-imap-subject", text: m.subject });
-		if (m.hasAttachment) row.createSpan({ cls: "pcal-imap-attachment", text: "📎" });
-		if (m.snippet) row.createDiv({ cls: "pcal-imap-snippet", text: m.snippet });
+		if (m.flagged) top.createSpan({ cls: "nya-imap-flag", attr: { "aria-label": "Starred" }, text: "★" });
+		top.createDiv({ cls: "nya-imap-from", text: m.from || "(unknown sender)" });
+		top.createDiv({ cls: "nya-imap-date", text: fmtDayShort(keyOfMs(new Date(m.date).getTime()), this.plugin.settings.use24h) });
+		row.createDiv({ cls: "nya-imap-subject", text: m.subject });
+		if (m.hasAttachment) row.createSpan({ cls: "nya-imap-attachment", text: "📎" });
+		if (m.snippet) row.createDiv({ cls: "nya-imap-snippet", text: m.snippet });
 		row.addEventListener("click", () => {
 			this.listEl?.focus();
 			void this.openMessage(this.messages.find((x) => x.uid === m.uid) ?? m);
@@ -12495,16 +12546,16 @@ class ImapMailView extends ItemView {
 	}
 
 	private renderBatchBar() {
-		const bar = this.listEl?.querySelector(".pcal-imap-listbar") as HTMLElement | null;
+		const bar = this.listEl?.querySelector(".nya-imap-listbar") as HTMLElement | null;
 		if (bar) {
-			const label = bar.querySelector(".pcal-imap-listcount") as HTMLElement | null;
+			const label = bar.querySelector(".nya-imap-listcount") as HTMLElement | null;
 			if (label) label.textContent = this.checked.size ? `${this.checked.size} / ${this.messages.length}` : `${this.messages.length}`;
 			const all = bar.querySelector("input[type=checkbox]") as HTMLInputElement | null;
 			if (all) all.checked = this.checked.size > 0 && this.checked.size === this.messages.length;
 			bar.toggleClass("has-selection", this.checked.size > 0);
 		}
 		for (const [, row] of this.rowPool) {
-			const check = row.querySelector(".pcal-imap-check") as HTMLInputElement | null;
+			const check = row.querySelector(".nya-imap-check") as HTMLInputElement | null;
 			if (check) check.checked = this.checked.has(Number(row.dataset.uid));
 		}
 		this.updateHeaderActions();
@@ -12535,10 +12586,10 @@ class ImapMailView extends ItemView {
 					await this.clearReadPaneKeepingNeighbor(this.selectedMessage);
 					return;
 				}
-				new Notice("AmberNyaDesk: mail removed.");
+				new Notice("NyaHome: mail removed.");
 				await this.loadMessages();
 			} catch (e) {
-				new Notice(`AmberNyaDesk: could not delete mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
+				new Notice(`NyaHome: could not delete mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
 			}
 		};
 		if (uids.length > 1) {
@@ -12587,7 +12638,7 @@ class ImapMailView extends ItemView {
 			await Promise.all(targets.map((m) => this.plugin.mailService.setFlagged(a, this.selectedFolder, m.uid, makeFlagged)));
 			await this.loadMessages();
 		} catch (e) {
-			new Notice(`AmberNyaDesk: could not set the star (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			new Notice(`NyaHome: could not set the star (${e instanceof Error ? e.message : String(e)}).`, 8000);
 		}
 	}
 
@@ -12600,7 +12651,7 @@ class ImapMailView extends ItemView {
 			await Promise.all(targets.map((m) => this.plugin.mailService.markRead(a, this.selectedFolder, m.uid, read)));
 			await this.loadMessages();
 		} catch (e) {
-			new Notice(`AmberNyaDesk: could not set read state (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			new Notice(`NyaHome: could not set read state (${e instanceof Error ? e.message : String(e)}).`, 8000);
 		}
 	}
 
@@ -12621,10 +12672,10 @@ class ImapMailView extends ItemView {
 			}
 			this.checked.clear();
 			await this.loadMessages();
-			new Notice(`AmberNyaDesk: moved to ${destination}.`);
+			new Notice(`NyaHome: moved to ${destination}.`);
 		} catch (e) {
 			await this.loadMessages();
-			new Notice(`AmberNyaDesk: could not move mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			new Notice(`NyaHome: could not move mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
 		}
 	}
 
@@ -12682,7 +12733,7 @@ class ImapMailView extends ItemView {
 			}
 			await this.loadMessages();
 		} catch (e) {
-			new Notice(`AmberNyaDesk: could not delete mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			new Notice(`NyaHome: could not delete mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
 		}
 	}
 
@@ -12727,10 +12778,10 @@ class ImapMailView extends ItemView {
 			}
 			this.checked.delete(m.uid);
 			await this.loadMessages();
-			new Notice(`AmberNyaDesk: moved to ${destination}.`);
+			new Notice(`NyaHome: moved to ${destination}.`);
 		} catch (e) {
 			await this.loadMessages();
-			new Notice(`AmberNyaDesk: could not move mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			new Notice(`NyaHome: could not move mail (${e instanceof Error ? e.message : String(e)}).`, 8000);
 		}
 	}
 
@@ -12758,21 +12809,21 @@ class ImapMailView extends ItemView {
 	 *  offline. Runs in the background with a live progress notice. */
 	private async cacheAllMail() {
 		if (this.cacheAllRunning) {
-			new Notice("AmberNyaDesk: global cache is already running.");
+			new Notice("NyaHome: global cache is already running.");
 			return;
 		}
 		this.cacheAllRunning = true;
-		const notice = new Notice("AmberNyaDesk: caching all mail...", 0);
+		const notice = new Notice("NyaHome: caching all mail...", 0);
 		const started = performance.now();
 		try {
 			const res = await this.plugin.mailService.cacheAllMail((label, done, total) => {
-				notice.messageEl.setText(`AmberNyaDesk: caching ${label} - ${done}/${total}`);
+				notice.messageEl.setText(`NyaHome: caching ${label} - ${done}/${total}`);
 			});
-			new Notice(`AmberNyaDesk: cached ${res.bodies} mails across ${res.folders} folders (${res.accounts} accounts).`);
-			if (this.plugin.settings.mailDebugLog) console.debug(`AmberNyaDesk IMAP: global cache took ${(performance.now() - started).toFixed(1)} ms.`);
+			new Notice(`NyaHome: cached ${res.bodies} mails across ${res.folders} folders (${res.accounts} accounts).`);
+			if (this.plugin.settings.mailDebugLog) console.debug(`NyaHome IMAP: global cache took ${(performance.now() - started).toFixed(1)} ms.`);
 			await this.loadMessages();
 		} catch (e) {
-			new Notice(`AmberNyaDesk: global cache failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			new Notice(`NyaHome: global cache failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
 		} finally {
 			notice.hide();
 			this.cacheAllRunning = false;
@@ -12784,7 +12835,7 @@ class ImapMailView extends ItemView {
 		if (!a) return;
 		this.selectedMessage = m;
 		this.readEl.empty();
-		this.readEl.createDiv({ cls: "pcal-empty", text: "Loading message..." });
+		this.readEl.createDiv({ cls: "nya-empty", text: "Loading message..." });
 		try {
 			const body = await this.messageBody(a, this.selectedFolder, m);
 			this.selectedBody = body;
@@ -12792,7 +12843,7 @@ class ImapMailView extends ItemView {
 			this.renderMessage();
 		} catch (e) {
 			this.readEl.empty();
-			this.readEl.createDiv({ cls: "pcal-empty", text: `Could not read the message (${e instanceof Error ? e.message : String(e)}).` });
+			this.readEl.createDiv({ cls: "nya-empty", text: `Could not read the message (${e instanceof Error ? e.message : String(e)}).` });
 		}
 	}
 
@@ -12813,10 +12864,10 @@ class ImapMailView extends ItemView {
 		if (!host) return;
 		host.empty();
 		if (!m || !body) return;
-		const head = host.createDiv("pcal-imap-readhead");
-		head.createDiv({ cls: "pcal-imap-readsubject", text: m.subject });
-		head.createDiv({ cls: "pcal-imap-readmeta", text: `${m.from} · ${fmtDayShort(keyOfMs(new Date(m.date).getTime()), this.plugin.settings.use24h)}` });
-		const btns = host.createDiv("pcal-imap-readbtns");
+		const head = host.createDiv("nya-imap-readhead");
+		head.createDiv({ cls: "nya-imap-readsubject", text: m.subject });
+		head.createDiv({ cls: "nya-imap-readmeta", text: `${m.from} · ${fmtDayShort(keyOfMs(new Date(m.date).getTime()), this.plugin.settings.use24h)}` });
+		const btns = host.createDiv("nya-imap-readbtns");
 		btns.createEl("button", { text: "Reply" }).addEventListener("click", () => this.compose("reply"));
 		btns.createEl("button", { text: "Reply all" }).addEventListener("click", () => this.compose("replyAll"));
 		btns.createEl("button", { text: "Forward" }).addEventListener("click", () => this.compose("forward"));
@@ -12826,7 +12877,7 @@ class ImapMailView extends ItemView {
 			);
 			btns.createEl("button", { text: "Delete" }).addEventListener("click", () => void this.removeMessage(a, m));
 		}
-		const bodyEl = host.createDiv("pcal-imap-readbody");
+		const bodyEl = host.createDiv("nya-imap-readbody");
 		if (body.html) {
 			// Render the real content, not its source text. Obsidian's sanitizer strips script/style markup.
 			bodyEl.addClass("is-html");
@@ -12835,10 +12886,10 @@ class ImapMailView extends ItemView {
 			bodyEl.setText(body.text || "(empty message)");
 		}
 		if (body.attachments?.length) {
-			const atts = host.createDiv("pcal-imap-attachments");
-			atts.createDiv({ cls: "pcal-imap-attachments-title", text: "Attachments" });
+			const atts = host.createDiv("nya-imap-attachments");
+			atts.createDiv({ cls: "nya-imap-attachments-title", text: "Attachments" });
 			for (const a of body.attachments) {
-				const row = atts.createDiv("pcal-imap-attachment");
+				const row = atts.createDiv("nya-imap-attachment");
 				if (a.contentType.startsWith("image/")) {
 					row.createEl("img", { attr: { src: `data:${a.contentType};base64,${a.base64}`, alt: a.filename } });
 				}
@@ -12847,7 +12898,7 @@ class ImapMailView extends ItemView {
 					text: `${a.filename} (${fmtAttachmentSize(a.size)})`,
 					attr: { download: a.filename },
 				});
-				link.addClass("pcal-imap-attachment-link");
+				link.addClass("nya-imap-attachment-link");
 			}
 		}
 	}
@@ -12907,11 +12958,11 @@ class ImapFolderPickModal extends Modal {
 		this.titleEl.setText("Move to folder");
 		const c = this.contentEl;
 		if (!this.folders.length) {
-			c.createDiv({ cls: "pcal-empty", text: "No folders loaded." });
+			c.createDiv({ cls: "nya-empty", text: "No folders loaded." });
 			return;
 		}
 		for (const f of this.folders) {
-			const row = c.createDiv("pcal-imap-folder-pick");
+			const row = c.createDiv("nya-imap-folder-pick");
 			row.createSpan({ text: f.name });
 			row.addEventListener("click", () => {
 				this.close();
@@ -12932,7 +12983,7 @@ class ContactPickerModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onPick: (emails: string[]) => void,
 		private onChanged?: () => void
 	) {
@@ -12941,25 +12992,25 @@ class ContactPickerModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Choose contacts");
-		makeMovable(this.app, this, "ambernyadesk:contact-picker", { w: 520, h: 560 });
+		makeMovable(this.app, this, "nyahome:contact-picker", { w: 520, h: 560 });
 		const c = this.contentEl;
-		c.addClass("pcal-people");
+		c.addClass("nya-people");
 		void this.plugin.ensureSentContacts();
 		void this.plugin.ensureSavedContacts().then(() => this.draw());
-		const search = c.createEl("input", { cls: "pcal-people-search", attr: { type: "search", placeholder: "Search contacts..." } });
+		const search = c.createEl("input", { cls: "nya-people-search", attr: { type: "search", placeholder: "Search contacts..." } });
 		search.addEventListener("input", () => {
 			this.filter = search.value;
 			this.draw();
 		});
-		this.listEl = c.createDiv("pcal-people-list");
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
+		this.listEl = c.createDiv("nya-people-list");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
 		btns.createEl("button", { text: "Add contact" }).addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => {
 			this.draw();
 			this.onChanged?.();
 		}).open());
-		btns.createSpan("pcal-compose-btns-gap");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-		btns.createEl("button", { text: "Add selected", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => {
+		btns.createEl("button", { text: "Add selected", cls: "mod-cta nya-send-btn" }).addEventListener("click", () => {
 			if (!this.selected.size) return;
 			this.onPick([...this.selected]);
 			this.close();
@@ -12972,11 +13023,11 @@ class ContactPickerModal extends Modal {
 		host.empty();
 		const hits = matchContacts(this.plugin.people(), this.filter, 200) as PersonCard[];
 		if (!hits.length) {
-			host.createDiv({ cls: "pcal-when-note", text: "No contacts yet." });
+			host.createDiv({ cls: "nya-when-note", text: "No contacts yet." });
 			return;
 		}
 		for (const p of hits) {
-			const row = host.createDiv("pcal-people-row");
+			const row = host.createDiv("nya-people-row");
 			const check = row.createEl("input", { type: "checkbox" });
 			check.checked = this.selected.has(p.email);
 			check.addEventListener("click", (e) => {
@@ -12984,9 +13035,9 @@ class ContactPickerModal extends Modal {
 				else this.selected.delete(p.email);
 				e.stopPropagation();
 			});
-			const mid = row.createDiv("pcal-people-mid");
-			mid.createDiv({ cls: "pcal-people-name", text: p.name || p.email });
-			mid.createDiv({ cls: "pcal-people-sub", text: p.email });
+			const mid = row.createDiv("nya-people-mid");
+			mid.createDiv({ cls: "nya-people-name", text: p.name || p.email });
+			mid.createDiv({ cls: "nya-people-sub", text: p.email });
 			row.addEventListener("click", () => {
 				if (this.selected.has(p.email)) this.selected.delete(p.email);
 				else this.selected.add(p.email);
@@ -13003,7 +13054,7 @@ class ContactPickerModal extends Modal {
 class ContactEditModal extends Modal {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private contact: ContactRecord | null,
 		private onDone: () => void
 	) {
@@ -13023,11 +13074,11 @@ class ContactEditModal extends Modal {
 		new Setting(c).setName("Company").addText((t) => t.setValue(company).onChange((v) => (company = v)));
 		new Setting(c).setName("Title").addText((t) => t.setValue(title).onChange((v) => (title = v)));
 		new Setting(c).setName("Phone").addText((t) => t.setValue(phone).onChange((v) => (phone = v)));
-		const btns = c.createDiv("pcal-modal-btns");
+		const btns = c.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			if (!email.trim().includes("@")) {
-				new Notice("AmberNyaDesk: enter an email address.");
+				new Notice("NyaHome: enter an email address.");
 				return;
 			}
 			if (this.contact) this.plugin.updateContact(this.contact.id, { name, email, company, title, phone });
@@ -13047,7 +13098,7 @@ class ContactEditModal extends Modal {
 class ImapAccountOrderModal extends Modal {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onDone: () => void
 	) {
 		super(app);
@@ -13062,8 +13113,8 @@ class ImapAccountOrderModal extends Modal {
 	private renderRows(c: HTMLElement) {
 		const s = this.plugin.settings;
 		for (const [i, a] of s.imapAccounts.entries()) {
-			const row = c.createDiv("pcal-imap-order-row");
-			row.createSpan({ cls: "pcal-imap-order-name", text: imapLabel(a) });
+			const row = c.createDiv("nya-imap-order-row");
+			row.createSpan({ cls: "nya-imap-order-name", text: imapLabel(a) });
 			row.createEl("button", { text: "↑" }).addEventListener("click", () => {
 				if (i > 0) {
 					const next = [...s.imapAccounts];
@@ -13083,7 +13134,7 @@ class ImapAccountOrderModal extends Modal {
 				}
 			});
 		}
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Done", cls: "mod-cta" }).addEventListener("click", () => {
 			this.onDone();
 			this.close();
@@ -13115,7 +13166,7 @@ class PromptModal extends Modal {
 				if (f.placeholder) t.setPlaceholder(f.placeholder);
 				inputs.push(t.inputEl);
 			});
-		const btns = this.contentEl.createDiv("pcal-modal-btns");
+		const btns = this.contentEl.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			this.onSubmit(inputs.map((i) => i.value));
@@ -13134,7 +13185,7 @@ class PromptModal extends Modal {
 class SketchNoteModal extends Modal {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private note: SketchNote
 	) {
 		super(app);
@@ -13143,12 +13194,12 @@ class SketchNoteModal extends Modal {
 	onOpen() {
 		this.titleEl.setText("随笔集");
 		const c = this.contentEl;
-		c.addClass("pcal-sketch-modal");
-		const head = c.createDiv("pcal-sketch-head");
+		c.addClass("nya-sketch-modal");
+		const head = c.createDiv("nya-sketch-head");
 		const title = head.createEl("input", { attr: { type: "text", placeholder: "标题" } });
 		title.value = this.note.title;
 		title.addEventListener("input", () => this.plugin.updateSketchNote(this.note.id, { title: title.value }));
-		const exit = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "删除并退出" } });
+		const exit = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "删除并退出" } });
 		setIcon(exit, "trash-2");
 		exit.addEventListener("click", () => {
 			new ConfirmModal(this.app, `删除随笔“${this.note.title}”？`, "这份灵感会从日历上移除。", "删除并退出", () => {
@@ -13156,7 +13207,7 @@ class SketchNoteModal extends Modal {
 				this.close();
 			}).open();
 		});
-		const body = c.createDiv("pcal-sketch-body");
+		const body = c.createDiv("nya-sketch-body");
 		const text = body.createEl("textarea", { attr: { placeholder: "把灵感随手写在这里..." } });
 		text.value = this.note.text;
 		text.addEventListener("input", () => this.plugin.updateSketchNote(this.note.id, { text: text.value }));
@@ -13204,7 +13255,7 @@ class PowerCalendarView extends ItemView {
 
 	constructor(
 		leaf: WorkspaceLeaf,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(leaf);
 		this.mode = Platform.isPhone ? plugin.settings.phoneDefaultMode : plugin.settings.defaultMode;
@@ -13229,6 +13280,8 @@ class PowerCalendarView extends ItemView {
 		key("/", () => new EventFindModal(this.app, this.plugin).open());
 		key("ArrowLeft", () => this.step(-1));
 		key("ArrowRight", () => this.step(1));
+		key("ArrowUp", () => this.step(-1));
+		key("ArrowDown", () => this.step(1));
 		key("F", () => this.toggleFullscreen());
 		key("S", () => this.toggleSidebar());
 		this.scope.register([], "Escape", () => {
@@ -13256,15 +13309,19 @@ class PowerCalendarView extends ItemView {
 		this.plugin.listeners.add(this.onData);
 		const root = this.contentEl;
 		root.empty();
-		root.addClass("pcal-root");
-		root.createDiv("pcal-background");
+		// the contentEl is reused when one leaf swaps calendar/mail, so the
+		// last view's root class has to go before this tab builds its layout
+		root.removeClass("nya-mail-root", "nya-imap-mail");
+		this.containerEl.removeClass("nya-fullscreen");
+		root.addClass("nya-root");
+		root.createDiv("nya-background");
 		this.applyBackground();
 
-		const header = root.createDiv("pcal-header");
+		const header = root.createDiv("nya-header");
 		// first in the row and the same glyph as the mail view's, because it is
 		// the same button doing the same thing to the same sidebar: a control
 		// that moves depending on which tab you are on is a different control
-		this.foldToggleBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
+		this.foldToggleBtn = header.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
 		setIcon(this.foldToggleBtn, "panel-left");
 		this.foldToggleBtn.toggleClass("is-active", this.plugin.focusOn());
 		this.foldToggleBtn.addEventListener("click", () => {
@@ -13275,28 +13332,28 @@ class PowerCalendarView extends ItemView {
 		if (!Platform.isPhone) {
 			// the notes toggle keeps the panel glyph, so this one takes the
 			// columns shape: two panes side by side, which is what it does
-			const sbBtn = header.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Show or hide this calendar's month picker and agenda rail (S)" } });
+			const sbBtn = header.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Show or hide this calendar's month picker and agenda rail (S)" } });
 			setIcon(sbBtn, pickIcon("columns-2", "columns", "layout-list", "list"));
 			sbBtn.addEventListener("click", () => this.toggleSidebar());
 		}
-		const nav = header.createDiv("pcal-nav");
-		const prev = nav.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Previous (left arrow)" } });
+		const nav = header.createDiv("nya-nav");
+		const prev = nav.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Previous (left arrow)" } });
 		setIcon(prev, "chevron-left");
 		prev.addEventListener("click", () => this.step(-1));
-		const next = nav.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Next (right arrow)" } });
+		const next = nav.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Next (right arrow)" } });
 		setIcon(next, "chevron-right");
 		next.addEventListener("click", () => this.step(1));
-		const today = nav.createEl("button", { cls: "pcal-today-btn", text: "Today", attr: { "aria-label": "Go to today (T)" } });
+		const today = nav.createEl("button", { cls: "nya-today-btn", text: "Today", attr: { "aria-label": "Go to today (T)" } });
 		today.addEventListener("click", () => this.goToday());
 
-		this.titleEl = header.createDiv("pcal-title");
+		this.titleEl = header.createDiv("nya-title");
 		this.titleEl.setAttribute("aria-label", "Jump to a month");
 		this.titleEl.addEventListener("click", () => this.openMini());
 
-		const right = header.createDiv("pcal-header-right");
-		this.newBtn = right.createEl("button", { cls: "pcal-new-btn", attr: { "aria-label": "New event (C); the arrow offers mail too" } });
+		const right = header.createDiv("nya-header-right");
+		this.newBtn = right.createEl("button", { cls: "nya-new-btn", attr: { "aria-label": "New event (C); the arrow offers mail too" } });
 		this.newBtn.createSpan({ text: "New event" });
-		const newCaret = this.newBtn.createSpan("pcal-mode-caret");
+		const newCaret = this.newBtn.createSpan("nya-mode-caret");
 		setIcon(newCaret, "chevron-down");
 		this.newBtn.addEventListener("click", (e) => {
 			if (e.target instanceof Node && newCaret.contains(e.target)) {
@@ -13308,15 +13365,15 @@ class PowerCalendarView extends ItemView {
 			}
 			this.quickCreate();
 		});
-		const modes = right.createDiv("pcal-modes");
+		const modes = right.createDiv("nya-modes");
 		// route-one switch: one leaf, calendar and mail trade places in it
-		const mailSwap = right.createEl("button", { cls: "pcal-mode-btn", attr: { "aria-label": "Open inbox" } });
+		const mailSwap = right.createEl("button", { cls: "nya-mode-btn nya-primary-swap", attr: { "aria-label": "Open inbox" } });
 		setIcon(mailSwap, "mail");
 		mailSwap.addEventListener("click", () => {
 			void this.leaf.setViewState({ type: this.plugin.settings.imapAccounts.length ? VIEW_TYPE_MAIL_IMAP : VIEW_TYPE_MAIL, active: true });
 		});
 		const modeBtn = (m: ViewMode, label: string, hint: string, onClick?: (e: MouseEvent) => void) => {
-			const b = modes.createEl("button", { cls: "pcal-mode-btn", text: label, attr: { "aria-label": `${label} view (${hint})` } });
+			const b = modes.createEl("button", { cls: "nya-mode-btn", text: label, attr: { "aria-label": `${label} view (${hint})` } });
 			b.addEventListener("click", (e) => (onClick ? onClick(e) : this.setMode(m)));
 			this.modeBtns.set(m, b);
 		};
@@ -13325,9 +13382,9 @@ class PowerCalendarView extends ItemView {
 		modeBtn("workweek", "Work week", "5");
 		// Day wears a visible dropdown arrow: the label switches the view, the
 		// arrow picks how many days it spans, Outlook-style
-		const dayBtn = modes.createEl("button", { cls: "pcal-mode-btn", attr: { "aria-label": "Day view (D); the arrow picks 1-7 days" } });
+		const dayBtn = modes.createEl("button", { cls: "nya-mode-btn", attr: { "aria-label": "Day view (D); the arrow picks 1-7 days" } });
 		this.dayLabelEl = dayBtn.createSpan({ text: "Day" });
-		const dayCaret = dayBtn.createSpan("pcal-mode-caret");
+		const dayCaret = dayBtn.createSpan("nya-mode-caret");
 		setIcon(dayCaret, "chevron-down");
 		dayBtn.addEventListener("click", (e) => {
 			if ((e.target instanceof Node && dayCaret.contains(e.target)) || this.mode === "day") this.openDayCountMenu(e);
@@ -13336,9 +13393,9 @@ class PowerCalendarView extends ItemView {
 		this.modeBtns.set("day", dayBtn);
 		modeBtn("agenda", "Agenda", "A");
 		modeBtn("tasks", "Tasks", "K");
-		this.calToolsEl = right.createDiv("pcal-cal-tools");
+		this.calToolsEl = right.createDiv("nya-cal-tools");
 		this.renderCalToolbar();
-		const more = right.createEl("button", { cls: "pcal-icon-btn pcal-mail-tool-more", attr: { "aria-label": "Customize the toolbar" } });
+		const more = right.createEl("button", { cls: "nya-icon-btn nya-mail-tool-more", attr: { "aria-label": "Customize the toolbar" } });
 		setIcon(more, "settings-2");
 		more.addEventListener("click", () =>
 			new ToolbarModal(
@@ -13354,14 +13411,14 @@ class PowerCalendarView extends ItemView {
 				() => this.renderCalToolbar()
 			).open()
 		);
-		const gear = right.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "AmberNyaDesk settings" } });
+		const gear = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "NyaHome settings" } });
 		setIcon(gear, "settings");
 		gear.addEventListener("click", () => {
 			this.plugin.openOwnSettings();
 		});
 
-		const main = root.createDiv("pcal-main");
-		this.sidebarEl = main.createDiv("pcal-sidebar");
+		const main = root.createDiv("nya-main");
+		this.sidebarEl = main.createDiv("nya-sidebar");
 		this.sidebarEl.toggleClass("is-hidden", !this.plugin.settings.sidebarOpen || Platform.isPhone);
 		// section headers toggle through delegation on the persistent rail, so
 		// a rebuild racing the click can never eat it
@@ -13376,8 +13433,8 @@ class PowerCalendarView extends ItemView {
 			this.plugin.queueSave();
 			this.renderSidebar();
 		});
-		this.bodyEl = main.createDiv("pcal-body");
-		this.statusEl = root.createDiv("pcal-status");
+		this.bodyEl = main.createDiv("nya-body");
+		this.statusEl = root.createDiv("nya-status");
 
 		// the minute tick moves the now line; a date change moves "today" itself
 		this.registerInterval(
@@ -13398,7 +13455,7 @@ class PowerCalendarView extends ItemView {
 	/** Set the wallpaper from the vault and the slider's opacity. A missing
 	 *  file is simply no wallpaper, so a synced path can never break the view. */
 	private applyBackground() {
-		const el = this.contentEl.querySelector<HTMLElement>(".pcal-background");
+		const el = this.contentEl.querySelector<HTMLElement>(".nya-background");
 		if (!el) return;
 		const s = this.plugin.settings;
 		const path = s.calBackgroundPath.trim();
@@ -13408,7 +13465,7 @@ class PowerCalendarView extends ItemView {
 	}
 
 	async onClose() {
-		this.containerEl.removeClass("pcal-fullscreen");
+		this.containerEl.removeClass("nya-fullscreen");
 		this.plugin.listeners.delete(this.onData);
 		this.closeCard();
 		this.closeMini();
@@ -13433,13 +13490,13 @@ class PowerCalendarView extends ItemView {
 		}
 		this.closeCard();
 		this.miniAnchor = `${this.anchorKey.slice(0, 7)}-01`;
-		const pop = document.body.createDiv("pcal-mini");
+		const pop = document.body.createDiv("nya-mini");
 		this.miniEl = pop;
-		const head = pop.createDiv("pcal-mini-head");
-		const prev = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Previous month" } });
+		const head = pop.createDiv("nya-mini-head");
+		const prev = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Previous month" } });
 		setIcon(prev, "chevron-left");
-		head.createDiv("pcal-mini-title");
-		const next = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Next month" } });
+		head.createDiv("nya-mini-title");
+		const next = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Next month" } });
 		setIcon(next, "chevron-right");
 		prev.addEventListener("click", () => {
 			this.miniAnchor = stepAnchor("month", this.miniAnchor, -1);
@@ -13449,7 +13506,7 @@ class PowerCalendarView extends ItemView {
 			this.miniAnchor = stepAnchor("month", this.miniAnchor, 1);
 			this.renderMiniGrid();
 		});
-		pop.createDiv("pcal-mini-grid");
+		pop.createDiv("nya-mini-grid");
 		const r = this.titleEl.getBoundingClientRect();
 		pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 272)) + "px";
 		pop.style.top = r.bottom + 6 + "px";
@@ -13474,17 +13531,17 @@ class PowerCalendarView extends ItemView {
 		const pop = this.miniEl;
 		if (!pop || !pop.isConnected) return;
 		const s = this.plugin.settings;
-		const titleEl = pop.querySelector<HTMLElement>(".pcal-mini-title");
-		const grid = pop.querySelector<HTMLElement>(".pcal-mini-grid");
+		const titleEl = pop.querySelector<HTMLElement>(".nya-mini-title");
+		const grid = pop.querySelector<HTMLElement>(".nya-mini-grid");
 		if (!titleEl || !grid) return;
 		titleEl.setText(periodLabel("month", this.miniAnchor, s.weekStartsMonday));
 		grid.empty();
 		const cells = monthGrid(+this.miniAnchor.slice(0, 4), +this.miniAnchor.slice(5, 7) - 1, s.weekStartsMonday);
 		this.plugin.ensureWindow(cells[0].key, cells[41].key, false);
 		const events = this.plugin.eventsForWindow(cells[0].key, cells[41].key);
-		for (const name of this.weekdayNames()) grid.createDiv({ cls: "pcal-mini-dow", text: name.slice(0, 1) });
+		for (const name of this.weekdayNames()) grid.createDiv({ cls: "nya-mini-dow", text: name.slice(0, 1) });
 		for (const cell of cells) {
-			const d = grid.createDiv({ cls: "pcal-mini-day", text: String(cell.day) });
+			const d = grid.createDiv({ cls: "nya-mini-day", text: String(cell.day) });
 			d.toggleClass("is-other", !cell.inMonth);
 			d.toggleClass("is-today", cell.key === this.todayKey);
 			const n = eventsOnDay(events, cell.key).length;
@@ -13515,7 +13572,7 @@ class PowerCalendarView extends ItemView {
 	/** The calendar over the whole window; F toggles, Esc leaves. */
 	private toggleFullscreen() {
 		this.fullscreen = !this.fullscreen;
-		this.containerEl.toggleClass("pcal-fullscreen", this.fullscreen);
+		this.containerEl.toggleClass("nya-fullscreen", this.fullscreen);
 	}
 
 	/** The left rail: a mini month for jumping, then every calendar with its
@@ -13526,23 +13583,23 @@ class PowerCalendarView extends ItemView {
 		host.empty();
 		const s = this.plugin.settings;
 
-		const mini = host.createDiv("pcal-sb-mini");
-		const mh = mini.createDiv("pcal-mini-head");
-		const prev = mh.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Previous month" } });
+		const mini = host.createDiv("nya-sb-mini");
+		const mh = mini.createDiv("nya-mini-head");
+		const prev = mh.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Previous month" } });
 		setIcon(prev, "chevron-left");
-		const mt = mh.createDiv({ cls: "pcal-mini-title" });
-		const next = mh.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Next month" } });
+		const mt = mh.createDiv({ cls: "nya-mini-title" });
+		const next = mh.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Next month" } });
 		setIcon(next, "chevron-right");
-		const grid = mini.createDiv("pcal-mini-grid");
+		const grid = mini.createDiv("nya-mini-grid");
 		const paint = () => {
 			mt.setText(periodLabel("month", this.sbAnchor, s.weekStartsMonday));
 			grid.empty();
 			const cells = monthGrid(+this.sbAnchor.slice(0, 4), +this.sbAnchor.slice(5, 7) - 1, s.weekStartsMonday);
 			this.plugin.ensureWindow(cells[0].key, cells[41].key, false);
 			const events = this.plugin.eventsForWindow(cells[0].key, cells[41].key);
-			for (const name of this.weekdayNames()) grid.createDiv({ cls: "pcal-mini-dow", text: name.slice(0, 1) });
+			for (const name of this.weekdayNames()) grid.createDiv({ cls: "nya-mini-dow", text: name.slice(0, 1) });
 			for (const cell of cells) {
-				const d = grid.createDiv({ cls: "pcal-mini-day", text: String(cell.day) });
+				const d = grid.createDiv({ cls: "nya-mini-day", text: String(cell.day) });
 				d.toggleClass("is-other", !cell.inMonth);
 				d.toggleClass("is-today", cell.key === this.todayKey);
 				d.toggleClass("is-anchor", cell.key === this.anchorKey);
@@ -13573,18 +13630,18 @@ class PowerCalendarView extends ItemView {
 	 *  right-click offers solo and show-all. */
 	private renderSidebarCalendars(host: HTMLElement) {
 		const s = this.plugin.settings;
-		const calsHead = host.createDiv({ cls: "pcal-sb-section pcal-sb-calendar-head", attr: { "data-sec": "cals" } });
-		const chev = calsHead.createSpan("pcal-sb-chev");
+		const calsHead = host.createDiv({ cls: "nya-sb-section nya-sb-calendar-head", attr: { "data-sec": "cals" } });
+		const chev = calsHead.createSpan("nya-sb-chev");
 		setIcon(chev, s.sidebarCalsCollapsed ? "chevron-right" : "chevron-down");
 		calsHead.createSpan({ text: "Calendars" });
 		if (s.sidebarCalsCollapsed) return;
 		for (const g of this.sidebarGroups()) {
-			host.createDiv({ cls: "pcal-sb-group", text: g.label });
+			host.createDiv({ cls: "nya-sb-group", text: g.label });
 			for (const it of g.items) {
-				const row = host.createDiv({ cls: "pcal-sb-row", attr: { "aria-label": "Click to toggle; right-click for more" } });
+				const row = host.createDiv({ cls: "nya-sb-row", attr: { "aria-label": "Click to toggle; right-click for more" } });
 				row.toggleClass("is-off", !it.enabled);
-				row.createSpan("pcal-sb-dot").style.background = it.color || "var(--interactive-accent)";
-				row.createSpan({ cls: "pcal-sb-name", text: it.name });
+				row.createSpan("nya-sb-dot").style.background = it.color || "var(--interactive-accent)";
+				row.createSpan({ cls: "nya-sb-name", text: it.name });
 				row.addEventListener("click", () => {
 					it.setEnabled(!it.enabled);
 					this.afterSourceToggle();
@@ -13600,7 +13657,7 @@ class PowerCalendarView extends ItemView {
 						PALETTE.forEach((hex, idx) => {
 							sub.addItem((si) => {
 								const frag = createFragment();
-								frag.createSpan("pcal-sb-menu-dot").style.background = hex;
+								frag.createSpan("nya-sb-menu-dot").style.background = hex;
 								frag.appendText(SIDEBAR_COLOR_NAMES[idx] ?? hex);
 								si.setTitle(frag)
 									.setChecked(it.color.toLowerCase() === hex)
@@ -13635,12 +13692,12 @@ class PowerCalendarView extends ItemView {
 	 *  the day header, and rows that open the event card. */
 	private renderSidebarAgenda(host: HTMLElement) {
 		const s = this.plugin.settings;
-		const agHead = host.createDiv({ cls: "pcal-sb-section pcal-sb-agenda-head", attr: { "data-sec": "agenda" } });
-		const agChev = agHead.createSpan("pcal-sb-chev");
+		const agHead = host.createDiv({ cls: "nya-sb-section nya-sb-agenda-head", attr: { "data-sec": "agenda" } });
+		const agChev = agHead.createSpan("nya-sb-chev");
 		setIcon(agChev, s.sidebarAgendaCollapsed ? "chevron-right" : "chevron-down");
 		agHead.createSpan({ text: "Agenda" });
 		if (s.sidebarAgendaCollapsed) return;
-		const ag = host.createDiv("pcal-sb-agenda");
+		const ag = host.createDiv("nya-sb-agenda");
 		const from = this.todayKey;
 		const to = addDays(from, 13);
 		this.plugin.ensureWindow(from, to, false);
@@ -13648,24 +13705,24 @@ class PowerCalendarView extends ItemView {
 		for (let i = 0; i < 14; i++) {
 			const key = addDays(from, i);
 			const dayEvents = eventsOnDay(agEvents, key);
-			const head = ag.createDiv("pcal-sb-dayhead");
-			head.createSpan({ cls: "pcal-sb-dayname", text: relativeDayLabel(key, this.todayKey, s.weekStartsMonday) });
+			const head = ag.createDiv("nya-sb-dayhead");
+			head.createSpan({ cls: "nya-sb-dayname", text: relativeDayLabel(key, this.todayKey, s.weekStartsMonday) });
 			const w = this.plugin.weatherFor(key);
-			if (w) head.createSpan({ cls: "pcal-sb-weather", text: `${weatherGlyph(w.code)} ${w.hi}°/${w.lo}°` });
+			if (w) head.createSpan({ cls: "nya-sb-weather", text: `${weatherGlyph(w.code)} ${w.hi}°/${w.lo}°` });
 			head.addEventListener("click", () => {
 				this.anchorKey = key;
 				this.refresh(false);
 			});
 			if (!dayEvents.length) {
-				ag.createDiv({ cls: "pcal-sb-noevents", text: UI_LANG === "zh" ? "无日程" : "No events" });
+				ag.createDiv({ cls: "nya-sb-noevents", text: UI_LANG === "zh" ? "无日程" : "No events" });
 				continue;
 			}
 			for (const ev of dayEvents) {
-				const row = ag.createDiv("pcal-sb-ev");
-				row.createSpan("pcal-sb-dot").style.background = ev.color || "var(--interactive-accent)";
-				const tx = row.createDiv("pcal-sb-ev-text");
-				tx.createDiv({ cls: "pcal-sb-ev-title", text: ev.title });
-				tx.createDiv({ cls: "pcal-sb-ev-time", text: this.sidebarEventTime(ev) });
+				const row = ag.createDiv("nya-sb-ev");
+				row.createSpan("nya-sb-dot").style.background = ev.color || "var(--interactive-accent)";
+				const tx = row.createDiv("nya-sb-ev-text");
+				tx.createDiv({ cls: "nya-sb-ev-title", text: ev.title });
+				tx.createDiv({ cls: "nya-sb-ev-time", text: this.sidebarEventTime(ev) });
 				row.addEventListener("click", (e) => this.openCard(ev, e.currentTarget as HTMLElement));
 				this.attachQuickDelete(row, ev);
 			}
@@ -13812,7 +13869,7 @@ class PowerCalendarView extends ItemView {
 	 *  day wants from it. */
 	printCalendar(style?: "agenda" | "month") {
 		if (!Platform.isDesktopApp) {
-			new Notice("AmberNyaDesk: printing needs the desktop app.");
+			new Notice("NyaHome: printing needs the desktop app.");
 			return;
 		}
 		const s = this.plugin.settings;
@@ -13911,14 +13968,14 @@ class PowerCalendarView extends ItemView {
 		for (const id of this.plugin.settings.calendarToolbar) {
 			const a = catalog.get(id);
 			if (!a) continue;
-			const b = host.createEl("button", { cls: "pcal-icon-btn pcal-mail-tool", attr: { "aria-label": a.label } });
+			const b = host.createEl("button", { cls: "nya-icon-btn nya-mail-tool", attr: { "aria-label": a.label } });
 			setIcon(b.createSpan(), a.icon);
-			b.createSpan({ cls: "pcal-mail-tool-label", text: a.label });
+			b.createSpan({ cls: "nya-mail-tool-label", text: a.label });
 			b.addEventListener("click", (e) => a.run(e));
 			// the filter button keeps its own class, since the view marks it
 			// active while a filter is on
 			if (id === "filter") {
-				b.addClass("pcal-filter-btn");
+				b.addClass("nya-filter-btn");
 				this.filterBtn = b;
 			}
 			if (id === "refresh") this.refreshBtn = b;
@@ -13984,7 +14041,7 @@ class PowerCalendarView extends ItemView {
 	/** New event at the next half hour (the C key and the + button). */
 	private quickCreate() {
 		if (!this.plugin.anyWritable()) {
-			new Notice("AmberNyaDesk: connect an account with edit access in settings to create events.");
+			new Notice("NyaHome: connect an account with edit access in settings to create events.");
 			return;
 		}
 		const now = Date.now();
@@ -14026,13 +14083,13 @@ class PowerCalendarView extends ItemView {
 		else if (this.mode === "day" && s.dayViewDays <= 1) {
 			// the day view's title carries the day's lunar tag right on it
 			const tag = lunarTag(this.anchorKey);
-			if (tag) this.titleEl.createSpan({ cls: `pcal-lunar pcal-lunar-${tag.kind}`, text: `　${tag.text}` });
+			if (tag) this.titleEl.createSpan({ cls: `nya-lunar nya-lunar-${tag.kind}`, text: `　${tag.text}` });
 		}
 		for (const [m, b] of this.modeBtns) b.toggleClass("is-active", m === this.mode);
 		this.dayLabelEl?.setText(s.dayViewDays > 1 ? `${s.dayViewDays} days` : "Day");
-		this.filterBtn.toggleClass("is-active", this.filterActive());
-		this.filterBtn.setAttribute("aria-label", this.filterActive() ? "Filter events (a filter is applied)" : "Filter events");
-		this.refreshBtn.toggleClass("is-loading", this.plugin.anyInFlight());
+		this.filterBtn?.toggleClass("is-active", this.filterActive());
+		this.filterBtn?.setAttribute("aria-label", this.filterActive() ? "Filter events (a filter is applied)" : "Filter events");
+		this.refreshBtn?.toggleClass("is-loading", this.plugin.anyInFlight());
 		this.newBtn.toggle(this.plugin.anyWritable());
 
 		const win = viewWindow(this.mode, this.anchorKey, s.weekStartsMonday, s.agendaDays, s.dayViewDays);
@@ -14075,10 +14132,10 @@ class PowerCalendarView extends ItemView {
 	private renderMonth(events: PCEvent[]) {
 		const s = this.plugin.settings;
 		const cells = monthGrid(+this.anchorKey.slice(0, 4), +this.anchorKey.slice(5, 7) - 1, s.weekStartsMonday);
-		const root = this.bodyEl.createDiv("pcal-month");
-		const head = root.createDiv("pcal-month-head");
-		for (const name of this.weekdayNames()) head.createDiv({ cls: "pcal-month-headcell", text: name });
-		const grid = root.createDiv("pcal-month-grid");
+		const root = this.bodyEl.createDiv("nya-month");
+		const head = root.createDiv("nya-month-head");
+		for (const name of this.weekdayNames()) head.createDiv({ cls: "nya-month-headcell", text: name });
+		const grid = root.createDiv("nya-month-grid");
 		const cellMap = new Map<string, HTMLElement>();
 		for (let r = 0; r < 6; r++) {
 			const rowCells = cells.slice(r * 7, r * 7 + 7);
@@ -14093,29 +14150,29 @@ class PowerCalendarView extends ItemView {
 		grid.addEventListener("pointerdown", (pd: PointerEvent) => {
 			if (pd.button !== 0 || pd.pointerType !== "mouse" || !this.plugin.anyWritable()) return;
 			const t = pd.target as HTMLElement;
-			if (t.closest(".pcal-chip, .pcal-span, .pcal-month-daynum, button")) return;
-			const startKey = t.closest<HTMLElement>(".pcal-month-cell")?.dataset.key;
+			if (t.closest(".nya-chip, .nya-span, .nya-month-daynum, button")) return;
+			const startKey = t.closest<HTMLElement>(".nya-month-cell")?.dataset.key;
 			if (!startKey) return;
 			let dragging = false;
 			let b = startKey;
 			const range = (): [string, string] => (dayDiff(startKey, b) >= 0 ? [startKey, b] : [b, startKey]);
 			const paint = () => {
 				const [lo, hi] = range();
-				for (const [key, el] of cellMap) el.toggleClass("pcal-range", dayDiff(lo, key) >= 0 && dayDiff(key, hi) >= 0);
+				for (const [key, el] of cellMap) el.toggleClass("nya-range", dayDiff(lo, key) >= 0 && dayDiff(key, hi) >= 0);
 			};
 			const move = (mv: PointerEvent) => {
 				if (!dragging) {
 					if (Math.abs(mv.clientX - pd.clientX) + Math.abs(mv.clientY - pd.clientY) < 6) return;
 					dragging = true;
 				}
-				const over = (document.elementFromPoint(mv.clientX, mv.clientY) as HTMLElement | null)?.closest<HTMLElement>(".pcal-month-cell");
+				const over = (document.elementFromPoint(mv.clientX, mv.clientY) as HTMLElement | null)?.closest<HTMLElement>(".nya-month-cell");
 				if (over?.dataset.key) b = over.dataset.key;
 				paint();
 			};
 			const up = () => {
 				document.removeEventListener("pointermove", move);
 				document.removeEventListener("pointerup", up);
-				for (const el of cellMap.values()) el.removeClass("pcal-range");
+				for (const el of cellMap.values()) el.removeClass("nya-range");
 				if (!dragging) return;
 				const [lo, hi] = range();
 				this.openEventModal(null, msOfKey(lo), msOfKey(addDays(hi, 1)), true);
@@ -14129,12 +14186,12 @@ class PowerCalendarView extends ItemView {
 		const rowKeys = rowCells.map((c) => c.key);
 		const spans = spansForRow(events, rowKeys);
 		const laneCount = spans.reduce((m, sp) => Math.max(m, sp.lane + 1), 0);
-		const row = grid.createDiv("pcal-month-row");
-		if (this.plugin.settings.showWeekNumbers) row.createDiv({ cls: "pcal-weeknum", text: `W${isoWeekNum(rowKeys[0])}` });
+		const row = grid.createDiv("nya-month-row");
+		if (this.plugin.settings.showWeekNumbers) row.createDiv({ cls: "nya-weeknum", text: `W${isoWeekNum(rowKeys[0])}` });
 
-		const cellsEl = row.createDiv("pcal-month-cells");
+		const cellsEl = row.createDiv("nya-month-cells");
 		for (const cell of rowCells) {
-			const el = cellsEl.createDiv("pcal-month-cell");
+			const el = cellsEl.createDiv("nya-month-cell");
 			el.dataset.key = cell.key;
 			cellMap.set(cell.key, el);
 			el.addEventListener("dragover", (e) => {
@@ -14156,17 +14213,17 @@ class PowerCalendarView extends ItemView {
 			});
 			el.toggleClass("is-other-month", !cell.inMonth);
 			el.toggleClass("is-today", cell.key === this.todayKey);
-			const num = el.createDiv({ cls: "pcal-month-daynum", text: String(cell.day) });
+			const num = el.createDiv({ cls: "nya-month-daynum", text: String(cell.day) });
 			// the lunar tag rides the day number: 十四 for ordinary days,
 			// a solar term when one falls here, and the festival name on top
 			const lunar = lunarTag(cell.key);
-			if (lunar) num.createSpan({ cls: `pcal-lunar pcal-lunar-${lunar.kind}`, text: lunar.text });
+			if (lunar) num.createSpan({ cls: `nya-lunar nya-lunar-${lunar.kind}`, text: lunar.text });
 			num.addEventListener("click", () => this.goDay(cell.key));
-			const chipArea = el.createDiv("pcal-month-chips");
+			const chipArea = el.createDiv("nya-month-chips");
 			chipArea.style.marginTop = `${laneCount * 22}px`;
 			el.addEventListener("contextmenu", (e) => {
 				const t = e.target as HTMLElement;
-				if (t.closest(".pcal-chip, .pcal-span, .pcal-month-daynum, button")) return;
+				if (t.closest(".nya-chip, .nya-span, .nya-month-daynum, button")) return;
 				e.preventDefault();
 				this.openBlankAreaMenu(cell.key, e);
 			});
@@ -14180,22 +14237,22 @@ class PowerCalendarView extends ItemView {
 			for (const ev of timed.slice(0, cap)) this.renderChip(chipArea, ev);
 			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === cell.key) ?? []) this.renderSketchChip(chipArea, note);
 			if (timed.length > cap) {
-				const more = chipArea.createEl("button", { cls: "pcal-more-btn", text: `+${timed.length - cap} more` });
+				const more = chipArea.createEl("button", { cls: "nya-more-btn", text: `+${timed.length - cap} more` });
 				more.addEventListener("click", () => this.goDay(cell.key));
 			}
 		}
 
 		if (spans.length) {
-			const overlay = row.createDiv("pcal-row-spans");
+			const overlay = row.createDiv("nya-row-spans");
 			for (const sp of spans) {
-				const el = overlay.createDiv("pcal-span");
+				const el = overlay.createDiv("nya-span");
 				el.style.left = `calc(${(sp.startIdx / 7) * 100}% + 2px)`;
 				el.style.width = `calc(${((sp.endIdx - sp.startIdx + 1) / 7) * 100}% - 4px)`;
 				el.style.top = `${sp.lane * 22}px`;
 				this.paintEventEl(el, sp.ev);
 				el.toggleClass("continues-left", !sp.startsHere);
 				el.toggleClass("continues-right", !sp.endsHere);
-				el.createSpan({ cls: "pcal-span-title", text: sp.ev.title });
+				el.createSpan({ cls: "nya-span-title", text: sp.ev.title });
 				if (this.plugin.noteExistsFor(sp.ev)) el.addClass("has-note");
 				el.addEventListener("click", (e) => this.openCard(sp.ev, e.currentTarget as HTMLElement));
 				this.attachQuickDelete(el, sp.ev);
@@ -14216,11 +14273,11 @@ class PowerCalendarView extends ItemView {
 
 	private renderChip(parent: HTMLElement, ev: PCEvent) {
 		const s = this.plugin.settings;
-		const chip = parent.createDiv("pcal-chip");
+		const chip = parent.createDiv("nya-chip");
 		this.paintEventEl(chip, ev);
 		chip.toggleClass("has-note", this.plugin.noteExistsFor(ev));
-		chip.createSpan({ cls: "pcal-chip-time", text: fmtTimeOfMs(ev.startMs, s.use24h, true) });
-		chip.createSpan({ cls: "pcal-chip-title", text: ev.title });
+		chip.createSpan({ cls: "nya-chip-time", text: fmtTimeOfMs(ev.startMs, s.use24h, true) });
+		chip.createSpan({ cls: "nya-chip-title", text: ev.title });
 		chip.addEventListener("click", (e) => this.openCard(ev, e.currentTarget as HTMLElement));
 		this.attachQuickDelete(chip, ev);
 		if (ev.canEdit) {
@@ -14264,12 +14321,12 @@ class PowerCalendarView extends ItemView {
 	}
 
 	private renderSketchChip(parent: HTMLElement, note: SketchNote) {
-		const chip = parent.createDiv("pcal-chip pcal-sketch-chip");
-		const icon = chip.createSpan("pcal-sketch-icon");
+		const chip = parent.createDiv("nya-chip nya-sketch-chip");
+		const icon = chip.createSpan("nya-sketch-icon");
 		setIcon(icon, "sticky-note");
 		chip.toggleClass("is-starred", false);
-		chip.createSpan({ cls: "pcal-chip-time", text: "随笔" });
-		chip.createSpan({ cls: "pcal-chip-title", text: note.title });
+		chip.createSpan({ cls: "nya-chip-time", text: "随笔" });
+		chip.createSpan({ cls: "nya-chip-title", text: note.title });
 		chip.addEventListener("dblclick", () => new SketchNoteModal(this.app, this.plugin, note).open());
 		chip.addEventListener("contextmenu", (e) => {
 			e.preventDefault();
@@ -14290,6 +14347,22 @@ class PowerCalendarView extends ItemView {
 		});
 	}
 
+	private renderSketchStrip(root: HTMLElement, days: string[]) {
+		const strip = root.createDiv("nya-sketch-strip");
+		strip.createDiv({ cls: "nya-gutter-spacer nya-sketch-label", text: "随笔" });
+		const cells = strip.createDiv("nya-sketch-cells");
+		for (const key of days) {
+			const cell = cells.createDiv("nya-sketch-cell");
+			cell.toggleClass("is-today", key === this.todayKey);
+			cell.addEventListener("contextmenu", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				this.openBlankAreaMenu(key, e);
+			});
+			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === key) ?? []) this.renderSketchChip(cell, note);
+		}
+	}
+
 	/** Click to select (the chip keeps focus), Delete or Backspace to remove
 	 *  the event. Vault notes are left alone: they live as files, not rows. */
 	private attachQuickDelete(el: HTMLElement, ev: PCEvent) {
@@ -14304,14 +14377,14 @@ class PowerCalendarView extends ItemView {
 	}
 
 	private paintEventEl(el: HTMLElement, ev: PCEvent) {
-		el.style.setProperty("--pcal-ev-color", ev.color ?? "var(--interactive-accent)");
+		el.style.setProperty("--nya-ev-color", ev.color ?? "var(--interactive-accent)");
 		el.toggleClass("is-tentative", !!ev.tentative);
 		el.toggleClass("is-declined", !!ev.declined);
 		el.toggleClass("is-completed", !!ev.completed);
 		this.paintNeedsAction(el, ev);
 		el.toggleClass("is-starred", this.plugin.isStarred(ev));
-		el.querySelector(".pcal-star")?.remove();
-		if (this.plugin.isStarred(ev)) setIcon(el.createDiv("pcal-star"), "star");
+		el.querySelector(".nya-star")?.remove();
+		if (this.plugin.isStarred(ev)) setIcon(el.createDiv("nya-star"), "star");
 		el.addEventListener("contextmenu", (e) => this.openEventMenu(ev, e));
 	}
 
@@ -14319,76 +14392,85 @@ class PowerCalendarView extends ItemView {
 	private paintNeedsAction(el: HTMLElement, ev: PCEvent) {
 		const needs = !!ev.canRsvp && ev.myResponse === "none";
 		el.toggleClass("is-needsaction", needs);
-		if (needs) el.style.setProperty("--pcal-needsaction", this.plugin.settings.calNeedsActionColor);
+		if (needs) el.style.setProperty("--nya-needsaction", this.plugin.settings.calNeedsActionColor);
 	}
 
 	private renderWeek(events: PCEvent[], days: string[]) {
 		const s = this.plugin.settings;
-		const root = this.bodyEl.createDiv("pcal-week");
-		root.toggleClass("pcal-single-day", days.length === 1);
+		const root = this.bodyEl.createDiv("nya-week");
+		root.toggleClass("nya-single-day", days.length === 1);
 
-		const head = root.createDiv("pcal-week-head");
-		const spacer = head.createDiv("pcal-gutter-spacer");
+		const head = root.createDiv("nya-week-head");
+		const spacer = head.createDiv("nya-gutter-spacer");
 		if (s.showWeekNumbers && days.length > 1) {
-			spacer.addClass("pcal-weeknum-head");
+			spacer.addClass("nya-weeknum-head");
 			spacer.setText(`W${isoWeekNum(days[0])}`);
 		}
-		const headCells = head.createDiv("pcal-week-headcells");
+		const headCells = head.createDiv("nya-week-headcells");
 		for (const key of days) {
-			const cell = headCells.createDiv("pcal-week-headcell");
+			const cell = headCells.createDiv("nya-week-headcell");
 			cell.toggleClass("is-today", key === this.todayKey);
-			cell.createSpan({ cls: "pcal-week-headname", text: dowShort(dayOfWeek(key)) });
-			cell.createSpan({ cls: "pcal-week-headnum", text: String(+key.slice(8, 10)) });
+			cell.createSpan({ cls: "nya-week-headname", text: dowShort(dayOfWeek(key)) });
+			cell.createSpan({ cls: "nya-week-headnum", text: String(+key.slice(8, 10)) });
 			// a compact lunar line under the date: term or festival wins, else 十四
 			const lunar = lunarTag(key);
-			if (lunar) cell.createSpan({ cls: `pcal-week-headlunar pcal-lunar-${lunar.kind}`, text: lunar.text });
+			if (lunar) cell.createSpan({ cls: `nya-week-headlunar nya-lunar-${lunar.kind}`, text: lunar.text });
 			cell.addEventListener("click", () => this.goDay(key));
 		}
+
+		// The week and day views use a fixed sketch strip so the loose thoughts
+		// stay visible above the timed grid, just like the month cell tiles.
+		this.renderSketchStrip(root, days);
 
 		// the all-day banner strip
 		const spans = spansForRow(events, days);
 		if (spans.length) {
-			const strip = root.createDiv("pcal-allday");
-			strip.createDiv({ cls: "pcal-gutter-spacer pcal-allday-label", text: "all-day" });
-			const lanesEl = strip.createDiv("pcal-allday-lanes");
+			const strip = root.createDiv("nya-allday");
+			strip.createDiv({ cls: "nya-gutter-spacer nya-allday-label", text: "all-day" });
+			const lanesEl = strip.createDiv("nya-allday-lanes");
 			const laneCount = spans.reduce((m, sp) => Math.max(m, sp.lane + 1), 0);
 			lanesEl.style.height = `${laneCount * 24 + 2}px`;
 			for (const sp of spans) {
-				const el = lanesEl.createDiv("pcal-span");
+				const el = lanesEl.createDiv("nya-span");
 				el.style.left = `calc(${(sp.startIdx / days.length) * 100}% + 2px)`;
 				el.style.width = `calc(${((sp.endIdx - sp.startIdx + 1) / days.length) * 100}% - 4px)`;
 				el.style.top = `${sp.lane * 24}px`;
 				this.paintEventEl(el, sp.ev);
 				el.toggleClass("continues-left", !sp.startsHere);
 				el.toggleClass("continues-right", !sp.endsHere);
-				el.createSpan({ cls: "pcal-span-title", text: sp.ev.title });
+				el.createSpan({ cls: "nya-span-title", text: sp.ev.title });
 				if (this.plugin.noteExistsFor(sp.ev)) el.addClass("has-note");
 				el.addEventListener("click", (e) => this.openCard(sp.ev, e.currentTarget as HTMLElement));
 				this.attachQuickDelete(el, sp.ev);
 			}
 		}
 
-		const scroll = root.createDiv("pcal-week-scroll");
-		const gutter = scroll.createDiv("pcal-gutter");
+		const scroll = root.createDiv("nya-week-scroll");
+		const gutter = scroll.createDiv("nya-gutter");
 		const tz2 = s.secondTimeZone.trim();
 		const dayStartMs = msOfKey(days[0]);
 		const tz2Works = !!tz2 && fmtZoneClock(dayStartMs, tz2, s.use24h) != null;
-		if (tz2Works) root.addClass("pcal-has-tz2");
+		if (tz2Works) root.addClass("nya-has-tz2");
 		for (let h = 0; h < 24; h++) {
-			const lab = gutter.createDiv("pcal-gutter-hour");
+			const lab = gutter.createDiv("nya-gutter-hour");
 			lab.style.top = `${h * HOUR_H}px`;
 			if (h > 0) {
-				if (tz2Works) lab.createSpan({ cls: "pcal-hour-tz2", text: fmtZoneClock(dayStartMs + h * 3600000, tz2, s.use24h) ?? "" });
-				lab.createSpan({ cls: "pcal-hour-local", text: fmtClock(h * 60, s.use24h, true) });
+				if (tz2Works) lab.createSpan({ cls: "nya-hour-tz2", text: fmtZoneClock(dayStartMs + h * 3600000, tz2, s.use24h) ?? "" });
+				lab.createSpan({ cls: "nya-hour-local", text: fmtClock(h * 60, s.use24h, true) });
 			}
 		}
-		const cols = scroll.createDiv("pcal-week-cols");
+		const cols = scroll.createDiv("nya-week-cols");
 		const colEls: HTMLElement[] = [];
 		for (const key of days) {
-			const col = cols.createDiv("pcal-week-col");
+			const col = cols.createDiv("nya-week-col");
 			colEls.push(col);
 			col.toggleClass("is-today", key === this.todayKey);
 			this.attachSlotGesture(col, key);
+			col.addEventListener("contextmenu", (e) => {
+				if (e.target !== col) return; // blocks own their context menus
+				e.preventDefault();
+				this.openBlankAreaMenu(key, e);
+			});
 			const items = eventsOnDay(events, key)
 				.filter((ev) => !isSpanEvent(ev))
 				.map((ev) => ({ ev, c: clipToDay(ev, key) }))
@@ -14396,29 +14478,29 @@ class PowerCalendarView extends ItemView {
 			const packed = packColumns(items.map((x) => x.c));
 			items.forEach(({ ev, c }, i) => {
 				const p = packed[i];
-				const block = col.createDiv("pcal-block");
+				const block = col.createDiv("nya-block");
 				block.style.top = `${(c.startMin / 60) * HOUR_H}px`;
 				block.style.height = `${Math.max(18, ((c.endMin - c.startMin) / 60) * HOUR_H - 2)}px`;
 				block.style.left = `calc(${(p.col / p.cols) * 100}% + 2px)`;
 				block.style.width = `calc(${(1 / p.cols) * 100}% - 5px)`;
 				this.paintEventEl(block, ev);
 				block.toggleClass("has-note", this.plugin.noteExistsFor(ev));
-				block.createDiv({ cls: "pcal-block-title", text: ev.title });
-				if (c.endMin - c.startMin >= 40) block.createDiv({ cls: "pcal-block-time", text: fmtEventRange(ev, s.use24h) });
+				block.createDiv({ cls: "nya-block-title", text: ev.title });
+				if (c.endMin - c.startMin >= 40) block.createDiv({ cls: "nya-block-time", text: fmtEventRange(ev, s.use24h) });
 				this.attachBlockGesture(block, ev, key, days, colEls);
 				this.attachQuickDelete(block, ev);
 			});
 			if (key === this.todayKey) {
-				const line = col.createDiv("pcal-now-line");
-				line.createDiv("pcal-now-dot");
+				const line = col.createDiv("nya-now-line");
+				line.createDiv("nya-now-dot");
 			}
 		}
 		// the clock ruler rides every timed view: a faint line across the columns
 		// and the time in the gutter, wherever the view is anchored. Only
 		// today's own column carries the bold line above. A work week viewed on
 		// a Saturday would otherwise show no timeline at all.
-		cols.createDiv("pcal-now-line-week");
-		gutter.createDiv("pcal-now-badge");
+		cols.createDiv("nya-now-line-week");
+		gutter.createDiv("nya-now-badge");
 		this.positionNowLine();
 		window.requestAnimationFrame(() => {
 			scroll.scrollTop = Math.max(0, this.plugin.settings.dayStartHour * HOUR_H - 8);
@@ -14428,10 +14510,10 @@ class PowerCalendarView extends ItemView {
 	private positionNowLine() {
 		const mins = minutesOfMs(Date.now());
 		const top = `${(mins / 60) * HOUR_H}px`;
-		for (const line of Array.from(this.bodyEl.querySelectorAll<HTMLElement>(".pcal-now-line, .pcal-now-line-week"))) {
+		for (const line of Array.from(this.bodyEl.querySelectorAll<HTMLElement>(".nya-now-line, .nya-now-line-week"))) {
 			line.style.top = top;
 		}
-		const badge = this.bodyEl.querySelector<HTMLElement>(".pcal-now-badge");
+		const badge = this.bodyEl.querySelector<HTMLElement>(".nya-now-badge");
 		if (badge) {
 			badge.style.top = top;
 			badge.setText(fmtTimeOfMs(Date.now(), this.plugin.settings.use24h, true));
@@ -14440,11 +14522,11 @@ class PowerCalendarView extends ItemView {
 
 	private renderAgenda(events: PCEvent[], fromKey: string, toKey: string) {
 		const s = this.plugin.settings;
-		const root = this.bodyEl.createDiv("pcal-agenda");
+		const root = this.bodyEl.createDiv("nya-agenda");
 
 		const groups = groupByDay(events, fromKey, toKey);
 		if (!groups.length) {
-			const empty = root.createDiv("pcal-empty");
+			const empty = root.createDiv("nya-empty");
 			if (!this.plugin.sources().length) {
 				empty.createDiv({ text: "No calendar sources are set up yet." });
 				const b = empty.createEl("button", { text: "Open settings", cls: "mod-cta" });
@@ -14456,29 +14538,29 @@ class PowerCalendarView extends ItemView {
 		}
 
 		for (const g of groups) {
-			const day = root.createDiv("pcal-agenda-day");
+			const day = root.createDiv("nya-agenda-day");
 			day.toggleClass("is-today", g.key === this.todayKey);
 			const headText = UI_LANG === "zh"
 				? (g.key === this.todayKey ? `今天 ${fmtDayShort(g.key)}` : fmtDayHeading(g.key))
 				: (g.key === this.todayKey ? `Today, ${fmtDayHeading(g.key).split(", ")[1]}` : fmtDayHeading(g.key));
-			const head = day.createDiv({ cls: "pcal-agenda-head", text: headText });
+			const head = day.createDiv({ cls: "nya-agenda-head", text: headText });
 			const lunar = lunarTag(g.key);
-			if (lunar) head.createSpan({ cls: `pcal-lunar pcal-lunar-${lunar.kind}`, text: `　${lunar.text}` });
+			if (lunar) head.createSpan({ cls: `nya-lunar nya-lunar-${lunar.kind}`, text: `　${lunar.text}` });
 			head.addEventListener("click", () => this.goDay(g.key));
 			for (const ev of g.events) {
-				const row = day.createDiv("pcal-agenda-row");
+				const row = day.createDiv("nya-agenda-row");
 				this.paintEventEl(row, ev);
 				row.toggleClass("has-note", this.plugin.noteExistsFor(ev));
-				row.createDiv("pcal-agenda-dot");
-				row.createDiv({ cls: "pcal-agenda-time", text: ev.allDay ? "All day" : fmtTimeOfMs(ev.startMs, s.use24h) });
-				const main = row.createDiv("pcal-agenda-main");
-				main.createDiv({ cls: "pcal-agenda-title", text: ev.title });
+				row.createDiv("nya-agenda-dot");
+				row.createDiv({ cls: "nya-agenda-time", text: ev.allDay ? "All day" : fmtTimeOfMs(ev.startMs, s.use24h) });
+				const main = row.createDiv("nya-agenda-main");
+				main.createDiv({ cls: "nya-agenda-title", text: ev.title });
 				const sub: string[] = [];
 				if (ev.calendarName) sub.push(ev.calendarName);
 				if (ev.location) sub.push(ev.location);
-				if (sub.length) main.createDiv({ cls: "pcal-agenda-sub", text: sub.join(" · ") });
+				if (sub.length) main.createDiv({ cls: "nya-agenda-sub", text: sub.join(" · ") });
 				if (ev.joinUrl) {
-					const join = row.createEl("button", { cls: "pcal-icon-btn pcal-join-btn", attr: { "aria-label": "Join meeting" } });
+					const join = row.createEl("button", { cls: "nya-icon-btn nya-join-btn", attr: { "aria-label": "Join meeting" } });
 					setIcon(join, "video");
 					join.addEventListener("click", (e) => {
 						e.stopPropagation();
@@ -14543,21 +14625,21 @@ class PowerCalendarView extends ItemView {
 				await adapter.remove(normalizePath(path));
 			},
 			get activeBoard() {
-				return app.loadLocalStorage("ambernyadesk-active-board") as string | null;
+				return app.loadLocalStorage("nyahome-active-board") as string | null;
 			},
 			set activeBoard(v: string | null) {
-				app.saveLocalStorage("ambernyadesk-active-board", v ?? "");
+				app.saveLocalStorage("nyahome-active-board", v ?? "");
 			},
 			getCollapsed: () => {
 				try {
-					const raw = app.loadLocalStorage("ambernyadesk-kanban-collapsed");
+					const raw = app.loadLocalStorage("nyahome-kanban-collapsed");
 					return Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : [];
 				} catch {
 					return [];
 				}
 			},
 			setCollapsed: (keys) => {
-				app.saveLocalStorage("ambernyadesk-kanban-collapsed", keys);
+				app.saveLocalStorage("nyahome-kanban-collapsed", keys);
 			},
 			linkToCalendar: (text) => {
 				// anchor on the card's due date when it has one, else now
@@ -14575,16 +14657,16 @@ class PowerCalendarView extends ItemView {
 		this.statusEl.empty();
 		const states = this.plugin.sourceStates();
 		if (!states.length) {
-			this.statusEl.createSpan({ cls: "pcal-status-hint", text: "No calendar sources connected." });
-			const b = this.statusEl.createEl("button", { cls: "pcal-status-btn", text: "Set up sources" });
+			this.statusEl.createSpan({ cls: "nya-status-hint", text: "No calendar sources connected." });
+			const b = this.statusEl.createEl("button", { cls: "nya-status-btn", text: "Set up sources" });
 			b.addEventListener("click", () => this.plugin.openOwnSettings());
 			return;
 		}
-		const chips = this.statusEl.createDiv("pcal-status-chips");
+		const chips = this.statusEl.createDiv("nya-status-chips");
 		let latest = 0;
 		for (const { def, st } of states) {
-			const chip = chips.createDiv("pcal-status-chip");
-			const dot = chip.createSpan("pcal-status-dot");
+			const chip = chips.createDiv("nya-status-chip");
+			const dot = chip.createSpan("nya-status-dot");
 			dot.style.backgroundColor = def.color;
 			chip.createSpan({ text: def.label });
 			if (st?.error) {
@@ -14594,7 +14676,7 @@ class PowerCalendarView extends ItemView {
 			if (st?.inFlight) chip.addClass("is-loading");
 			if (st) latest = Math.max(latest, st.fetchedAt);
 		}
-		const right = this.statusEl.createSpan("pcal-status-updated");
+		const right = this.statusEl.createSpan("nya-status-updated");
 		if (this.plugin.anyInFlight()) right.setText("Refreshing...");
 		else if (latest) right.setText(`Updated ${fmtTimeOfMs(latest, this.plugin.settings.use24h)}`);
 	}
@@ -14622,8 +14704,8 @@ class PowerCalendarView extends ItemView {
 		);
 		const editable = !!ev.canEdit && !ev.allDay;
 		if (!editable) return;
-		block.addClass("pcal-can-edit");
-		block.createDiv("pcal-grip");
+		block.addClass("nya-can-edit");
+		block.createDiv("nya-grip");
 		block.addEventListener("pointerdown", (pd: PointerEvent) => {
 			if (pd.button !== 0 || pd.pointerType !== "mouse") return;
 			pd.preventDefault();
@@ -14634,12 +14716,12 @@ class PowerCalendarView extends ItemView {
 			let dragging = false;
 			let times = { startMs: ev.startMs, endMs: ev.endMs };
 			let curIdx = Math.max(0, days.indexOf(dayKey));
-			const timeEl = block.querySelector<HTMLElement>(".pcal-block-time");
+			const timeEl = block.querySelector<HTMLElement>(".nya-block-time");
 			const move = (mv: PointerEvent) => {
 				if (!dragging) {
 					if (Math.abs(mv.clientY - startY) + Math.abs(mv.clientX - startX) < 5) return;
 					dragging = true;
-					block.addClass("pcal-dragging");
+					block.addClass("nya-dragging");
 					this.closeCard();
 				}
 				const deltaMin = ((mv.clientY - startY) / HOUR_H) * 60;
@@ -14667,7 +14749,7 @@ class PowerCalendarView extends ItemView {
 				document.removeEventListener("pointermove", move);
 				document.removeEventListener("pointerup", up);
 				document.removeEventListener("keydown", onKey, true);
-				block.removeClass("pcal-dragging");
+				block.removeClass("nya-dragging");
 				if (!dragging) return; // the click handler takes it from here
 				suppressClick = true;
 				if (!commit || (times.startMs === ev.startMs && times.endMs === ev.endMs)) {
@@ -14710,7 +14792,7 @@ class PowerCalendarView extends ItemView {
 				const cur = Math.max(0, Math.min(1440, snapMin(((mv.clientY - rect.top) / HOUR_H) * 60, 15)));
 				if (!ghost) {
 					if (Math.abs(mv.clientY - pd.clientY) < 5) return;
-					ghost = col.createDiv("pcal-ghost");
+					ghost = col.createDiv("nya-ghost");
 				}
 				a = Math.min(anchorMin, cur);
 				b = Math.max(a + 15, Math.max(anchorMin, cur));
@@ -14844,10 +14926,10 @@ class PowerCalendarView extends ItemView {
 			/* no boards folder means no target yet */
 		}
 		if (!files.length) {
-			new Notice("AmberNyaDesk: no task board is available yet.");
+			new Notice("NyaHome: no task board is available yet.");
 			return;
 		}
-		const saved = this.app.loadLocalStorage("ambernyadesk-active-board") as string | null;
+		const saved = this.app.loadLocalStorage("nyahome-active-board") as string | null;
 		const path = saved && files.includes(saved) ? saved : files[0];
 		try {
 			const p = normalizePath(path);
@@ -14874,9 +14956,9 @@ class PowerCalendarView extends ItemView {
 				body: body.length ? body.join("\n") : undefined,
 			});
 			await adapter.write(p, serializeKanbanBoard(board));
-			new Notice(`AmberNyaDesk: added "${title}" to tasks.`);
+			new Notice(`NyaHome: added "${title}" to tasks.`);
 		} catch (e) {
-			new Notice(`AmberNyaDesk: could not add to tasks (${e instanceof Error ? e.message : String(e)}).`);
+			new Notice(`NyaHome: could not add to tasks (${e instanceof Error ? e.message : String(e)}).`);
 		}
 	}
 
@@ -14884,9 +14966,9 @@ class PowerCalendarView extends ItemView {
 		if (!anchor.isConnected) return; // a drop just re-rendered under this click
 		this.closeCard();
 		const s = this.plugin.settings;
-		const card = document.body.createDiv("pcal-card");
+		const card = document.body.createDiv("nya-card");
 		this.cardEl = card;
-		card.style.setProperty("--pcal-ev-color", ev.color ?? "var(--interactive-accent)");
+		card.style.setProperty("--nya-ev-color", ev.color ?? "var(--interactive-accent)");
 		card.toggleClass("is-completed", !!ev.completed);
 		const inlineDraft = (patch: { title?: string; description?: string }): EventDraft => ({
 			title: patch.title ?? ev.title,
@@ -14900,28 +14982,28 @@ class PowerCalendarView extends ItemView {
 
 		// context first, like Outlook's peek: which calendar this event lives on
 		if (ev.calendarName) {
-			const ctx = card.createDiv("pcal-card-context");
-			ctx.createSpan("pcal-card-cal-dot");
+			const ctx = card.createDiv("nya-card-context");
+			ctx.createSpan("nya-card-cal-dot");
 			ctx.createSpan({ text: ev.calendarName + (ev.tentative ? " · tentative" : "") + (ev.declined ? " · declined" : "") });
 		}
-		const head = card.createDiv("pcal-card-head");
-		head.createDiv("pcal-card-bar");
-		const ht = head.createDiv("pcal-card-headtext");
+		const head = card.createDiv("nya-card-head");
+		head.createDiv("nya-card-bar");
+		const ht = head.createDiv("nya-card-headtext");
 		if (ev.canEdit) {
-			const titleInput = ht.createEl("input", { cls: "pcal-card-title pcal-card-title-input", attr: { type: "text" } });
+			const titleInput = ht.createEl("input", { cls: "nya-card-title nya-card-title-input", attr: { type: "text" } });
 			titleInput.value = ev.title === "(no title)" ? "" : ev.title;
 			titleInput.addEventListener("pointerdown", (e) => e.stopPropagation());
 			titleInput.addEventListener("blur", () => {
 				const next = titleInput.value.trim() || "(no title)";
 				if (next !== ev.title) void this.plugin.updateCalEvent(ev, inlineDraft({ title: next }));
 			});
-		} else ht.createDiv({ cls: "pcal-card-title", text: ev.title });
+		} else ht.createDiv({ cls: "nya-card-title", text: ev.title });
 
 		const people = dedupePeople(ev.organizer, ev.attendees);
 
 		// the two actions that matter ride right under the title; everything
 		// occasional lives behind the ellipsis so the card stays calm
-		const btns = card.createDiv("pcal-card-btns");
+		const btns = card.createDiv("nya-card-btns");
 		if (ev.joinUrl) {
 			const join = btns.createEl("button", { cls: "mod-cta", text: "Join" });
 			join.addEventListener("click", () => window.open(ev.joinUrl, "_blank"));
@@ -15026,13 +15108,13 @@ class PowerCalendarView extends ItemView {
 			title: "Follow the event again",
 			onClick: () => {
 				const store = this.app as unknown as { loadLocalStorage: (k: string) => unknown; saveLocalStorage: (k: string, v: unknown) => void };
-				const saved = (store.loadLocalStorage("powerdesk:event-card") as { w?: number; h?: number } | null) ?? {};
-				store.saveLocalStorage("powerdesk:event-card", { w: saved.w, h: saved.h });
+				const saved = (store.loadLocalStorage("nyahome:event-card") as { w?: number; h?: number } | null) ?? {};
+				store.saveLocalStorage("nyahome:event-card", { w: saved.w, h: saved.h });
 				this.closeCard();
 			},
 		});
 		if (moreItems.length) {
-			const moreBtn = btns.createEl("button", { cls: "pcal-card-more", attr: { "aria-label": "More actions" } });
+			const moreBtn = btns.createEl("button", { cls: "nya-card-more", attr: { "aria-label": "More actions" } });
 			setIcon(moreBtn, "more-horizontal");
 			moreBtn.addEventListener("click", (e) => {
 				const menu = new Menu();
@@ -15045,10 +15127,10 @@ class PowerCalendarView extends ItemView {
 			});
 		}
 
-		const meta = card.createDiv("pcal-card-meta");
+		const meta = card.createDiv("nya-card-meta");
 		const metaRow = (icon: string, text: string): HTMLElement => {
-			const row = meta.createDiv("pcal-card-row");
-			const ic = row.createSpan("pcal-card-icon");
+			const row = meta.createDiv("nya-card-row");
+			const ic = row.createSpan("nya-card-icon");
 			setIcon(ic, icon);
 			row.createSpan({ text });
 			return row;
@@ -15057,7 +15139,7 @@ class PowerCalendarView extends ItemView {
 		// a multi-day range already names its days; prefixing the heading again reads twice
 		const whenRow = metaRow("clock", span.startKey === span.endKey ? `${fmtDayHeading(span.startKey)} · ${fmtEventRange(ev, s.use24h)}` : fmtEventRange(ev, s.use24h));
 		if (ev.recurring) {
-			const rep = whenRow.createSpan("pcal-card-repeat");
+			const rep = whenRow.createSpan("nya-card-repeat");
 			setIcon(rep, "repeat");
 		}
 		// a location that only names the meeting platform is the join button again
@@ -15066,13 +15148,13 @@ class PowerCalendarView extends ItemView {
 		// people are links into their pages, so a meeting's attendees connect
 		// to the vault's person hubs in one click
 		const personRow = (icon: string, names: string[], extra?: string) => {
-			const row = meta.createDiv("pcal-card-row");
-			const ic = row.createSpan("pcal-card-icon");
+			const row = meta.createDiv("nya-card-row");
+			const ic = row.createSpan("nya-card-icon");
 			setIcon(ic, icon);
-			const wrap = row.createSpan("pcal-card-people");
+			const wrap = row.createSpan("nya-card-people");
 			names.forEach((n, idx) => {
 				if (idx) wrap.appendText(", ");
-				const link = wrap.createSpan({ cls: "pcal-person-link", text: n });
+				const link = wrap.createSpan({ cls: "nya-person-link", text: n });
 				link.addEventListener("click", () => {
 					this.closeCard();
 					void this.plugin.openPersonPage(n);
@@ -15084,15 +15166,15 @@ class PowerCalendarView extends ItemView {
 		if (people.length) personRow("users", people.slice(0, 6), people.length > 6 ? ` +${people.length - 6}` : undefined);
 
 		if (ev.canRsvp) {
-			const rsvp = card.createDiv("pcal-card-rsvp");
-			rsvp.createSpan({ cls: "pcal-rsvp-label", text: "Going?" });
+			const rsvp = card.createDiv("nya-card-rsvp");
+			rsvp.createSpan({ cls: "nya-rsvp-label", text: "Going?" });
 			const opts: { r: "accepted" | "tentative" | "declined"; label: string }[] = [
 				{ r: "accepted", label: "Yes" },
 				{ r: "tentative", label: "Maybe" },
 				{ r: "declined", label: "No" },
 			];
 			for (const o of opts) {
-				const b = rsvp.createEl("button", { cls: "pcal-rsvp-btn", text: o.label });
+				const b = rsvp.createEl("button", { cls: "nya-rsvp-btn", text: o.label });
 				b.toggleClass("is-active", ev.myResponse === o.r);
 				b.addEventListener("click", () => {
 					this.closeCard();
@@ -15102,7 +15184,7 @@ class PowerCalendarView extends ItemView {
 		}
 
 		if (ev.canEdit) {
-			const descInput = card.createEl("textarea", { cls: "pcal-card-desc pcal-card-desc-input", attr: { placeholder: "详细内容" } });
+			const descInput = card.createEl("textarea", { cls: "nya-card-desc nya-card-desc-input", attr: { placeholder: "详细内容" } });
 			descInput.value = stripMeetingBoilerplate(ev.description ?? "");
 			descInput.addEventListener("blur", () => {
 				const next = descInput.value.trim() || "";
@@ -15110,7 +15192,7 @@ class PowerCalendarView extends ItemView {
 			});
 		} else {
 			const d = stripMeetingBoilerplate(ev.description ?? "");
-			if (d) card.createDiv({ cls: "pcal-card-desc", text: d.length > 280 ? d.slice(0, 280).trimEnd() + "..." : d });
+			if (d) card.createDiv({ cls: "nya-card-desc", text: d.length > 280 ? d.slice(0, 280).trimEnd() + "..." : d });
 		}
 
 		// Sized and placed like the other windows, keeping both. The very
@@ -15118,7 +15200,7 @@ class PowerCalendarView extends ItemView {
 		// viewport and flipping above when there is no room below; after
 		// that it opens where it was left, and "Follow the event again"
 		// returns it to landing beside whatever was clicked.
-		const stopDrag = makeDraggable(this.app, card, head, "powerdesk:event-card", { w: 340, h: Math.min(420, window.innerHeight - 40) }, () => {
+		const stopDrag = makeDraggable(this.app, card, head, "nyahome:event-card", { w: 340, h: Math.min(420, window.innerHeight - 40) }, () => {
 			const r = anchor.getBoundingClientRect();
 			const below = r.bottom + 6;
 			return {
@@ -15163,8 +15245,8 @@ class SeriesChoiceModal extends Modal {
 	}
 	onOpen() {
 		this.titleEl.setText(this.heading);
-		this.contentEl.createEl("p", { cls: "pcal-modal-desc", text: "This event repeats." });
-		const btns = this.contentEl.createDiv({ cls: "pcal-modal-btns" });
+		this.contentEl.createEl("p", { cls: "nya-modal-desc", text: "This event repeats." });
+		const btns = this.contentEl.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "The whole series" }).addEventListener("click", () => {
 			this.close();
@@ -15194,8 +15276,8 @@ class ConfirmModal extends Modal {
 	}
 	onOpen() {
 		this.titleEl.setText(this.heading);
-		this.contentEl.createEl("p", { cls: "pcal-modal-desc", text: this.body });
-		const btns = this.contentEl.createDiv({ cls: "pcal-modal-btns" });
+		this.contentEl.createEl("p", { cls: "nya-modal-desc", text: this.body });
+		const btns = this.contentEl.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		const go = btns.createEl("button", { text: this.confirmText, cls: "mod-warning" });
 		go.addEventListener("click", () => {
@@ -15235,7 +15317,7 @@ class EventModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private ev: PCEvent | null,
 		startMs: number,
 		endMs: number,
@@ -15261,13 +15343,13 @@ class EventModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText(this.ev ? "Edit event" : "New event");
-		this.modalEl.addClass("pcal-event-window");
-		makeMovable(this.app, this, "ambernyadesk:event-window", { w: 780, h: 620 });
+		this.modalEl.addClass("nya-event-window");
+		makeMovable(this.app, this, "nyahome:event-window", { w: 780, h: 620 });
 		const c = this.contentEl;
-		c.addClass("pcal-event-modal");
+		c.addClass("nya-event-modal");
 		let titleInput: HTMLInputElement | null = null;
-		const top = c.createDiv("pcal-event-section pcal-event-top");
-		const titleRow = top.createDiv("pcal-event-title-row");
+		const top = c.createDiv("nya-event-section nya-event-top");
+		const titleRow = top.createDiv("nya-event-title-row");
 		new Setting(titleRow).setName(t("Title")).addText((field) => {
 			titleInput = field.inputEl;
 			field.setPlaceholder(t("Event title")).setValue(this.etitle).onChange((v) => (this.etitle = v));
@@ -15280,7 +15362,7 @@ class EventModal extends Modal {
 		});
 		const targets = this.plugin.writableTargets();
 		if (!this.ev && targets.length > 1) {
-			titleRow.addClass("pcal-has-calendar");
+			titleRow.addClass("nya-has-calendar");
 			new Setting(titleRow).setName(t("Calendar")).addDropdown((d) => {
 				for (const t of targets) d.addOption(t.key, t.label);
 				d.setValue(this.targetKey ?? targets[0].key).onChange((v) => {
@@ -15292,9 +15374,9 @@ class EventModal extends Modal {
 			});
 		}
 		if (!this.ev) {
-			top.createDiv({ cls: "setting-item-name pcal-event-desc-label", text: t("Description") });
-			const descBar = top.createDiv("pcal-compose-bar");
-			this.descEl = top.createDiv({ cls: "pcal-compose-editor pcal-event-desc", attr: { contenteditable: "true" } });
+			top.createDiv({ cls: "setting-item-name nya-event-desc-label", text: t("Description") });
+			const descBar = top.createDiv("nya-compose-bar");
+			this.descEl = top.createDiv({ cls: "nya-compose-editor nya-event-desc", attr: { contenteditable: "true" } });
 			richToolbar(this.app, descBar, () => this.descEl);
 			this.descEl.addEventListener("input", () => {
 				const hasWords = !!this.descEl.textContent?.trim();
@@ -15304,11 +15386,11 @@ class EventModal extends Modal {
 		}
 		new Setting(top).setName(t("Location")).addText((field) => field.setValue(this.location).onChange((v) => (this.location = v)));
 
-		const controls = c.createDiv("pcal-event-section pcal-event-controls");
+		const controls = c.createDiv("nya-event-section nya-event-controls");
 		const makeControlCell = (label: string) => {
-			const cell = controls.createDiv("pcal-event-control-cell");
-			cell.createDiv({ cls: "pcal-event-control-label", text: label });
-			const host = cell.createDiv("pcal-event-control-value");
+			const cell = controls.createDiv("nya-event-control-cell");
+			cell.createDiv({ cls: "nya-event-control-label", text: label });
+			const host = cell.createDiv("nya-event-control-value");
 			return host;
 		};
 		const allDayCtl = makeControlCell(t("All day"));
@@ -15350,18 +15432,18 @@ class EventModal extends Modal {
 			repeatSelect.value = this.repeat;
 			repeatSelect.addEventListener("change", () => (this.repeat = repeatSelect.value as RepeatKind));
 		}
-		this.fieldsEl = c.createDiv("pcal-event-section pcal-event-times");
+		this.fieldsEl = c.createDiv("nya-event-section nya-event-times");
 		this.renderTimeFields();
-		const invite = c.createDiv("pcal-event-section pcal-event-invite");
+		const invite = c.createDiv("nya-event-section nya-event-invite");
 		this.meetingEl = invite.createDiv();
 		this.renderMeetingField();
 		new Setting(invite)
 			.setName(t("Invite"))
 			.setDesc(t("Email addresses, comma separated. Invitations go out when you save."))
 			.addText((field) => field.setPlaceholder("ana@x.com, Bob <bob@x.com>").setValue(this.invites).onChange((v) => (this.invites = v)));
-		const btns = c.createDiv({ cls: "pcal-modal-btns pcal-compose-btns" });
-		btns.createEl("button", { text: t(this.ev ? "Save" : "Create"), cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => void this.save());
-		btns.createSpan("pcal-compose-btns-gap");
+		const btns = c.createDiv({ cls: "nya-modal-btns nya-compose-btns" });
+		btns.createEl("button", { text: t(this.ev ? "Save" : "Create"), cls: "mod-cta nya-send-btn" }).addEventListener("click", () => void this.save());
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: t("Cancel") }).addEventListener("click", () => this.close());
 		window.setTimeout(() => titleInput?.focus(), 20);
 	}
@@ -15401,9 +15483,9 @@ class EventModal extends Modal {
 			});
 		};
 		const dur = this.draftEnd - this.draftStart;
-		const startRow = host.createDiv("pcal-event-time-row");
-		startRow.createDiv({ cls: "pcal-event-time-label", text: this.allDay ? t("First day") : t("Starts") });
-		const startCtl = startRow.createDiv("pcal-event-time-controls");
+		const startRow = host.createDiv("nya-event-time-row");
+		startRow.createDiv({ cls: "nya-event-time-label", text: this.allDay ? t("First day") : t("Starts") });
+		const startCtl = startRow.createDiv("nya-event-time-controls");
 		dateInput(startCtl, keyOfMs(this.draftStart), (key) => {
 			this.draftStart = msOfKey(key) + (this.allDay ? 0 : minutesOfMs(this.draftStart) * 60000);
 			this.draftEnd = this.draftStart + dur;
@@ -15413,9 +15495,9 @@ class EventModal extends Modal {
 				this.draftStart = msOfKey(keyOfMs(this.draftStart)) + min * 60000;
 				this.draftEnd = this.draftStart + dur;
 			});
-		const endRow = host.createDiv("pcal-event-time-row");
-		endRow.createDiv({ cls: "pcal-event-time-label", text: this.allDay ? t("Last day") : t("Ends") });
-		const endCtl = endRow.createDiv("pcal-event-time-controls");
+		const endRow = host.createDiv("nya-event-time-row");
+		endRow.createDiv({ cls: "nya-event-time-label", text: this.allDay ? t("Last day") : t("Ends") });
+		const endCtl = endRow.createDiv("nya-event-time-controls");
 		if (this.allDay) {
 			dateInput(endCtl, keyOfMs(this.draftEnd - 1), (key) => {
 				this.draftEnd = Math.max(msOfKey(addDays(key, 1)), this.draftStart + 86400000);
@@ -15460,7 +15542,7 @@ class EventModal extends Modal {
 
 	private async save() {
 		if (this.draftEnd <= this.draftStart) {
-			new Notice("AmberNyaDesk: the end must come after the start.");
+			new Notice("NyaHome: the end must come after the start.");
 			return;
 		}
 		// attendees ride along only when they changed, so an untouched invite
@@ -15500,18 +15582,18 @@ class DeviceCodeModal extends Modal {
 		this.titleEl.setText("Connect Microsoft 365");
 		const c = this.contentEl;
 		c.createEl("p", {
-			cls: "pcal-modal-desc",
-			text: "Sign in with your Microsoft account so AmberNyaDesk can read your calendar. Open the page, enter the code, and approve. This window finishes automatically.",
+			cls: "nya-modal-desc",
+			text: "Sign in with your Microsoft account so NyaHome can read your calendar. Open the page, enter the code, and approve. This window finishes automatically.",
 		});
-		c.createDiv({ cls: "pcal-devicecode", text: this.dc.user_code });
-		const row = c.createDiv({ cls: "pcal-modal-btns pcal-left" });
+		c.createDiv({ cls: "nya-devicecode", text: this.dc.user_code });
+		const row = c.createDiv({ cls: "nya-modal-btns nya-left" });
 		row.createEl("button", { text: "Copy code" }).addEventListener("click", () => {
 			void navigator.clipboard.writeText(this.dc.user_code);
-			new Notice("AmberNyaDesk: code copied.");
+			new Notice("NyaHome: code copied.");
 		});
 		row.createEl("button", { text: "Open sign-in page", cls: "mod-cta" }).addEventListener("click", () => window.open(this.dc.verification_uri, "_blank"));
-		c.createEl("p", { cls: "pcal-modal-desc pcal-devicecode-url", text: this.dc.verification_uri });
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		c.createEl("p", { cls: "nya-modal-desc nya-devicecode-url", text: this.dc.verification_uri });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 	}
 	onClose() {
@@ -15546,7 +15628,7 @@ class SearchFolderModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private account: GraphAccount,
 		private existing: { id: string; name: string; query: string; type?: string; param?: string } | null,
 		private onSave: () => void
@@ -15560,7 +15642,7 @@ class SearchFolderModal extends Modal {
 	onOpen() {
 		this.titleEl.setText(this.existing ? "Edit search folder" : "New search folder");
 		const c = this.contentEl;
-		c.addClass("pcal-searchfolder-modal");
+		c.addClass("nya-searchfolder-modal");
 		let nameInput: HTMLInputElement | null = null;
 		new Setting(c).setName("Name").addText((t) => {
 			nameInput = t.inputEl;
@@ -15593,17 +15675,17 @@ class SearchFolderModal extends Modal {
 		});
 		paramHost = c.createDiv();
 		renderParam();
-		const btns = c.createDiv("pcal-modal-btns");
+		const btns = c.createDiv("nya-modal-btns");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			const def = SEARCH_FOLDER_TYPES.find((x) => x.v === this.type);
 			if (def?.param && !this.param.trim()) {
-				new Notice(`AmberNyaDesk: fill in ${def.param.toLowerCase()}.`);
+				new Notice(`NyaHome: fill in ${def.param.toLowerCase()}.`);
 				return;
 			}
 			const query = searchFolderQuery(this.type, this.param, this.account.label);
 			if (!query.trim()) {
-				new Notice("AmberNyaDesk: this search folder would match nothing.");
+				new Notice("NyaHome: this search folder would match nothing.");
 				return;
 			}
 			const name = this.name.trim() || def?.label || "Search";
@@ -15651,7 +15733,7 @@ class RichComposeModal extends Modal {
 	/** Swap the signature when the sending account changes, replacing only
 	 *  the block we put there rather than anything typed since. */
 	private swapSignature() {
-		const old = this.editorEl?.querySelector(".pcal-sig-block");
+		const old = this.editorEl?.querySelector(".nya-sig-block");
 		const html = this.plugin.signatureHtml(this.fromId, this.opts.mode === "new" ? "new" : "reply");
 		if (!old) return;
 		const holder = createDiv();
@@ -15662,7 +15744,7 @@ class RichComposeModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private opts: {
 			mode: "new" | "reply" | "replyAll" | "forward";
 			mail?: PCMail;
@@ -15680,19 +15762,19 @@ class RichComposeModal extends Modal {
 
 	onOpen() {
 		const { mode, mail } = this.opts;
-		this.modalEl.addClass("pcal-compose-window");
+		this.modalEl.addClass("nya-compose-window");
 		this.titleEl.setText(mode === "new" ? "New mail" : mode === "reply" ? "Reply" : mode === "replyAll" ? "Reply all" : "Forward");
 		// one remembered geometry for every compose window, since a reply and
 		// a new message want the same room and nobody wants to size two
-		makeMovable(this.app, this, "powerdesk:compose-window", { w: 900, h: 720 });
+		makeMovable(this.app, this, "nyahome:compose-window", { w: 900, h: 720 });
 		const c = this.contentEl;
-		c.addClass("pcal-compose");
+		c.addClass("nya-compose");
 		// From: a real picker when several mailboxes can send and this is a
 		// fresh message. A reply has no picker on purpose, since its draft
 		// already lives in one mailbox and moving it is not a dropdown.
 		const senders = this.plugin.settings.graphAccounts.filter((a) => !!a.refresh && a.grantedScope.includes("Mail.Send"));
-		const fromRow = c.createDiv("pcal-compose-row pcal-compose-fromrow");
-		fromRow.createSpan({ cls: "pcal-compose-label", text: "From" });
+		const fromRow = c.createDiv("nya-compose-row nya-compose-fromrow");
+		fromRow.createSpan({ cls: "nya-compose-label", text: "From" });
 		if (mode === "new" && senders.length > 1) {
 			const sel = fromRow.createEl("select", { cls: "dropdown" });
 			for (const a of senders) sel.createEl("option", { value: a.id, text: this.plugin.nameOf(a) });
@@ -15705,13 +15787,13 @@ class RichComposeModal extends Modal {
 			});
 		} else {
 			const label = mode === "new" ? this.plugin.mailSender(this.opts.preferAccountId)?.label : mail?.accountLabel;
-			fromRow.createSpan({ cls: "pcal-compose-fromname", text: label ?? "this mailbox" });
+			fromRow.createSpan({ cls: "nya-compose-fromname", text: label ?? "this mailbox" });
 			this.fromId = this.opts.preferAccountId ?? mail?.accountId ?? senders[0]?.id ?? "";
 		}
 
 		const row = (label: string, value: string, placeholder?: string): { input: HTMLInputElement; row: HTMLElement } => {
-			const r = c.createDiv("pcal-compose-row");
-			r.createSpan({ cls: "pcal-compose-label", text: label });
+			const r = c.createDiv("nya-compose-row");
+			r.createSpan({ cls: "nya-compose-label", text: label });
 			const inp = r.createEl("input", { attr: { type: "text", spellcheck: "false" } });
 			inp.value = value;
 			if (placeholder) inp.placeholder = placeholder;
@@ -15721,7 +15803,7 @@ class RichComposeModal extends Modal {
 		this.toInput = toRow.input;
 		// Bcc is hidden until wanted, the way every mail client hides it, but
 		// it is one click away rather than absent
-		const bccToggle = toRow.row.createEl("button", { cls: "pcal-bcc-toggle", text: "Bcc" });
+		const bccToggle = toRow.row.createEl("button", { cls: "nya-bcc-toggle", text: "Bcc" });
 		this.ccInput = row("Cc", this.opts.resume?.cc ?? "").input;
 		const bccRow = row("Bcc", this.opts.resume?.bcc ?? "");
 		this.bccInput = bccRow.input;
@@ -15737,8 +15819,8 @@ class RichComposeModal extends Modal {
 		this.subjInput = row("Subject", this.opts.resume?.subject ?? this.opts.subject ?? "").input;
 		this.suggests = [new AddressSuggest(this.toInput, this.plugin), new AddressSuggest(this.ccInput, this.plugin), new AddressSuggest(this.bccInput, this.plugin)];
 
-		const bar = c.createDiv("pcal-compose-bar");
-		this.editorEl = c.createDiv({ cls: "pcal-compose-editor", attr: { contenteditable: "true" } });
+		const bar = c.createDiv("nya-compose-bar");
+		this.editorEl = c.createDiv({ cls: "nya-compose-editor", attr: { contenteditable: "true" } });
 		richToolbar(this.app, bar, () => this.editorEl, [
 			{
 				label: "Insert an image",
@@ -15749,7 +15831,7 @@ class RichComposeModal extends Modal {
 							const bytes = await this.app.vault.readBinary(f);
 							const mime = mimeForExtension(f.extension);
 							if (!mime.startsWith("image/")) {
-								new Notice("AmberNyaDesk: pick an image file.");
+								new Notice("NyaHome: pick an image file.");
 								return;
 							}
 							const src = `data:${mime};base64,${arrayBufferToBase64(bytes)}`;
@@ -15758,7 +15840,7 @@ class RichComposeModal extends Modal {
 					}).open(),
 			},
 		]);
-		bar.createSpan("pcal-compose-bar-sep");
+		bar.createSpan("nya-compose-bar-sep");
 		richToolbarFull(this.app, bar, () => this.editorEl);
 		const res = this.opts.resume;
 		if (res) {
@@ -15769,20 +15851,20 @@ class RichComposeModal extends Modal {
 			this.editorEl.createEl("p").createEl("br");
 			// the signature sits in a block of its own so changing the From
 			// account can replace it without touching anything typed
-			const sig = this.editorEl.createDiv("pcal-sig-block");
+			const sig = this.editorEl.createDiv("nya-sig-block");
 			sig.appendChild(sanitizeHTMLToDom(this.plugin.signatureHtml(this.fromId, "new")));
-		} else this.editorEl.createEl("p", { cls: "pcal-compose-loading", text: "Opening the draft..." });
+		} else this.editorEl.createEl("p", { cls: "nya-compose-loading", text: "Opening the draft..." });
 
-		this.filesEl = c.createDiv("pcal-compose-files");
+		this.filesEl = c.createDiv("nya-compose-files");
 		if (res?.files?.length) this.files = [...res.files];
 		this.renderFiles();
 
 		this.receipts = res?.receipts ?? { read: this.plugin.settings.mailAskReadReceipt, delivery: this.plugin.settings.mailAskDeliveryReceipt };
 
-		const btns = c.createDiv("pcal-modal-btns pcal-compose-btns");
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
 		// Send leads, the way it does in every mail client: it is the thing
 		// the window exists for and should not be one grey button among five
-		btns.createEl("button", { text: "Send", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => void this.send());
+		btns.createEl("button", { text: "Send", cls: "mod-cta nya-send-btn" }).addEventListener("click", () => void this.send());
 		btns.createEl("button", { text: "Attach" }).addEventListener("click", (e) => this.attachMenu(e));
 		const optBtn = btns.createEl("button", { text: "Options" });
 		optBtn.addEventListener("click", (e) => {
@@ -15815,7 +15897,7 @@ class RichComposeModal extends Modal {
 				(ms) => void this.send(ms)
 			).open();
 		});
-		btns.createSpan("pcal-compose-btns-gap");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Discard" }).addEventListener("click", () => this.close());
 
 		if (res) {
@@ -15854,7 +15936,7 @@ class RichComposeModal extends Modal {
 			this.files.push({ name: f.name, contentType: mimeForExtension(f.extension), bytes });
 			this.renderFiles();
 		} catch (err) {
-			new Notice("AmberNyaDesk: could not read that file. " + (err instanceof Error ? err.message : String(err)));
+			new Notice("NyaHome: could not read that file. " + (err instanceof Error ? err.message : String(err)));
 		}
 	}
 
@@ -15862,7 +15944,7 @@ class RichComposeModal extends Modal {
 	 *  the desktop app and on a phone. */
 	private pickDiskFiles() {
 		const input = createEl("input", { attr: { type: "file", multiple: "true" } });
-		input.addClass("pcal-offscreen-input");
+		input.addClass("nya-offscreen-input");
 		document.body.appendChild(input);
 		input.addEventListener("change", () => {
 			void (async () => {
@@ -15870,7 +15952,7 @@ class RichComposeModal extends Modal {
 					try {
 						this.files.push({ name: f.name, contentType: f.type || mimeForExtension(f.name.split(".").pop() ?? ""), bytes: await f.arrayBuffer() });
 					} catch (err) {
-						new Notice(`AmberNyaDesk: could not read ${f.name}. ` + (err instanceof Error ? err.message : String(err)));
+						new Notice(`NyaHome: could not read ${f.name}. ` + (err instanceof Error ? err.message : String(err)));
 					}
 				}
 				this.renderFiles();
@@ -15890,21 +15972,21 @@ class RichComposeModal extends Modal {
 		let total = 0;
 		this.files.forEach((f, idx) => {
 			total += f.bytes.byteLength;
-			const chip = host.createDiv("pcal-mail-att pcal-compose-file");
+			const chip = host.createDiv("nya-mail-att nya-compose-file");
 			const badge = attachmentBadge(f.name, f.contentType);
-			const ic = chip.createSpan({ cls: "pcal-mail-att-icon", text: badge.label });
-			ic.style.setProperty("--pcal-att-color", badge.color);
-			const tx = chip.createDiv("pcal-mail-att-text");
-			tx.createDiv({ cls: "pcal-mail-att-name", text: f.name });
-			tx.createDiv({ cls: "pcal-mail-att-size", text: fmtAttachmentSize(f.bytes.byteLength) });
-			const x = chip.createSpan({ cls: "pcal-compose-file-x", attr: { "aria-label": `Remove ${f.name}` } });
+			const ic = chip.createSpan({ cls: "nya-mail-att-icon", text: badge.label });
+			ic.style.setProperty("--nya-att-color", badge.color);
+			const tx = chip.createDiv("nya-mail-att-text");
+			tx.createDiv({ cls: "nya-mail-att-name", text: f.name });
+			tx.createDiv({ cls: "nya-mail-att-size", text: fmtAttachmentSize(f.bytes.byteLength) });
+			const x = chip.createSpan({ cls: "nya-compose-file-x", attr: { "aria-label": `Remove ${f.name}` } });
 			setIcon(x, "x");
 			x.addEventListener("click", () => {
 				this.files.splice(idx, 1);
 				this.renderFiles();
 			});
 		});
-		const note = host.createDiv("pcal-compose-files-total");
+		const note = host.createDiv("nya-compose-files-total");
 		note.setText(`${this.files.length} file${this.files.length === 1 ? "" : "s"}, ${fmtAttachmentSize(total)}`);
 		if (total > 30 * 1024 * 1024) {
 			note.addClass("is-over");
@@ -15963,7 +16045,7 @@ class RichComposeModal extends Modal {
 		const subject = this.subjInput.value.trim() || "(no subject)";
 		const html = this.editorEl.innerHTML;
 		if (!to.length) {
-			new Notice("AmberNyaDesk: enter at least one recipient.");
+			new Notice("NyaHome: enter at least one recipient.");
 			return;
 		}
 		// Putting the window back exactly as it was is the whole of undo.
@@ -15987,16 +16069,16 @@ class RichComposeModal extends Modal {
 			const plain = !files.length && !whenMs && !/src\s*=\s*["']data:/i.test(html);
 			const sender = plain ? this.plugin.mailSender(this.opts.preferAccountId) : null;
 			if (plain && !sender) {
-				new Notice("AmberNyaDesk: no account can send mail.");
+				new Notice("NyaHome: no account can send mail.");
 				return;
 			}
 			const fire = async () => {
 				if (sender) {
 					try {
 						await sender.send({ to, cc, bcc, subject, html, receipts });
-						new Notice("AmberNyaDesk: mail sent.");
+						new Notice("NyaHome: mail sent.");
 					} catch (e) {
-						new Notice("AmberNyaDesk: " + (e instanceof Error ? e.message : String(e)));
+						new Notice("NyaHome: " + (e instanceof Error ? e.message : String(e)));
 					}
 					return;
 				}
@@ -16063,7 +16145,7 @@ class GraphAccountWizard extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app);
 	}
@@ -16083,7 +16165,7 @@ class GraphAccountWizard extends Modal {
 		c.empty();
 		this.codeEl = this.statusEl = null;
 		const titles = ["Account type", "App registration", "Sign in", "Connected"];
-		c.createDiv({ cls: "pcal-wizard-progress", text: `Step ${this.stepNo} of 4 · ${titles[this.stepNo - 1]}` });
+		c.createDiv({ cls: "nya-wizard-progress", text: `Step ${this.stepNo} of 4 · ${titles[this.stepNo - 1]}` });
 		if (this.stepNo === 1) this.renderKind(c);
 		else if (this.stepNo === 2) this.renderApp(c);
 		else if (this.stepNo === 3) this.renderSignIn(c);
@@ -16091,7 +16173,7 @@ class GraphAccountWizard extends Modal {
 	}
 
 	private footer(c: HTMLElement, buttons: { label: string; cta?: boolean; onClick: () => void }[]) {
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		for (const b of buttons) btns.createEl("button", { text: b.label, cls: b.cta ? "mod-cta" : "" }).addEventListener("click", b.onClick);
 	}
 
@@ -16105,15 +16187,15 @@ class GraphAccountWizard extends Modal {
 	}
 
 	private card(c: HTMLElement, title: string, desc: string, pick: () => void) {
-		const el = c.createDiv({ cls: "pcal-wizard-card" });
-		el.createDiv({ cls: "pcal-wizard-card-title", text: title });
-		el.createDiv({ cls: "pcal-guide-text", text: desc });
+		const el = c.createDiv({ cls: "nya-wizard-card" });
+		el.createDiv({ cls: "nya-wizard-card-title", text: title });
+		el.createDiv({ cls: "nya-guide-text", text: desc });
 		el.addEventListener("click", pick);
 	}
 
 	/* ---- step 1: account type ---- */
 	private renderKind(c: HTMLElement) {
-		c.createEl("p", { cls: "pcal-modal-desc", text: "Sign-in happens in your browser with a device code; the plugin never sees a password. Which kind of account is this?" });
+		c.createEl("p", { cls: "nya-modal-desc", text: "Sign-in happens in your browser with a device code; the plugin never sees a password. Which kind of account is this?" });
 		this.card(c, "Work or school", "An account from an organization (name@company.com). Signs in through the shared app registration.", () => {
 			this.kind = "work";
 			this.useOwnApp = false;
@@ -16143,7 +16225,7 @@ class GraphAccountWizard extends Modal {
 	private renderApp(c: HTMLElement) {
 		if (this.kind === "work" && !this.useOwnApp && this.plugin.effectiveClientId()) {
 			c.createEl("p", {
-				cls: "pcal-modal-desc",
+				cls: "nya-modal-desc",
 				text: (this.plugin.usingSiblingApp() ? "Sign-in goes through Power Assistant's app registration, borrowed automatically." : "Sign-in goes through the app registration configured in settings.") + " Nothing to configure; continue straight to the sign-in. Every additional work account connects the same way.",
 			});
 			new Setting(c)
@@ -16164,7 +16246,7 @@ class GraphAccountWizard extends Modal {
 		if (this.kind === "work" && !this.useOwnApp) {
 			// no shared app anywhere yet: the one created here lands in settings
 			// and every later work account reuses it
-			c.createEl("p", { cls: "pcal-modal-desc", text: "One-time setup: Microsoft sign-ins need an app registration, created once in the Azure portal. It is saved in settings and every later work account reuses it." });
+			c.createEl("p", { cls: "nya-modal-desc", text: "One-time setup: Microsoft sign-ins need an app registration, created once in the Azure portal. It is saved in settings and every later work account reuses it." });
 			renderAzureAppSteps(c, false, (id) => {
 				this.plugin.settings.graphClientId = id;
 				this.plugin.queueSave();
@@ -16188,9 +16270,9 @@ class GraphAccountWizard extends Modal {
 			return;
 		}
 		if (this.kind === "personal") {
-			c.createEl("p", { cls: "pcal-modal-desc", text: "A personal account signs in through its own app registration; the shared work app cannot accept it. Create the app now, or paste an ID you already have. One registration signs in any number of personal accounts, so this never comes up again." });
+			c.createEl("p", { cls: "nya-modal-desc", text: "A personal account signs in through its own app registration; the shared work app cannot accept it. Create the app now, or paste an ID you already have. One registration signs in any number of personal accounts, so this never comes up again." });
 		} else {
-			c.createEl("p", { cls: "pcal-modal-desc", text: "This account signs in through its own app registration, remembered on the account." });
+			c.createEl("p", { cls: "nya-modal-desc", text: "This account signs in through its own app registration, remembered on the account." });
 		}
 		new Setting(c)
 			.setName("No app registration yet?")
@@ -16211,7 +16293,7 @@ class GraphAccountWizard extends Modal {
 				cta: true,
 				onClick: () => {
 					if (!this.clientId.trim()) {
-						new Notice("AmberNyaDesk: enter the Application (client) ID, or press Create it now.");
+						new Notice("NyaHome: enter the Application (client) ID, or press Create it now.");
 						return;
 					}
 					this.stepNo = 3;
@@ -16224,10 +16306,10 @@ class GraphAccountWizard extends Modal {
 	/* ---- step 3: sign in (the device code start doubles as verification:
 	 *  a missing app or public-client-off surfaces right here, inline) ---- */
 	private renderSignIn(c: HTMLElement) {
-		c.createEl("p", { cls: "pcal-modal-desc", text: "Approve the sign-in in your browser: open the page, enter the code, and pick the account. After the code, the page asks which account; choose 'Use another account' to enter an address that is not listed. Enter exactly the code shown here; a code saved by a password manager from an earlier attempt is expired. This screen moves on by itself." });
-		this.codeEl = c.createDiv({ cls: "pcal-devicecode", text: "..." });
-		const btnRow = c.createDiv({ cls: "pcal-modal-btns pcal-left" });
-		this.statusEl = c.createDiv({ cls: "pcal-modal-status", text: "Requesting a code..." });
+		c.createEl("p", { cls: "nya-modal-desc", text: "Approve the sign-in in your browser: open the page, enter the code, and pick the account. After the code, the page asks which account; choose 'Use another account' to enter an address that is not listed. Enter exactly the code shown here; a code saved by a password manager from an earlier attempt is expired. This screen moves on by itself." });
+		this.codeEl = c.createDiv({ cls: "nya-devicecode", text: "..." });
+		const btnRow = c.createDiv({ cls: "nya-modal-btns nya-left" });
+		this.statusEl = c.createDiv({ cls: "nya-modal-status", text: "Requesting a code..." });
 		this.footer(c, [{ label: "Back", onClick: () => { this.stepNo = 2; this.render(); } }]);
 		void this.startSignIn(btnRow);
 	}
@@ -16289,7 +16371,7 @@ class GraphAccountWizard extends Modal {
 		btnRow.empty();
 		btnRow.createEl("button", { text: "Copy code" }).addEventListener("click", () => {
 			void navigator.clipboard.writeText(dc.user_code);
-			new Notice("AmberNyaDesk: code copied.");
+			new Notice("NyaHome: code copied.");
 		});
 		btnRow.createEl("button", { text: "Open sign-in page", cls: "mod-cta" }).addEventListener("click", () => window.open(dc.verification_uri, "_blank"));
 		this.statusEl?.setText("Waiting for the approval at " + dc.verification_uri + " ...");
@@ -16298,22 +16380,22 @@ class GraphAccountWizard extends Modal {
 	private showError(hint: string | null, raw: string | null) {
 		if (this.closed || this.stepNo !== 3 || !this.statusEl) return;
 		this.statusEl.empty();
-		const box = this.statusEl.createDiv({ cls: "pcal-wizard-error" });
+		const box = this.statusEl.createDiv({ cls: "nya-wizard-error" });
 		box.createDiv({ text: hint ?? "The sign-in failed." });
-		if (raw) box.createDiv({ cls: "pcal-guide-text", text: raw });
-		box.createDiv({ cls: "pcal-guide-text", text: "Press Back to adjust, then try again." });
+		if (raw) box.createDiv({ cls: "nya-guide-text", text: raw });
+		box.createDiv({ cls: "nya-guide-text", text: "Press Back to adjust, then try again." });
 	}
 
 	/* ---- step 4: connected ---- */
 	private renderDone(c: HTMLElement) {
 		const a = this.connected;
-		c.createEl("p", { cls: "pcal-modal-desc", text: a ? `${a.label} is connected.` : "Connected." });
+		c.createEl("p", { cls: "nya-modal-desc", text: a ? `${a.label} is connected.` : "Connected." });
 		if (a) {
-			const box = c.createDiv({ cls: "pcal-guide-fields" });
+			const box = c.createDiv({ cls: "nya-guide-fields" });
 			const line = (label: string, value: string) => {
-				const row = box.createDiv({ cls: "pcal-guide-field" });
-				row.createDiv({ cls: "pcal-guide-field-name", text: label });
-				row.createDiv({ cls: "pcal-guide-field-value", text: value });
+				const row = box.createDiv({ cls: "nya-guide-field" });
+				row.createDiv({ cls: "nya-guide-field-name", text: label });
+				row.createDiv({ cls: "nya-guide-field-value", text: value });
 			};
 			line("Calendars", `${a.calendars.length} found, all enabled; toggles and colors are in settings`);
 			line("Mail", this.plugin.canMailAccount(a) ? "inbox available in the mail view" : "not granted");
@@ -16347,39 +16429,39 @@ const AZURE_APP_CREATE_URL = "https://portal.azure.com/#view/Microsoft_AAD_Regis
  *  own "what happens next" line. */
 function renderAzureAppSteps(host: HTMLElement, personal: boolean, onId: (id: string) => void, tail?: string) {
 	const step = (n: number, title: string): HTMLElement => {
-		const el = host.createDiv({ cls: "pcal-guide-step" });
-		el.createDiv({ cls: "pcal-guide-step-num", text: String(n) });
-		const body = el.createDiv({ cls: "pcal-guide-step-body" });
-		body.createDiv({ cls: "pcal-guide-step-title", text: title });
+		const el = host.createDiv({ cls: "nya-guide-step" });
+		el.createDiv({ cls: "nya-guide-step-num", text: String(n) });
+		const body = el.createDiv({ cls: "nya-guide-step-body" });
+		body.createDiv({ cls: "nya-guide-step-title", text: title });
 		return body;
 	};
-	const text = (h: HTMLElement, t: string) => h.createDiv({ cls: "pcal-guide-text", text: t });
+	const text = (h: HTMLElement, t: string) => h.createDiv({ cls: "nya-guide-text", text: t });
 
 	const s1 = step(1, "Go to the app registration page");
 	text(s1, personal ? "Copy this address into your browser and sign in with the personal account whose mail and calendar you want:" : "Copy this address into your browser and sign in with the account that should own the app:");
-	const urlRow = s1.createDiv({ cls: "pcal-guide-url-row" });
-	urlRow.createDiv({ cls: "pcal-guide-url", text: AZURE_APP_CREATE_URL });
+	const urlRow = s1.createDiv({ cls: "nya-guide-url-row" });
+	urlRow.createDiv({ cls: "nya-guide-url", text: AZURE_APP_CREATE_URL });
 	urlRow.createEl("button", { text: "Copy link" }).addEventListener("click", () => {
 		void navigator.clipboard.writeText(AZURE_APP_CREATE_URL);
-		new Notice("AmberNyaDesk: link copied.");
+		new Notice("NyaHome: link copied.");
 	});
 	text(s1, "Lands on the portal home instead? Search for 'App registrations' at the top and press 'New registration'.");
 
 	const s2 = step(2, "Register the application");
-	const fields = s2.createDiv({ cls: "pcal-guide-fields" });
+	const fields = s2.createDiv({ cls: "nya-guide-fields" });
 	const field = (name: string, value: string, note?: string, copyable?: boolean) => {
-		const row = fields.createDiv({ cls: "pcal-guide-field" });
-		row.createDiv({ cls: "pcal-guide-field-name", text: name });
-		const v = row.createDiv({ cls: "pcal-guide-field-value" });
-		v.createSpan({ cls: "pcal-guide-field-example", text: value });
-		if (note) v.createSpan({ cls: "pcal-guide-field-note", text: " (" + note + ")" });
+		const row = fields.createDiv({ cls: "nya-guide-field" });
+		row.createDiv({ cls: "nya-guide-field-name", text: name });
+		const v = row.createDiv({ cls: "nya-guide-field-value" });
+		v.createSpan({ cls: "nya-guide-field-example", text: value });
+		if (note) v.createSpan({ cls: "nya-guide-field-note", text: " (" + note + ")" });
 		if (copyable)
-			row.createEl("button", { text: "Copy", cls: "pcal-guide-field-copy" }).addEventListener("click", () => {
+			row.createEl("button", { text: "Copy", cls: "nya-guide-field-copy" }).addEventListener("click", () => {
 				void navigator.clipboard.writeText(value);
-				new Notice("AmberNyaDesk: copied.");
+				new Notice("NyaHome: copied.");
 			});
 	};
-	field("Name", "Obsidian AmberNyaDesk", "anything you like", true);
+	field("Name", "Obsidian NyaHome", "anything you like", true);
 	field("Supported account types", "Any Entra ID Tenant + Personal Microsoft accounts", "older portals word it as 'accounts in any organizational directory and personal Microsoft accounts'");
 	field("Redirect URI", "leave empty");
 	text(s2, "Press Register.");
@@ -16389,12 +16471,12 @@ function renderAzureAppSteps(host: HTMLElement, personal: boolean, onId: (id: st
 
 	const s4 = step(4, "Paste the ID back");
 	text(s4, "The app's Overview page shows Application (client) ID. Paste it here:");
-	const idRow = s4.createDiv({ cls: "pcal-guide-url-row" });
-	const idInput = idRow.createEl("input", { cls: "pcal-guide-id-input", attr: { placeholder: "00000000-0000-...", spellcheck: "false" } });
+	const idRow = s4.createDiv({ cls: "nya-guide-url-row" });
+	const idInput = idRow.createEl("input", { cls: "nya-guide-id-input", attr: { placeholder: "00000000-0000-...", spellcheck: "false" } });
 	idRow.createEl("button", { text: "Use this ID", cls: "mod-cta" }).addEventListener("click", () => {
 		const v = idInput.value.trim();
 		if (!v) {
-			new Notice("AmberNyaDesk: paste the Application (client) ID first.");
+			new Notice("NyaHome: paste the Application (client) ID first.");
 			return;
 		}
 		onId(v);
@@ -16403,7 +16485,7 @@ function renderAzureAppSteps(host: HTMLElement, personal: boolean, onId: (id: st
 
 	if (!personal)
 		host.createEl("p", {
-			cls: "pcal-modal-desc pcal-guide-note",
+			cls: "nya-modal-desc nya-guide-note",
 			text: "Organizations that block user consent need an admin to grant the delegated Calendars.ReadWrite, Mail.ReadWrite, Mail.Send, MailboxSettings.ReadWrite, ProfilePhoto.Read.All, Contacts.Read, and Tasks.ReadWrite permissions under API permissions; everyone else skips that page entirely.",
 		});
 }
@@ -16423,7 +16505,7 @@ class AzureAppGuideModal extends Modal {
 		this.titleEl.setText("Create the app registration");
 		const c = this.contentEl;
 		c.createEl("p", {
-			cls: "pcal-modal-desc",
+			cls: "nya-modal-desc",
 			text: "Required once, for work and personal accounts alike. No Azure subscription needed, about two minutes: register the app, flip one switch, paste one ID back.",
 		});
 		renderAzureAppSteps(
@@ -16435,7 +16517,7 @@ class AzureAppGuideModal extends Modal {
 			},
 			"It becomes the app for new sign-ins; press Add account to connect the first one. A personal account gets its own app instead: press Add account and pick Personal, and these same steps appear inside that wizard."
 		);
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Done", cls: "mod-cta" }).addEventListener("click", () => this.close());
 	}
 
@@ -16474,7 +16556,7 @@ class CaldavAccountModal extends Modal {
 		this.titleEl.setText(this.existing ? "Edit CalDAV account" : "Add CalDAV account");
 		const c = this.contentEl;
 		const desc = c.createEl("p", {
-			cls: "pcal-modal-desc",
+			cls: "nya-modal-desc",
 			text: "iCloud and Fastmail want an app-specific password, not your account password.",
 		});
 		let serverInput: HTMLInputElement | null = null;
@@ -16516,10 +16598,10 @@ class CaldavAccountModal extends Modal {
 		discover.addButton((b) =>
 			b.setButtonText("Connect and find calendars").onClick(() => void this.discover(b.buttonEl))
 		);
-		this.statusEl = c.createDiv("pcal-modal-status");
-		this.listEl = c.createDiv("pcal-dav-list");
+		this.statusEl = c.createDiv("nya-modal-status");
+		this.listEl = c.createDiv("nya-dav-list");
 		this.renderList();
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => this.save());
 	}
@@ -16563,11 +16645,11 @@ class CaldavAccountModal extends Modal {
 	private renderList() {
 		this.listEl.empty();
 		for (const coll of this.collections) {
-			const row = this.listEl.createDiv("pcal-dav-row");
+			const row = this.listEl.createDiv("nya-dav-row");
 			const cb = row.createEl("input", { attr: { type: "checkbox" } });
 			cb.checked = coll.enabled;
 			cb.addEventListener("change", () => (coll.enabled = cb.checked));
-			const swatch = row.createSpan("pcal-dav-swatch");
+			const swatch = row.createSpan("nya-dav-swatch");
 			swatch.style.backgroundColor = coll.color;
 			row.createSpan({ text: coll.name });
 		}
@@ -16623,7 +16705,7 @@ class VaultSourceModal extends Modal {
 		this.titleEl.setText(this.existing ? "Edit vault source" : "Add vault notes");
 		const c = this.contentEl;
 		c.createEl("p", {
-			cls: "pcal-modal-desc",
+			cls: "nya-modal-desc",
 			text: "Notes whose frontmatter has the date property appear as events. A bare date (2026-07-17) is all-day; a datetime (2026-07-17T09:30) is timed and can be dragged to reschedule.",
 		});
 		new Setting(c).setName("Name").addText((t) => t.setPlaceholder("Deadlines").setValue(this.name).onChange((v) => (this.name = v)));
@@ -16636,11 +16718,11 @@ class VaultSourceModal extends Modal {
 			.setName("End property")
 			.setDesc("Optional: a second property that stretches the event.")
 			.addText((t) => t.setPlaceholder("due-end").setValue(this.endProp).onChange((v) => (this.endProp = v)));
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			if (!this.dateProp.trim()) {
-				new Notice("AmberNyaDesk: a date property name is required.");
+				new Notice("NyaHome: a date property name is required.");
 				return;
 			}
 			this.onSave({
@@ -16679,7 +16761,7 @@ class IcsFeedModal extends Modal {
 		this.titleEl.setText(this.existing ? "Edit ICS feed" : "Add ICS feed");
 		const c = this.contentEl;
 		c.createEl("p", {
-			cls: "pcal-modal-desc",
+			cls: "nya-modal-desc",
 			text: "A read-only iCalendar subscription URL (.ics). Outlook, Google Calendar, and most systems publish one; webcal:// links work too.",
 		});
 		let urlInput: HTMLInputElement | null = null;
@@ -16688,12 +16770,12 @@ class IcsFeedModal extends Modal {
 			urlInput = t.inputEl;
 			t.setPlaceholder("https://example.com/calendar.ics").setValue(this.url).onChange((v) => (this.url = v));
 		});
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			const url = this.url.trim();
 			if (!/^(https?|webcal):\/\//i.test(url)) {
-				new Notice("AmberNyaDesk: that doesn't look like a feed URL.");
+				new Notice("NyaHome: that doesn't look like a feed URL.");
 				urlInput?.focus();
 				return;
 			}
@@ -16731,7 +16813,7 @@ class LocalCalendarModal extends Modal {
 		this.titleEl.setText(this.existing ? "Edit local calendar" : "Add a local calendar");
 		const c = this.contentEl;
 		c.createEl("p", {
-			cls: "pcal-modal-desc",
+			cls: "nya-modal-desc",
 			text: "An .ics file in this vault. Events you create here live in the file: edit them here, copy the file to another machine, and any calendar app can read it.",
 		});
 		new Setting(c).setName("Name").addText((t) => t.setPlaceholder("Local").setValue(this.name).onChange((v) => (this.name = v)));
@@ -16739,11 +16821,11 @@ class LocalCalendarModal extends Modal {
 			.setName("File path")
 			.setDesc("Vault-relative path to the .ics file. Created on first use.")
 			.addText((t) => t.setPlaceholder("Calendar/Local.ics").setValue(this.path).onChange((v) => (this.path = v)));
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			if (!/\.ics$/i.test(this.path.trim())) {
-				new Notice("AmberNyaDesk: the file path should end in .ics.");
+				new Notice("NyaHome: the file path should end in .ics.");
 				return;
 			}
 			this.onSave({
@@ -16776,7 +16858,7 @@ class ImapAccountModal extends Modal {
 		this.titleEl.setText(e ? "Edit IMAP account" : "Add an IMAP account");
 		const c = this.contentEl;
 		c.createEl("p", {
-			cls: "pcal-modal-desc",
+			cls: "nya-modal-desc",
 			text: "For QQ, 163, school mail, and other standard providers. Use the provider's authorization code as the password. Presets fill the common servers; ports 993/465 with SSL are typical.",
 		});
 		const label = e?.label ?? "";
@@ -16809,17 +16891,17 @@ class ImapAccountModal extends Modal {
 		new Setting(c).setName("SSL (993)").addToggle((t) => t.setValue(secure).onChange((v) => (account.secure = v)));
 		text("SMTP server", smtpHost, (v) => (account.smtpHost = v.trim()), "smtp.qq.com");
 		text("SMTP port", smtpPort, (v) => (account.smtpPort = Number(v) || 465));
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Test" }).addEventListener("click", () => {
 			this.persist(account, btns);
 			void testImapAccount(account).then((r) =>
-				new Notice(r.ok ? `AmberNyaDesk: IMAP connected; ${r.folders.length} folders.` : `AmberNyaDesk: IMAP failed (${r.error}).`, 8000)
+				new Notice(r.ok ? `NyaHome: IMAP connected; ${r.folders.length} folders.` : `NyaHome: IMAP failed (${r.error}).`, 8000)
 			);
 		});
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			if (!account.user.includes("@") || !account.imapHost || !account.smtpHost) {
-				new Notice("AmberNyaDesk: fill in the address, IMAP host, and SMTP host.");
+				new Notice("NyaHome: fill in the address, IMAP host, and SMTP host.");
 				return;
 			}
 			this.persist(account, btns);
@@ -16841,7 +16923,7 @@ class ImapAccountModal extends Modal {
 class ImapDraftListModal extends Modal {
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private onOpenDraft: (draft: ImapDraft) => void
 	) {
 		super(app);
@@ -16852,15 +16934,15 @@ class ImapDraftListModal extends Modal {
 		const c = this.contentEl;
 		const drafts = this.plugin.settings.imapDrafts;
 		if (!drafts.length) {
-			c.createDiv({ cls: "pcal-empty", text: "No drafts yet." });
+			c.createDiv({ cls: "nya-empty", text: "No drafts yet." });
 			return;
 		}
 		for (const d of [...drafts].sort((x, y) => y.updatedMs - x.updatedMs)) {
 			const a = this.plugin.settings.imapAccounts.find((x) => x.id === d.accountId);
-			const row = c.createDiv("pcal-imap-draft");
-			row.createDiv({ cls: "pcal-imap-draft-title", text: d.subject || "(no subject)" });
-			row.createDiv({ cls: "pcal-imap-draft-meta", text: `${a ? imapLabel(a) : "Unknown account"} · ${new Date(d.updatedMs).toLocaleString()}` });
-			const btns = row.createDiv("pcal-imap-draft-btns");
+			const row = c.createDiv("nya-imap-draft");
+			row.createDiv({ cls: "nya-imap-draft-title", text: d.subject || "(no subject)" });
+			row.createDiv({ cls: "nya-imap-draft-meta", text: `${a ? imapLabel(a) : "Unknown account"} · ${new Date(d.updatedMs).toLocaleString()}` });
+			const btns = row.createDiv("nya-imap-draft-btns");
 			btns.createEl("button", { text: "Open" }).addEventListener("click", () => {
 				this.close();
 				this.onOpenDraft(d);
@@ -16895,7 +16977,7 @@ class ImapRichComposeModal extends Modal {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin,
+		private plugin: NyaHomePlugin,
 		private account: ImapAccount,
 		private draftId: string | null,
 		private seed: ImapComposeSeed,
@@ -16911,21 +16993,21 @@ class ImapRichComposeModal extends Modal {
 
 	onOpen() {
 		this.drawTitle();
-		this.modalEl.addClass("pcal-compose-window");
-		this.modalEl.addClass("pcal-imap-rich-compose");
-		makeMovable(this.app, this, "ambernyadesk:imap-compose", { w: 920, h: 700 });
+		this.modalEl.addClass("nya-compose-window");
+		this.modalEl.addClass("nya-imap-rich-compose");
+		makeMovable(this.app, this, "nyahome:imap-compose", { w: 920, h: 700 });
 		const c = this.contentEl;
-		c.addClass("pcal-compose");
-		const layout = c.createDiv("pcal-compose-layout");
-		const main = layout.createDiv("pcal-compose-main");
-		const rail = layout.createDiv("pcal-contact-rail");
+		c.addClass("nya-compose");
+		const layout = c.createDiv("nya-compose-layout");
+		const main = layout.createDiv("nya-compose-main");
+		const rail = layout.createDiv("nya-contact-rail");
 		this.contactRailEl = rail;
 
 		// The actual SMTP identity is the stored user; making it explicit
 		// prevents a friendly account label from reading as a different sender.
-		const fromRow = main.createDiv("pcal-compose-row pcal-compose-fromrow");
-		fromRow.createSpan({ cls: "pcal-compose-label", text: "From" });
-		const fromSelect = fromRow.createEl("select", { cls: "pcal-compose-fromselect", attr: { "aria-label": "Sending account" } });
+		const fromRow = main.createDiv("nya-compose-row nya-compose-fromrow");
+		fromRow.createSpan({ cls: "nya-compose-label", text: "From" });
+		const fromSelect = fromRow.createEl("select", { cls: "nya-compose-fromselect", attr: { "aria-label": "Sending account" } });
 		for (const a of this.plugin.settings.imapAccounts) {
 			const label = imapLabel(a);
 			fromSelect.createEl("option", {
@@ -16945,8 +17027,8 @@ class ImapRichComposeModal extends Modal {
 		// stacks labels above controls and turns the compose window into a
 		// form instead of an email header.
 		const row = (label: string, value: string, placeholder?: string, withPicker = false): HTMLInputElement => {
-			const r = main.createDiv("pcal-compose-row pcal-imap-compose-row");
-			r.createSpan({ cls: "pcal-compose-label", text: label });
+			const r = main.createDiv("nya-compose-row nya-imap-compose-row");
+			r.createSpan({ cls: "nya-compose-label", text: label });
 			const input = r.createEl("input", { attr: { type: "text", spellcheck: "false" } });
 			input.value = value;
 			if (placeholder) input.placeholder = placeholder;
@@ -16958,7 +17040,7 @@ class ImapRichComposeModal extends Modal {
 			});
 			if (withPicker) input.addEventListener("focus", () => (this.lastField = input));
 			if (withPicker) {
-				const pick = r.createEl("button", { cls: "pcal-icon-btn pcal-contact-btn", attr: { "aria-label": `Choose contacts for ${label}` } });
+				const pick = r.createEl("button", { cls: "nya-icon-btn nya-contact-btn", attr: { "aria-label": `Choose contacts for ${label}` } });
 				setIcon(pick, "user-plus");
 				pick.addEventListener("click", () => this.openContactPicker(input));
 			}
@@ -16973,25 +17055,25 @@ class ImapRichComposeModal extends Modal {
 		new AddressSuggest(ccInput, this.plugin);
 		new AddressSuggest(bccInput, this.plugin);
 
-		const bar = main.createDiv("pcal-compose-bar");
-		const body = main.createDiv({ cls: "pcal-compose-editor pcal-imap-compose-editor", attr: { contenteditable: "true" } });
+		const bar = main.createDiv("nya-compose-bar");
+		const body = main.createDiv({ cls: "nya-compose-editor nya-imap-compose-editor", attr: { contenteditable: "true" } });
 		// The seed comes from fetched mail or saved drafts, so sanitize it
 		// before it touches the DOM instead of assigning innerHTML directly.
 		body.replaceChildren(...(this.seed.html ? Array.from(sanitizeHTMLToDom(this.seed.html).childNodes) : [document.createElement("br")]));
 		this.editorEl = body;
 		richToolbarFull(this.app, bar, () => this.editorEl);
 
-		const atts = main.createDiv("pcal-imap-attachment-list");
+		const atts = main.createDiv("nya-imap-attachment-list");
 		const fileInput = main.createEl("input", { type: "file", attr: { style: "display:none", multiple: "multiple" } });
 		fileInput.addEventListener("change", () => void this.addFiles(fileInput, atts));
 		this.renderAttachments(atts);
 
-		const btns = main.createDiv({ cls: "pcal-modal-btns pcal-compose-btns" });
+		const btns = main.createDiv({ cls: "nya-modal-btns nya-compose-btns" });
 		btns.createEl("button", { text: "Attach" }).addEventListener("click", () => fileInput.click());
 		btns.createEl("button", { text: "Save draft" }).addEventListener("click", () => void this.saveDraft());
-		btns.createSpan("pcal-compose-btns-gap");
+		btns.createSpan("nya-compose-btns-gap");
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-		btns.createEl("button", { text: "Send", cls: "mod-cta pcal-send-btn" }).addEventListener("click", () => void this.send());
+		btns.createEl("button", { text: "Send", cls: "mod-cta nya-send-btn" }).addEventListener("click", () => void this.send());
 		this.drawContactRail(rail);
 		window.setTimeout(() => this.editorEl.focus(), 30);
 	}
@@ -17019,27 +17101,27 @@ class ImapRichComposeModal extends Modal {
 	private drawContactRail(host: HTMLElement) {
 		if (!host) return;
 		host.empty();
-		const head = host.createDiv("pcal-contact-rail-head");
+		const head = host.createDiv("nya-contact-rail-head");
 		head.createSpan({ text: t("Recent contacts") });
-		const open = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Open People" } });
+		const open = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Open People" } });
 		setIcon(open, "users");
 		open.addEventListener("click", () => this.plugin.openPeople());
-		const add = head.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": "Add contact" } });
+		const add = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Add contact" } });
 		setIcon(add, "user-plus");
 		add.addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => this.drawContactRail(this.contactRailEl!)).open());
-		const search = host.createEl("input", { cls: "pcal-contact-rail-search", attr: { type: "search", placeholder: t("Search contacts...") } });
-		const list = host.createDiv("pcal-contact-rail-list");
+		const search = host.createEl("input", { cls: "nya-contact-rail-search", attr: { type: "search", placeholder: t("Search contacts...") } });
+		const list = host.createDiv("nya-contact-rail-list");
 		const draw = () => {
 			list.empty();
 			const hits = matchContacts(this.plugin.people(), search.value, 12) as PersonCard[];
 			if (!hits.length) {
-				list.createDiv({ cls: "pcal-contact-rail-empty", text: t("No contacts yet.") });
+				list.createDiv({ cls: "nya-contact-rail-empty", text: t("No contacts yet.") });
 				return;
 			}
 			for (const p of hits) {
-				const row = list.createDiv("pcal-contact-rail-row");
-				row.createDiv({ cls: "pcal-contact-rail-name", text: p.name || p.email });
-				row.createDiv({ cls: "pcal-contact-rail-email", text: p.email.split("@")[0] || p.email });
+				const row = list.createDiv("nya-contact-rail-row");
+				row.createDiv({ cls: "nya-contact-rail-name", text: p.name || p.email });
+				row.createDiv({ cls: "nya-contact-rail-email", text: p.email.split("@")[0] || p.email });
 				row.addEventListener("click", () => this.appendContact(p.email));
 			}
 		};
@@ -17062,7 +17144,7 @@ class ImapRichComposeModal extends Modal {
 				const content = Buffer.from(await f.arrayBuffer());
 				this.attachments.push({ filename: f.name, contentType: f.type || "application/octet-stream", content });
 			} catch (e) {
-				new Notice(`AmberNyaDesk: could not attach "${f.name}" (${e instanceof Error ? e.message : String(e)}).`, 8000);
+				new Notice(`NyaHome: could not attach "${f.name}" (${e instanceof Error ? e.message : String(e)}).`, 8000);
 			}
 		}
 		input.value = "";
@@ -17072,14 +17154,14 @@ class ImapRichComposeModal extends Modal {
 	private renderAttachments(host: HTMLElement) {
 		host.empty();
 		if (!this.attachments.length) {
-			host.createDiv({ cls: "pcal-imap-attachment-empty", text: "No attachments." });
+			host.createDiv({ cls: "nya-imap-attachment-empty", text: "No attachments." });
 			return;
 		}
 		this.attachments.forEach((a, i) => {
-			const chip = host.createDiv("pcal-imap-attachment-chip");
+			const chip = host.createDiv("nya-imap-attachment-chip");
 			chip.createSpan({ text: a.filename });
-			chip.createSpan({ cls: "pcal-imap-attachment-size", text: ` ${fmtAttachmentSize(a.content.length)}` });
-			const remove = chip.createEl("button", { cls: "pcal-icon-btn", attr: { "aria-label": `Remove ${a.filename}` } });
+			chip.createSpan({ cls: "nya-imap-attachment-size", text: ` ${fmtAttachmentSize(a.content.length)}` });
+			const remove = chip.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": `Remove ${a.filename}` } });
 			setIcon(remove, "x");
 			remove.addEventListener("click", () => {
 				this.attachments.splice(i, 1);
@@ -17123,13 +17205,13 @@ class ImapRichComposeModal extends Modal {
 		this.plugin.settings.imapDrafts = [...rest, draft];
 		this.draftId = draft.id;
 		await this.plugin.queueSave();
-		new Notice("AmberNyaDesk: draft saved.");
+		new Notice("NyaHome: draft saved.");
 	}
 
 	private async send(): Promise<void> {
 		const mail = this.mail();
 		if (!mail.to.trim() || !mail.subject.trim()) {
-			new Notice("AmberNyaDesk: add a recipient and a subject.");
+			new Notice("NyaHome: add a recipient and a subject.");
 			return;
 		}
 		try {
@@ -17140,11 +17222,11 @@ class ImapRichComposeModal extends Modal {
 				this.plugin.settings.imapDrafts = this.plugin.settings.imapDrafts.filter((x) => x.id !== this.draftId);
 				await this.plugin.queueSave();
 			}
-			new Notice("AmberNyaDesk: mail sent.");
+			new Notice("NyaHome: mail sent.");
 			this.onSend?.(mail);
 			this.close();
 		} catch (e) {
-			new Notice(`AmberNyaDesk: send failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			new Notice(`NyaHome: send failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
 		}
 	}
 
@@ -17177,8 +17259,8 @@ type Page = { id: string; label: string; groups: Group[] };
  *  toggle or a button is happy beside its neighbour. */
 const WIDE_CONTROLS = 'input[type="text"], input[type="password"], input[type="search"], input[type="number"], input[type="range"], textarea, select, .slider';
 
-class PCSettingTab extends PluginSettingTab {
-	private activeTab = "local";
+class NyaHomeSettingTab extends PluginSettingTab {
+	private activeTab = "general";
 	private query = "";
 	/** Account rows whose calendar lists are expanded; session-scoped. */
 	private expandedAccounts = new Set<string>();
@@ -17205,7 +17287,7 @@ class PCSettingTab extends PluginSettingTab {
 
 	constructor(
 		app: App,
-		private plugin: PowerDeskPlugin
+		private plugin: NyaHomePlugin
 	) {
 		super(app, plugin);
 		// Armed once, for the life of the tab. It used to be set in display() and
@@ -17237,7 +17319,7 @@ class PCSettingTab extends PluginSettingTab {
 			return;
 		}
 		this.closeHelp();
-		const el = document.body.createDiv({ cls: "pcal-help-pop", text });
+		const el = document.body.createDiv({ cls: "nya-help-pop", text });
 		this.helpEl = el;
 		this.helpAnchor = icon;
 		this.helpPinned = pin;
@@ -17286,7 +17368,7 @@ class PCSettingTab extends PluginSettingTab {
 	 *  this actually do" explanation; hover shows it, a click pins it open. No
 	 *  aria-label on the icon or Obsidian's native black tooltip doubles up. */
 	private addHelp(st: Setting, text: string) {
-		const ic = st.nameEl.createSpan({ cls: "pcal-setting-help" });
+		const ic = st.nameEl.createSpan({ cls: "nya-setting-help" });
 		setIcon(ic, "help-circle");
 		ic.addEventListener("mouseenter", () => this.openHelp(ic, text, false));
 		ic.addEventListener("mouseleave", () => {
@@ -17379,58 +17461,60 @@ class PCSettingTab extends PluginSettingTab {
 	/** What this plugin is and which build is running, above the tabs. Read off
 	 *  the manifest so it cannot drift from the released version. */
 	private renderAbout(el: HTMLElement) {
-		el.addClass("pcal-about");
-		const head = el.createDiv({ cls: "pcal-about-head" });
-		head.createSpan({ cls: "pcal-about-name", text: this.plugin.manifest.name });
-		head.createSpan({ cls: "pcal-about-version", text: "v" + this.plugin.manifest.version });
-		el.createDiv({ cls: "pcal-about-desc", text: this.plugin.manifest.description });
+		el.addClass("nya-about");
+		const head = el.createDiv({ cls: "nya-about-head" });
+		head.createSpan({ cls: "nya-about-name", text: this.plugin.manifest.name });
+		head.createSpan({ cls: "nya-about-version", text: "v" + this.plugin.manifest.version });
+		el.createDiv({ cls: "nya-about-desc", text: this.plugin.manifest.description });
 		el.createDiv({
-			cls: "pcal-about-block",
-			text: "一款把「本地日历」和「IMAP 邮箱」搬进 Obsidian 的插件：无需离开笔记库，就能查看日程、管理事件、收发邮件，让待办、笔记和邮件在同一条工作流里自然衔接。",
+			cls: "nya-about-block",
+			text: "NyaHome 把 Obsidian 的入口收拢成一页：快速搜索、可自由整理的文件夹卡片、时钟、日历与邮箱都在这里。本地功能开箱即用，在线服务按需接入。",
 		});
 		el.createDiv({
-			cls: "pcal-about-block is-en",
-			text: "A local calendar and an IMAP mailbox, inside Obsidian: schedules, events, task boards and mail without ever leaving your vault.",
+			cls: "nya-about-block is-en",
+			text: "NyaHome gathers your Obsidian entry point on one page: quick search, freely arranged folder cards, clock, calendar and mail. Local features work out of the box; connected services are optional.",
 		});
-		el.createDiv({ cls: "pcal-about-heading", text: "核心功能 Core features" });
-		const featsCn = el.createDiv({ cls: "pcal-about-block" });
+		el.createDiv({ cls: "nya-about-heading", text: "核心功能 Core features" });
+		const featsCn = el.createDiv({ cls: "nya-about-block" });
 		for (const f of [
+			"NyaHome 主页：搜索、12×24 自由网格卡片、时钟与快捷入口。",
+			"主页背景：使用库内图片，透明度和模糊可调。",
 			"本地日历：月 / 周 / 日视图，支持事件创建、编辑与拖拽调整。",
-			"多日历管理：工作、生活、项目分开归类，颜色一目了然。",
-			"IMAP 邮箱：接入常用邮箱，在 Obsidian 内直接收信、读信、写邮件。",
+			"任务看板：多看板管理长期任务，数据就是普通 Markdown。",
+			"连接服务：Microsoft、Google、CalDAV、ICS、IMAP 统一收纳，全部可选。",
 			"邮件与笔记联动：一键把邮件转成笔记，或生成日历事件。",
 			"提醒与搜索：快速定位事件和邮件，不错过重要安排。",
-			"本地优先：数据保存在你自己的库里，隐私更可控。",
 		])
-			featsCn.createDiv({ cls: "pcal-about-feat", text: f });
-		const featsEn = el.createDiv({ cls: "pcal-about-block is-en" });
+			featsCn.createDiv({ cls: "nya-about-feat", text: f });
+		const featsEn = el.createDiv({ cls: "nya-about-block is-en" });
 		for (const f of [
+			"NyaHome home: search, a free 12×24 card grid, clock and quick access.",
+			"Home background: use a vault image with adjustable opacity and blur.",
 			"Local calendar: month, week and day views; create, edit and drag events.",
-			"Multiple calendars for work, life and projects, each with its own color.",
-			"IMAP mail: read, write and send mail from your accounts inside Obsidian.",
+			"Task boards: manage long-term work across boards backed by Markdown.",
+			"Connected services: Microsoft, Google, CalDAV, ICS and IMAP in one optional tab.",
 			"Mail meets notes: turn a message into a note or a calendar event in one click.",
 			"Search and reminders: find events and mail fast, so nothing slips by.",
-			"Local-first: your data stays in your own vault.",
 		])
-			featsEn.createDiv({ cls: "pcal-about-feat", text: f });
-		el.createDiv({ cls: "pcal-about-heading", text: "开发不易，感谢打赏" });
+			featsEn.createDiv({ cls: "nya-about-feat", text: f });
+		el.createDiv({ cls: "nya-about-heading", text: "开发不易，感谢打赏" });
 		el.createDiv({
-			cls: "pcal-about-block",
+			cls: "nya-about-block",
 			text: "如果这个插件对你有帮助，欢迎请作者喝杯咖啡。你的支持会用于后续维护、修 bug 和适配新版本。",
 		});
 		el.createDiv({
-			cls: "pcal-about-block is-en",
-			text: "If AmberNyaDesk helps you, buying the author a coffee is much appreciated — it goes toward maintenance, bug fixes and keeping up with new Obsidian versions.",
+			cls: "nya-about-block is-en",
+			text: "If NyaHome helps you, buying the author a coffee is much appreciated — it goes toward maintenance, bug fixes and keeping up with new Obsidian versions.",
 		});
 		// Both QR codes are baked into the bundle as data URIs at build time,
 		// so they show on every install path with no resource loading to fail.
-		const qrs = el.createDiv({ cls: "pcal-about-donates" });
-		const qr = qrs.createEl("img", { cls: "pcal-about-donate", attr: { alt: "支付宝收款码 Alipay QR" } });
+		const qrs = el.createDiv({ cls: "nya-about-donates" });
+		const qr = qrs.createEl("img", { cls: "nya-about-donate", attr: { alt: "支付宝收款码 Alipay QR" } });
 		qr.src = donateQr;
-		const qrWx = qrs.createEl("img", { cls: "pcal-about-donate", attr: { alt: "微信收款码 WeChat QR" } });
+		const qrWx = qrs.createEl("img", { cls: "nya-about-donate", attr: { alt: "微信收款码 WeChat QR" } });
 		qrWx.src = donateWxQr;
 		el.createDiv({
-			cls: "pcal-about-donate-hint",
+			cls: "nya-about-donate-hint",
 			text: "支付宝 / 微信扫一扫即可支持开发者，感谢每一份心意。 Scan either QR to support the developer — thank you for every bit of kindness.",
 		});
 	}
@@ -17452,22 +17536,22 @@ class PCSettingTab extends PluginSettingTab {
 		const pages = this.buildPages();
 		if (!pages.some((p) => p.id === this.activeTab)) this.activeTab = pages[0].id;
 
-		this.renderAbout(root.createDiv({ cls: "pcal-about-standalone" }));
+		this.renderAbout(root.createDiv({ cls: "nya-about-standalone" }));
 
-		const searchWrap = root.createDiv({ cls: "pcal-settings-search" });
-		const searchInput = searchWrap.createEl("input", { cls: "pcal-settings-search-input" });
+		const searchWrap = root.createDiv({ cls: "nya-settings-search" });
+		const searchInput = searchWrap.createEl("input", { cls: "nya-settings-search-input" });
 		searchInput.type = "search";
 		searchInput.placeholder = t("Search settings...");
 		searchInput.value = this.query;
 
-		const tabBar = root.createDiv({ cls: "pcal-settings-tabs" });
-		const body = root.createDiv({ cls: "pcal-settings-body" });
+		const tabBar = root.createDiv({ cls: "nya-settings-tabs" });
+		const body = root.createDiv({ cls: "nya-settings-body" });
 
 		// one section div per group, tagged with its tab so the tab bar and the
 		// search box below can show and hide whole sections at a time
 		for (const p of pages) {
 			for (const [i, g] of p.groups.entries()) {
-				const sec = body.createDiv({ cls: "pcal-settings-section" });
+				const sec = body.createDiv({ cls: "nya-settings-section" });
 				sec.dataset.tab = p.id;
 				sec.dataset.name = (g.heading ?? p.label).toLowerCase();
 				if (i === 0) sec.dataset.first = "1"; // the tab's first heading skips its top border
@@ -17476,7 +17560,7 @@ class PCSettingTab extends PluginSettingTab {
 			}
 		}
 
-		const setVisible = (el: HTMLElement, v: boolean) => el.toggleClass("pcal-hidden", !v);
+		const setVisible = (el: HTMLElement, v: boolean) => el.toggleClass("nya-hidden", !v);
 		const applyView = () => {
 			const q = this.query.trim().toLowerCase();
 			setVisible(tabBar, !q);
@@ -17493,7 +17577,7 @@ class PCSettingTab extends PluginSettingTab {
 				for (const it of items) {
 					const name = it.querySelector(".setting-item-name")?.textContent?.toLowerCase() ?? "";
 					const desc = it.querySelector(".setting-item-description")?.textContent?.toLowerCase() ?? "";
-					const hit = nameHit || name.includes(q) || desc.includes(q) || (it.dataset.pcalAlias ?? "").includes(q);
+					const hit = nameHit || name.includes(q) || desc.includes(q) || (it.dataset.nyaAlias ?? "").includes(q);
 					setVisible(it, hit);
 					if (hit) anyHit = true;
 				}
@@ -17502,7 +17586,7 @@ class PCSettingTab extends PluginSettingTab {
 		};
 
 		for (const p of pages) {
-			const btn = tabBar.createEl("button", { text: p.label, cls: "pcal-settings-tab" });
+			const btn = tabBar.createEl("button", { text: p.label, cls: "nya-settings-tab" });
 			btn.toggleClass("is-active", p.id === this.activeTab);
 			btn.onclick = () => {
 				if (this.activeTab === p.id) return;
@@ -17527,14 +17611,14 @@ class PCSettingTab extends PluginSettingTab {
 		const st = new Setting(into).setName(r.name);
 		if (r.desc) st.setDesc(r.desc);
 		if (r.cls) st.settingEl.addClass(r.cls);
-		if (r.aliases?.length) st.settingEl.dataset.pcalAlias = r.aliases.join(" ").toLowerCase();
+		if (r.aliases?.length) st.settingEl.dataset.nyaAlias = r.aliases.join(" ").toLowerCase();
 		r.build?.(st);
 		if (r.help) this.addHelp(st, r.help);
 		// A row with something to type in, drag, or choose from takes the full
 		// width of the two-column layout; a row with a switch or a button sits in
 		// one column. The control is built by then, so the row can be asked once
 		// here instead of the stylesheet asking it forever with :has().
-		if (st.settingEl.querySelector(WIDE_CONTROLS)) st.settingEl.addClass("pcal-wide");
+		if (st.settingEl.querySelector(WIDE_CONTROLS)) st.settingEl.addClass("nya-wide");
 	}
 
 	/** A row that owns a container instead of a control: the source lists draw
@@ -17546,8 +17630,8 @@ class PCSettingTab extends PluginSettingTab {
 			aliases: [name, ...aliases],
 			build: (st) => {
 				st.settingEl.empty();
-				st.settingEl.addClass("pcal-list-host");
-				take(st.settingEl.createDiv({ cls: "pcal-list" }));
+				st.settingEl.addClass("nya-list-host");
+				take(st.settingEl.createDiv({ cls: "nya-list" }));
 				draw();
 				return () => take(null);
 			},
@@ -17576,7 +17660,7 @@ class PCSettingTab extends PluginSettingTab {
 			const row = new Setting(host)
 				.setName(this.plugin.nameOf(a))
 				.setDesc((a.nickname?.trim() ? a.label + " · " : "") + "Microsoft 365" + (a.clientId.trim() && a.clientId.trim() !== this.plugin.effectiveClientId() ? " · own app" : "") + (!a.refresh ? " · signed out" : missing.length ? ` · reconnect to enable ${missing.join(" and ")}` : ""))
-				.setClass("pcal-account-head");
+				.setClass("nya-account-head");
 			row.addExtraButton((b) =>
 				b.setIcon(open ? "chevron-down" : "chevron-right").setTooltip(open ? "Hide details" : "Rename, inbox, calendars").onClick(() => {
 					if (open) this.expandedAccounts.delete(a.id);
@@ -17600,7 +17684,7 @@ class PCSettingTab extends PluginSettingTab {
 			const nameSt = new Setting(host)
 				.setName("Name")
 				.setDesc("A friendly name shown wherever this account appears; empty keeps the address.")
-				.setClass("pcal-subsetting")
+				.setClass("nya-subsetting")
 				.addText((t) => {
 					t.setPlaceholder(a.label).setValue(a.nickname ?? "").onChange((v) => {
 						a.nickname = v;
@@ -17616,7 +17700,7 @@ class PCSettingTab extends PluginSettingTab {
 			if (this.plugin.canMailAccount(a)) {
 				const mailSt = new Setting(host)
 					.setName("Inbox in the mail view")
-					.setClass("pcal-subsetting")
+					.setClass("nya-subsetting")
 					.addToggle((t) =>
 						t.setValue(a.mail !== false).onChange((v) => {
 							a.mail = v;
@@ -17629,7 +17713,7 @@ class PCSettingTab extends PluginSettingTab {
 			for (const cal of a.calendars) {
 				new Setting(host)
 					.setName(cal.name + (cal.isDefault ? " (default)" : ""))
-					.setClass("pcal-subsetting")
+					.setClass("nya-subsetting")
 					.addColorPicker((p) =>
 						p.setValue(cal.color || "#888888").onChange((v) => {
 							cal.color = v;
@@ -17660,7 +17744,7 @@ class PCSettingTab extends PluginSettingTab {
 			const row = new Setting(host)
 				.setName(this.plugin.nameOf(g))
 				.setDesc((g.nickname?.trim() ? g.label + " · " : "") + "Google" + (g.refresh ? "" : " · signed out"))
-				.setClass("pcal-account-head");
+				.setClass("nya-account-head");
 			row.addExtraButton((b) =>
 				b.setIcon(open ? "chevron-down" : "chevron-right").setTooltip(open ? "Hide details" : "Rename, calendars").onClick(() => {
 					if (open) this.expandedAccounts.delete(g.id);
@@ -17683,7 +17767,7 @@ class PCSettingTab extends PluginSettingTab {
 			const nameSt = new Setting(host)
 				.setName("Name")
 				.setDesc("A friendly name shown wherever this account appears; empty keeps the address.")
-				.setClass("pcal-subsetting")
+				.setClass("nya-subsetting")
 				.addText((t) => {
 					t.setPlaceholder(g.label).setValue(g.nickname ?? "").onChange((v) => {
 						g.nickname = v;
@@ -17698,7 +17782,7 @@ class PCSettingTab extends PluginSettingTab {
 			for (const cal of g.calendars) {
 				new Setting(host)
 					.setName(cal.name + (cal.primary ? " (primary)" : "") + (cal.writable ? "" : " · read-only"))
-					.setClass("pcal-subsetting")
+					.setClass("nya-subsetting")
 					.addColorPicker((p) =>
 						p.setValue(cal.color || "#888888").onChange((v) => {
 							cal.color = v;
@@ -17751,7 +17835,7 @@ class PCSettingTab extends PluginSettingTab {
 			for (const coll of account.collections) {
 				new Setting(host)
 					.setName(coll.name)
-					.setClass("pcal-subsetting")
+					.setClass("nya-subsetting")
 					.addColorPicker((p) =>
 						p.setValue(coll.color || "#888888").onChange((v) => {
 							coll.color = v;
@@ -17955,7 +18039,7 @@ class PCSettingTab extends PluginSettingTab {
 		// A section's opening paragraph, carried as a row rather than loose text:
 		// the theme cards every .setting-item, so a bare <p> floats outside the
 		// boxes and breaks the column the rest of the rows line up on.
-		const intro = (text: string): Row => ({ name: "", desc: text, cls: "pcal-section-intro" });
+		const intro = (text: string): Row => ({ name: "", desc: text, cls: "nya-section-intro" });
 		const general: Row[] = [
 			{
 				name: "Language 界面语言",
@@ -17968,7 +18052,7 @@ class PCSettingTab extends PluginSettingTab {
 							.setValue(s.language)
 							.onChange((v) => {
 								if (s.language === v) return;
-								s.language = v as PCSettings["language"];
+								s.language = v as NyaHomeSettings["language"];
 								save();
 								this.plugin.applyLanguage();
 							})
@@ -17977,8 +18061,8 @@ class PCSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Show notifications",
-				desc: "Show popup notices from AmberNyaDesk. Turn off to keep Obsidian clear, especially on phones.",
-				help: "When off, AmberNyaDesk suppresses every popup notice, including reminders, progress, success, warning, and error notices.",
+				desc: "Show popup notices from NyaHome. Turn off to keep Obsidian clear, especially on phones.",
+				help: "When off, NyaHome suppresses every popup notice, including reminders, progress, success, warning, and error notices.",
 				build: (st) => {
 					st.addToggle((t) => t.setValue(s.showNotifications).onChange((v) => ((s.showNotifications = v), save())));
 				},
@@ -17988,6 +18072,106 @@ class PCSettingTab extends PluginSettingTab {
 				desc: "Print IMAP timing and cache diagnostics to the developer console. Leave off unless troubleshooting.",
 				build: (st) => {
 					st.addToggle((t) => t.setValue(s.mailDebugLog).onChange((v) => ((s.mailDebugLog = v), save())));
+				},
+			},
+		];
+
+		/* ---------------- NyaHome ---------------- */
+
+		const home: Row[] = [
+			{
+				name: "Open at startup",
+				help: "When Obsidian starts, make NyaHome the active page. Obsidian's own startup layout is restored first, so this only takes over after the workspace is ready.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.openAtStartup).onChange((v) => {
+							s.openAtStartup = v;
+							save();
+						})
+					);
+				},
+			},
+			{
+				name: "Startup surface",
+				desc: "Choose the page that opens at startup and behind the cat button.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ home: "NyaHome", calendar: "Calendar", mail: "Mail" })
+							.setValue(s.startupView)
+							.onChange((v) => {
+								s.startupView = v as NyaHomeSettings["startupView"];
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Home background image",
+				desc: "An image in this vault, shown behind NyaHome. Empty keeps the plain surface.",
+				help: "Hearth-style background layer: the image fills the page with cover sizing and can be softened with opacity and blur. A missing or renamed file is treated as no image rather than an error.",
+				build: (st) => {
+					st.addText((t) =>
+						t.setPlaceholder("Attachments/wallpaper.jpg").setValue(s.homeBackgroundPath).onChange((v) => {
+							s.homeBackgroundPath = v;
+							save();
+							this.plugin.notify();
+						})
+					);
+					st.addButton((b) =>
+						b.setButtonText(t("Pick")).onClick(() =>
+							new VaultImagePickModal(this.app, (f) => {
+								s.homeBackgroundPath = f.path;
+								save();
+								this.plugin.notify();
+								this.refresh();
+							}).open()
+						)
+					);
+					st.addButton((b) =>
+						markDestructive(b.setButtonText(t("Clear"))).onClick(() => {
+							s.homeBackgroundPath = "";
+							save();
+							this.plugin.notify();
+							this.refresh();
+						})
+					);
+				},
+			},
+			{
+				name: "Home background opacity",
+				desc: `${s.homeBackgroundOpacity}%`,
+				help: "How strongly the NyaHome wallpaper shows through. 0% turns the image off entirely; 100% shows it at full strength.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						showSliderValue(sl)
+							.setLimits(0, 100, 1)
+							.setValue(s.homeBackgroundOpacity)
+							.onChange((v) => {
+								s.homeBackgroundOpacity = v;
+								st.setDesc(`${v}%`);
+								save();
+								this.plugin.notify();
+							})
+					);
+				},
+			},
+			{
+				name: "Home background blur",
+				desc: `${s.homeBackgroundBlur} px`,
+				help: "Blur the NyaHome wallpaper without blurring the cards and controls on top of it.",
+				build: (st) => {
+					st.addSlider((sl) =>
+						showSliderValue(sl)
+							.setLimits(0, 24, 1)
+							.setValue(s.homeBackgroundBlur)
+							.onChange((v) => {
+								s.homeBackgroundBlur = v;
+								st.setDesc(`${v} px`);
+								save();
+								this.plugin.notify();
+							})
+					);
 				},
 			},
 		];
@@ -18057,7 +18241,7 @@ class PCSettingTab extends PluginSettingTab {
 		if (this.showGraphAppFields) {
 			graphApp.push({
 				name: "Application (client) ID",
-				cls: "pcal-subsetting",
+				cls: "nya-subsetting",
 				desc: this.plugin.usingSiblingApp() ? "Using Power Assistant's app registration. Enter an ID here to use a different one." : "From your Azure app registration's Overview page.",
 				help: "From the Overview page of an app created with 'Show the steps' above (any registration with public client flows on works). When Power Assistant is installed and already set up, its app is borrowed automatically and this field can stay empty. Already-connected accounts keep the app they signed in with; this field only steers new sign-ins.",
 				build: (st) => {
@@ -18072,7 +18256,7 @@ class PCSettingTab extends PluginSettingTab {
 			});
 			graphApp.push({
 				name: "Tenant",
-				cls: "pcal-subsetting",
+				cls: "nya-subsetting",
 				desc: "'common' works for most accounts; single-organization apps need their Directory (tenant) ID.",
 				help: "Which Microsoft directory the sign-in goes through. 'common' suits personal accounts and most work ones; an organization whose app registration is single-tenant needs its Directory (tenant) ID instead, which an administrator can supply. Getting this wrong shows up as a sign-in that refuses the account rather than anything subtler.",
 				build: (st) => {
@@ -18174,12 +18358,6 @@ class PCSettingTab extends PluginSettingTab {
 				(host) => (this.localHost = host),
 				() => this.drawLocalCalendars()
 			),
-			this.listRow(
-				"IMAP accounts",
-				["imap", "qq", "163", "school mail"],
-				(host) => (this.imapHost = host),
-				() => this.drawImapAccounts()
-			),
 			{
 				name: "Add a local calendar",
 				help: "Creates a new .ics file-backed calendar in this vault. Events written here stay on your device and in your sync: nothing is uploaded anywhere, and copying the file to another machine carries the whole calendar with it.",
@@ -18200,9 +18378,26 @@ class PCSettingTab extends PluginSettingTab {
 				name: "Boards folder",
 				help: "The Tasks mode's kanban boards live here, one Markdown file per board in the obsidian-kanban shape. Changing it moves the lookup, not the files.",
 				build: (st) => {
-					st.addText((t) => t.setPlaceholder("Boards").setValue(s.kanbanFolder).onChange((v) => (s.kanbanFolder = v)));
+					st.addText((t) =>
+						t.setPlaceholder("Boards").setValue(s.kanbanFolder).onChange((v) => {
+							s.kanbanFolder = v;
+							save();
+						})
+					);
 				},
 			},
+		];
+
+		/* ---------------- IMAP ---------------- */
+
+		const imap: Row[] = [
+			intro("Standard IMAP mailboxes (QQ, 163, school mail, and other providers) with their SMTP sending side. Credentials are stored in this vault's plugin data and mail is fetched directly from the server."),
+			this.listRow(
+				"IMAP accounts",
+				["imap", "qq", "163", "school mail"],
+				(host) => (this.imapHost = host),
+				() => this.drawImapAccounts()
+			),
 			{
 				name: "Add an IMAP account",
 				help: "Connects a standard IMAP mailbox (QQ, 163, school mail) with its SMTP sending side. The authorization code replaces the account password; mail is fetched directly from the server and never leaves this device except as replies you send.",
@@ -18278,18 +18473,6 @@ class PCSettingTab extends PluginSettingTab {
 		/* ---------------- Calendar ---------------- */
 
 		const views: Row[] = [
-			{
-				name: "Open at startup",
-				help: "When Obsidian starts, make AmberNyaDesk the active page. Obsidian's own startup layout is restored first, so this only takes over after the workspace is ready.",
-				build: (st) => {
-					st.addToggle((t) =>
-						t.setValue(s.openAtStartup).onChange((v) => {
-							s.openAtStartup = v;
-							save();
-						})
-					);
-				},
-			},
 			{
 				name: "Background image",
 				desc: "An image in this vault, shown behind the calendar. Empty keeps the plain surface.",
@@ -18586,7 +18769,7 @@ class PCSettingTab extends PluginSettingTab {
 							}
 							const hit = await this.plugin.geocodePlace(q);
 							if (!hit) {
-								new Notice("AmberNyaDesk: no place with that name was found.");
+								new Notice("NyaHome: no place with that name was found.");
 								return;
 							}
 							s.weatherPlace = hit.label;
@@ -18595,7 +18778,7 @@ class PCSettingTab extends PluginSettingTab {
 							this.plugin.clearWeather();
 							save();
 							this.refresh();
-							new Notice(`AmberNyaDesk: forecast set to ${hit.label}.`);
+							new Notice(`NyaHome: forecast set to ${hit.label}.`);
 						})
 					);
 				},
@@ -18704,7 +18887,7 @@ class PCSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Keep the pictures",
-				cls: "pcal-subsetting",
+				cls: "nya-subsetting",
 				desc: "Bring a saved email's inline images into the vault, into an attachments folder beside the note.",
 				help: "A saved message is converted to Markdown, so its headings, lists and links come with it. Its pictures cannot: they live in the mailbox as attachments the message points at, and a note that points at those shows nothing. On, each one is written into an attachments folder under the saved-mail folder and embedded in the note, which keeps it inside a Power Connect protected folder rather than in the vault's general attachment folder, and keeps the note and its pictures together when either moves. Tracking pixels are never saved, and images the sender hosts elsewhere stay links, exactly as the message has them. Off, the note keeps the words and nothing is written but the note.",
 				build: (st) => {
@@ -18730,7 +18913,7 @@ class PCSettingTab extends PluginSettingTab {
 							})
 							.setValue(s.markRead)
 							.onChange((v) => {
-								s.markRead = v as PCSettings["markRead"];
+								s.markRead = v as NyaHomeSettings["markRead"];
 								save();
 								this.refresh(); // the seconds slider follows the choice
 							})
@@ -18741,7 +18924,7 @@ class PCSettingTab extends PluginSettingTab {
 		if (s.markRead === "delay") {
 			mail.push({
 				name: "Mark read after",
-				cls: "pcal-subsetting",
+				cls: "nya-subsetting",
 				desc: `${s.markReadSeconds} second${s.markReadSeconds === 1 ? "" : "s"}`,
 				help: "How long a message stays selected before it counts as read. Long enough to arrow through a list without clearing everything, short enough that a message you actually stopped on is marked.",
 				build: (st) => {
@@ -18821,14 +19004,14 @@ class PCSettingTab extends PluginSettingTab {
 						b.setButtonText("Mail").onClick(() => {
 							const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_MAIL)[0]?.view;
 							if (leaf instanceof MailView) leaf.openToolbarEditor();
-							else new Notice("AmberNyaDesk: open the inbox first, so the toolbar can redraw as you change it.");
+							else new Notice("NyaHome: open the inbox first, so the toolbar can redraw as you change it.");
 						})
 					);
 					st.addButton((b) =>
 						b.setButtonText("Calendar").onClick(() => {
 							const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view;
 							if (leaf instanceof PowerCalendarView) leaf.openToolbarEditor();
-							else new Notice("AmberNyaDesk: open the calendar first, so the toolbar can redraw as you change it.");
+							else new Notice("NyaHome: open the calendar first, so the toolbar can redraw as you change it.");
 						})
 					);
 				},
@@ -18908,7 +19091,7 @@ class PCSettingTab extends PluginSettingTab {
 			{
 				name: "Inbox rules",
 				desc: "Rules run in your mailbox, so they file mail while Obsidian is closed. These are the same rules Outlook shows.",
-				help: "The same rules Outlook shows, edited here. They run in the mailbox rather than in Obsidian, so mail is filed whether or not this is open and on every device you read mail from. AmberNyaDesk offers a common subset of what a rule can do; a rule that also carries conditions or actions it cannot show says so, and keeps them untouched when you save.",
+				help: "The same rules Outlook shows, edited here. They run in the mailbox rather than in Obsidian, so mail is filed whether or not this is open and on every device you read mail from. NyaHome offers a common subset of what a rule can do; a rule that also carries conditions or actions it cannot show says so, and keeps them untouched when you save.",
 				build: (st) => {
 					st.addButton((b) => b.setButtonText("Manage rules").onClick(() => new RulesModal(this.app, this.plugin).open()));
 				},
@@ -18986,7 +19169,7 @@ class PCSettingTab extends PluginSettingTab {
 							this.plugin.settings.txnScan = v;
 							save();
 							if (v && !this.plugin.assistantTxn())
-								new Notice("AmberNyaDesk: Power Assistant is not set up for transactions yet. Set a transactions folder in its settings.", 9000);
+								new Notice("NyaHome: Power Assistant is not set up for transactions yet. Set a transactions folder in its settings.", 9000);
 						})
 					);
 				},
@@ -19104,27 +19287,23 @@ class PCSettingTab extends PluginSettingTab {
 		];
 
 		const pages = [
-			{ id: "general", label: "General", groups: [{ heading: "Notifications", rows: general }] },
+			{ id: "general", label: "General", groups: [{ heading: "Workspace", rows: general }] },
 			{
-				id: "microsoft",
-				label: "Microsoft 365",
+				id: "home",
+				label: "NyaHome",
 				groups: [
-					{ heading: "Microsoft 365 accounts", rows: graphAccounts },
-					{ heading: "Microsoft 365 app", rows: graphApp },
+					{ heading: "Startup", rows: home },
 				],
 			},
 			{
-				id: "google",
-				label: "Google",
+				id: "local",
+				label: "Local & vault",
 				groups: [
-					{ heading: "Google accounts", rows: googleAccounts },
-					{ heading: "Google app", rows: googleApp },
+					{ heading: "Local calendars", rows: local },
+					{ heading: "Vault notes", rows: vault },
+					{ heading: "Event notes", rows: notes },
 				],
 			},
-			{ id: "local", label: "Local", groups: [{ heading: "Local calendars", rows: local }] },
-			{ id: "caldav", label: "CalDAV", groups: [{ heading: "CalDAV accounts", rows: caldav }] },
-			{ id: "ics", label: "ICS feeds", groups: [{ heading: "ICS feeds", rows: ics }] },
-			{ id: "vault", label: "Vault notes", groups: [{ heading: "Vault notes", rows: vault }] },
 			{
 				id: "calendar",
 				label: "Calendar",
@@ -19136,7 +19315,19 @@ class PCSettingTab extends PluginSettingTab {
 				],
 			},
 			{ id: "mail", label: "Mail", groups: [{ heading: "Mail", rows: mail }] },
-			{ id: "notes", label: "Notes", groups: [{ heading: "Event notes", rows: notes }] },
+			{
+				id: "connected",
+				label: "Connected services",
+				groups: [
+					{ heading: "Microsoft 365 accounts", rows: graphAccounts },
+					{ heading: "Microsoft 365 app", rows: graphApp },
+					{ heading: "Google accounts", rows: googleAccounts },
+					{ heading: "Google app", rows: googleApp },
+					{ heading: "CalDAV accounts", rows: caldav },
+					{ heading: "ICS feeds", rows: ics },
+					{ heading: "IMAP accounts", rows: imap },
+				],
+			},
 		];
 		// localize at the source: Obsidian renders these strings itself, so the
 		// swap must happen before they leave our hands

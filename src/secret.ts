@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -12,8 +12,16 @@ let loadedKey: Buffer | null = null;
  *  it. It stays in the user's home folder instead. */
 function loadKey(): Buffer {
 	if (loadedKey) return loadedKey;
-	const p = join(homedir(), ".ambernyadesk", "secret.key");
+	const dir = join(homedir(), ".nyahome");
+	const p = join(dir, "secret.key");
+	const legacy = join(homedir(), ".ambernyadesk", "secret.key");
 	try {
+		// The first NyaHome run adopts the prior install's key so encrypted
+		// credentials in migrated data.json remain readable.
+		if (!existsSync(p) && existsSync(legacy)) {
+			mkdirSync(dir, { recursive: true });
+			copyFileSync(legacy, p);
+		}
 		if (existsSync(p)) {
 			const key = readFileSync(p);
 			if (key.length === 32) {
@@ -25,7 +33,7 @@ function loadKey(): Buffer {
 		/* unreadable or empty: fall through and write a fresh key */
 	}
 	const key = randomBytes(32);
-	mkdirSync(join(homedir(), ".ambernyadesk"), { recursive: true });
+	mkdirSync(dir, { recursive: true });
 	writeFileSync(p, key);
 	try {
 		chmodSync(p, 0o600);
@@ -71,7 +79,7 @@ export function decryptSecret(stored: string): string {
 		decipher.setAuthTag(tag);
 		return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
 	} catch {
-		console.warn("AmberNyaDesk: could not decrypt a stored credential; re-enter the authorization code in settings.");
+		console.warn("NyaHome: could not decrypt a stored credential; re-enter the authorization code in settings.");
 		return "";
 	}
 }

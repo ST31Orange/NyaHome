@@ -98,7 +98,7 @@ export class ImapMailService {
 				secure: a.secure,
 				auth: { user: a.user, pass: decryptSecret(a.password) },
 				logger: false,
-				id: `ambernyadesk:${a.id}`,
+				id: `nyahome:${a.id}`,
 			});
 			client.on?.("close", () => {
 				if (this.clients.get(a.id) === client) this.clients.delete(a.id);

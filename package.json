@@ -1,7 +1,7 @@
 {
-	"name": "ambernnyadesk",
-	"version": "3.1.4",
-	"description": "Obsidian plugin: Microsoft 365, Google, CalDAV, and ICS calendars with a mail triage inbox",
+	"name": "nyahome",
+	"version": "4.0.1",
+	"description": "Obsidian plugin: NyaHome unified workspace with local calendars and optional connected calendar/mail services",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

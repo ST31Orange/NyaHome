@@ -683,7 +683,7 @@ export async function addFileAttachment(accessToken: string, draftId: string, fi
 	});
 	if (open.status >= 400) throw writeError(open, `start the upload for ${file.name}`);
 	const uploadUrl = bodyJson(open)?.uploadUrl as string | undefined;
-	if (!uploadUrl) throw new Error(`Power Desk could not start the upload for ${file.name}.`);
+	if (!uploadUrl) throw new Error(`NyaHome could not start the upload for ${file.name}.`);
 
 	for (let start = 0; start < size; start += UPLOAD_CHUNK) {
 		const end = Math.min(start + UPLOAD_CHUNK, size);

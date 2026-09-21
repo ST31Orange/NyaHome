@@ -142,11 +142,11 @@ export class TasksBoard {
 	async render() {
 		const c = this.container;
 		c.empty();
-		c.addClass("pcal-tasks");
+		c.addClass("nya-tasks");
 		const names = await this.host.listBoards(this.folder);
 		if (!this.path) this.path = this.host.activeBoard && names.includes(this.host.activeBoard) ? this.host.activeBoard : names[0] ?? null;
-		const header = c.createDiv("pcal-tasks-head");
-		const switcher = header.createDiv("pcal-tasks-switch");
+		const header = c.createDiv("nya-tasks-head");
+		const switcher = header.createDiv("nya-tasks-switch");
 		if (names.length) {
 			const sel = switcher.createEl("select", { cls: "dropdown" });
 			for (const n of names) sel.createEl("option", { value: n, text: (n.split("/").pop() ?? n).replace(/\.md$/i, "") });
@@ -158,8 +158,8 @@ export class TasksBoard {
 			});
 			switcher.createEl("button", { text: "New board", cls: "mod-cta" }).addEventListener("click", () => this.askName("New board", "Create", null, (name) => this.create(name)));
 			switcher.createEl("button", { text: "Rename" }).addEventListener("click", () => this.path && this.askName("Rename board", "Rename", (this.path.split("/").pop() ?? this.path).replace(/\.md$/i, ""), (name) => this.rename(name)));
-			const actions = header.createDiv("pcal-tasks-actions");
-			const addRow = actions.createEl("button", { text: "+ Add row", cls: "pcal-tasks-header-add" });
+			const actions = header.createDiv("nya-tasks-actions");
+			const addRow = actions.createEl("button", { text: "+ Add row", cls: "nya-tasks-header-add" });
 			addRow.disabled = !this.path;
 			addRow.addEventListener("click", () => {
 				if (!this.board) return;
@@ -171,7 +171,7 @@ export class TasksBoard {
 			});
 			this.headerAddRow = addRow;
 			// add column sits beside add row, both board-level controls
-			const addCol = actions.createEl("button", { text: "+ Add column", cls: "pcal-tasks-header-add" });
+			const addCol = actions.createEl("button", { text: "+ Add column", cls: "nya-tasks-header-add" });
 			addCol.disabled = !this.path;
 			addCol.addEventListener("click", () => {
 				if (!this.board) return;
@@ -183,18 +183,18 @@ export class TasksBoard {
 			this.headerAddCol = addCol;
 			// no delete button: a whole board is too much to lose to a click
 		} else {
-			switcher.createSpan({ cls: "pcal-tasks-empty", text: "No boards yet." });
+			switcher.createSpan({ cls: "nya-tasks-empty", text: "No boards yet." });
 			switcher.createEl("button", { text: "New board", cls: "mod-cta" }).addEventListener("click", () => this.askName("New board", "Create", null, (name) => this.create(name)));
 		}
 
-		const boardEl = c.createDiv("pcal-tasks-board");
-		const rowsEl = boardEl.createDiv("pcal-tasks-rows");
-		const body = boardEl.createDiv("fk-board__columns pcal-tasks-columns");
+		const boardEl = c.createDiv("nya-tasks-board");
+		const rowsEl = boardEl.createDiv("nya-tasks-rows");
+		const body = boardEl.createDiv("fk-board__columns nya-tasks-columns");
 		if (!this.path) return;
 		try {
 			this.board = parseKanbanBoard(await this.host.readBoard(this.path));
 		} catch (e) {
-			body.createDiv({ cls: "pcal-tasks-error", text: `Could not read the board (${e instanceof Error ? e.message : String(e)}).` });
+			body.createDiv({ cls: "nya-tasks-error", text: `Could not read the board (${e instanceof Error ? e.message : String(e)}).` });
 			return;
 		}
 		this.renderRows(rowsEl);
@@ -239,20 +239,20 @@ export class TasksBoard {
 		if (this.headerAddCol) this.headerAddCol.disabled = false;
 		if (this.headerAddRow) this.headerAddRow.disabled = false;
 		board.rows.forEach((row, ri) => {
-			const rowEl = host.createDiv("pcal-tasks-rowband");
-			const head = rowEl.createDiv("pcal-tasks-rowhead");
+			const rowEl = host.createDiv("nya-tasks-rowband");
+			const head = rowEl.createDiv("nya-tasks-rowhead");
 			const rowCollapsed = this.isCollapsed("row", row.name);
 			rowEl.toggleClass("is-collapsed", rowCollapsed);
-			const rowChev = head.createEl("button", { cls: "pcal-tasks-chevron" });
+			const rowChev = head.createEl("button", { cls: "nya-tasks-chevron" });
 			setIcon(rowChev, rowCollapsed ? "chevron-right" : "chevron-down");
 			rowChev.addEventListener("click", () => {
 				this.toggleCollapsed("row", row.name);
 				void this.render();
 			});
-			head.createSpan({ cls: "pcal-tasks-rowname", text: row.name }).addEventListener("click", () => this.askName(t("Rename row"), t("Rename"), row.name, (name) => { this.renameCollapsed("row", row.name, name); row.name = name; void this.persist(); }));
-			head.createSpan({ cls: "pcal-tasks-count", text: String(row.cards.length) });
-			head.createEl("button", { cls: "pcal-tasks-coladd", text: "+" }).addEventListener("click", () => this.addCard(row));
-			const rowDelete = head.createEl("button", { cls: "pcal-tasks-colmenu", text: "" });
+			head.createSpan({ cls: "nya-tasks-rowname", text: row.name }).addEventListener("click", () => this.askName(t("Rename row"), t("Rename"), row.name, (name) => { this.renameCollapsed("row", row.name, name); row.name = name; void this.persist(); }));
+			head.createSpan({ cls: "nya-tasks-count", text: String(row.cards.length) });
+			head.createEl("button", { cls: "nya-tasks-coladd", text: "+" }).addEventListener("click", () => this.addCard(row));
+			const rowDelete = head.createEl("button", { cls: "nya-tasks-colmenu", text: "" });
 			setIcon(rowDelete, "trash-2");
 			rowDelete.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -263,7 +263,7 @@ export class TasksBoard {
 				board.rows = board.rows.filter((_, i) => i !== ri);
 				void this.persist();
 			});
-			const menuBtn = head.createEl("button", { cls: "pcal-tasks-colmenu", text: "⋯" });
+			const menuBtn = head.createEl("button", { cls: "nya-tasks-colmenu", text: "⋯" });
 			menuBtn.addEventListener("click", (e) => {
 				const menu = new Menu();
 				menu.addItem((i) => i.setTitle(t("Rename row")).onClick(() => this.askName(t("Rename row"), t("Rename"), row.name, (name) => { this.renameCollapsed("row", row.name, name); row.name = name; void this.persist(); })));
@@ -279,9 +279,9 @@ export class TasksBoard {
 				menu.showAtMouseEvent(e);
 			});
 			if (!rowCollapsed) {
-				const list = rowEl.createDiv("pcal-tasks-rowcards");
+				const list = rowEl.createDiv("nya-tasks-rowcards");
 				for (const card of row.cards) this.renderCard(list, card);
-				const addBtn = rowEl.createEl("button", { text: "+ Add card", cls: "pcal-tasks-addcard" });
+				const addBtn = rowEl.createEl("button", { text: "+ Add card", cls: "nya-tasks-addcard" });
 				addBtn.addEventListener("click", () => this.addCard(row));
 			}
 		});
@@ -292,7 +292,7 @@ export class TasksBoard {
 		const board = this.board!;
 		if (this.headerAddCol) this.headerAddCol.disabled = false;
 		board.columns.forEach((col, ci) => {
-			const colEl = body.createDiv("fk-col pcal-tasks-col");
+			const colEl = body.createDiv("fk-col nya-tasks-col");
 			colEl.addEventListener("dragover", (e) => {
 				e.preventDefault();
 				colEl.addClass("is-droptarget");
@@ -309,19 +309,19 @@ export class TasksBoard {
 				board.columns[ci].cards.push(dragged);
 				void this.persist();
 			});
-			const head = colEl.createDiv("fk-col-header pcal-tasks-colhead");
+			const head = colEl.createDiv("fk-col-header nya-tasks-colhead");
 			const colCollapsed = this.isCollapsed("column", col.name);
 			colEl.toggleClass("is-collapsed", colCollapsed);
-			const colChev = head.createEl("button", { cls: "pcal-tasks-chevron" });
+			const colChev = head.createEl("button", { cls: "nya-tasks-chevron" });
 			setIcon(colChev, colCollapsed ? "chevron-right" : "chevron-down");
 			colChev.addEventListener("click", () => {
 				this.toggleCollapsed("column", col.name);
 				void this.render();
 			});
-			head.createSpan({ cls: "pcal-tasks-colname", text: col.name }).addEventListener("click", () => this.askName(t("Rename column"), t("Rename"), col.name, (name) => { this.renameCollapsed("column", col.name, name); col.name = name; void this.persist(); }));
-			head.createSpan({ cls: "pcal-tasks-count", text: String(col.cards.length) });
-			head.createEl("button", { cls: "pcal-tasks-coladd", text: "+" }).addEventListener("click", () => this.addCard(col));
-			const menuBtn = head.createEl("button", { cls: "pcal-tasks-colmenu", text: "⋯" });
+			head.createSpan({ cls: "nya-tasks-colname", text: col.name }).addEventListener("click", () => this.askName(t("Rename column"), t("Rename"), col.name, (name) => { this.renameCollapsed("column", col.name, name); col.name = name; void this.persist(); }));
+			head.createSpan({ cls: "nya-tasks-count", text: String(col.cards.length) });
+			head.createEl("button", { cls: "nya-tasks-coladd", text: "+" }).addEventListener("click", () => this.addCard(col));
+			const menuBtn = head.createEl("button", { cls: "nya-tasks-colmenu", text: "⋯" });
 			menuBtn.addEventListener("click", (e) => {
 				const menu = new Menu();
 				menu.addItem((i) => i.setTitle(t("Rename column")).onClick(() => this.askName(t("Rename column"), t("Rename"), col.name, (name) => { this.renameCollapsed("column", col.name, name); col.name = name; void this.persist(); })));
@@ -335,16 +335,16 @@ export class TasksBoard {
 				menu.showAtMouseEvent(e);
 			});
 			if (!colCollapsed) {
-				const list = colEl.createDiv("pcal-tasks-cards");
+				const list = colEl.createDiv("nya-tasks-cards");
 				for (const card of col.cards) this.renderCard(list, card);
-				const addBtn = colEl.createEl("button", { text: "+ Add card", cls: "pcal-tasks-addcard" });
+				const addBtn = colEl.createEl("button", { text: "+ Add card", cls: "nya-tasks-addcard" });
 				addBtn.addEventListener("click", () => this.addCard(col));
 			}
 		});
 	}
 
 	private renderCard(list: HTMLElement, card: KanbanCard) {
-		const row = list.createDiv("fk-card pcal-tasks-card");
+		const row = list.createDiv("fk-card nya-tasks-card");
 		row.draggable = true;
 		row.addEventListener("dragstart", () => (this.dragCard = card));
 		row.addEventListener("dragend", () => (this.dragCard = null));
@@ -358,19 +358,19 @@ export class TasksBoard {
 		// fancy-kanban-style markers: an obsidian-kanban date (📅 2026-09-21)
 		// renders as a chip, #tags render as colored chips; the raw text is
 		// what is stored, so the files stay plain Markdown
-		const main = row.createDiv("pcal-tasks-cardmain");
-		const textEl = main.createSpan({ cls: "pcal-tasks-cardtext" + (card.checked ? " is-done" : "") });
+		const main = row.createDiv("nya-tasks-cardmain");
+		const textEl = main.createSpan({ cls: "nya-tasks-cardtext" + (card.checked ? " is-done" : "") });
 		textEl.addEventListener("click", () => this.editCard(card));
 		textEl.setText(cardTitle(card) || "(no title)");
 		const date = cardDate(card);
 		if (date) {
-			const chip = row.createSpan({ cls: "pcal-tasks-date", text: date.slice(5) });
+			const chip = row.createSpan({ cls: "nya-tasks-date", text: date.slice(5) });
 			chip.toggleClass("is-overdue", date < new Date().toISOString().slice(0, 10));
 		}
 		for (const m of card.text.matchAll(/#([\p{L}\p{N}_/-]+)/gu)) {
-			row.createSpan({ cls: "pcal-tasks-tag", text: "#" + m[1] });
+			row.createSpan({ cls: "nya-tasks-tag", text: "#" + m[1] });
 		}
-		if (card.body) main.createDiv({ cls: "pcal-tasks-carddesc", text: card.body.split("\n")[0] });
+		if (card.body) main.createDiv({ cls: "nya-tasks-carddesc", text: card.body.split("\n")[0] });
 	}
 
 	/** The card's context menu, in the shape of obsidian-kanban's. */
@@ -489,9 +489,9 @@ class TextInputModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText(this.title);
-		const input = this.contentEl.createEl("input", { type: "text", cls: "pcal-tasks-input" });
+		const input = this.contentEl.createEl("input", { type: "text", cls: "nya-tasks-input" });
 		input.value = this.initial;
-		const btns = this.contentEl.createDiv({ cls: "pcal-modal-btns" });
+		const btns = this.contentEl.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: this.verb, cls: "mod-cta" }).addEventListener("click", () => {
 			this.onOk(input.value);
@@ -526,11 +526,11 @@ class TaskCardModal extends Modal {
 			.setName("Due date")
 			.setDesc("YYYY-MM-DD, optional.")
 			.addText((t) => t.setPlaceholder("2026-09-21").setValue(date ?? "").onChange((v) => (date = /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : null)));
-		c.createDiv({ cls: "setting-item-name pcal-event-desc-label", text: "Description" });
-		const desc = c.createEl("textarea", { cls: "pcal-tasks-cardeditor" });
+		c.createDiv({ cls: "setting-item-name nya-event-desc-label", text: "Description" });
+		const desc = c.createEl("textarea", { cls: "nya-tasks-cardeditor" });
 		desc.value = body;
 		desc.addEventListener("input", () => (body = desc.value));
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		if (this.card) btns.createEl("button", { text: "Delete card" }).addEventListener("click", () => {
 			remove = true;
 			this.onOk(title, date, body, remove);
@@ -560,7 +560,7 @@ class DateModal extends Modal {
 		const c = this.contentEl;
 		const input = c.createEl("input", { type: "date" });
 		input.value = this.initial;
-		const btns = c.createDiv({ cls: "pcal-modal-btns" });
+		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
 		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
 			this.onOk(/^\d{4}-\d{2}-\d{2}$/.test(input.value) ? input.value : null);

@@ -2130,7 +2130,7 @@ export function renderNoteName(template: string, ev: PCEvent, use24h: boolean): 
 	return sanitizeName(name);
 }
 
-/** The `power-calendar` code block's little config language: "date: today"
+/** The `nyahome` code block's little config language: "date: today"
  *  or an ISO day (absent means derive from the note's filename, else today),
  *  and "days: N". Anything unrecognized is ignored, never an error. */
 export function parseAgendaBlock(source: string): { date: string | null; days: number } {
