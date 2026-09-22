@@ -161,6 +161,7 @@ import { chunk, GRAPH_BATCH_MAX,
 	matchContacts,
 	currentAddressFragment,
 	applyAddressChoice,
+	appendAddressChoices,
 	GeoHit,
 	pickGeoHit,
 	splitPlaceQuery,
@@ -17981,11 +17982,9 @@ class ImapRichComposeModal extends Modal {
 
 	private openContactPicker(target: HTMLInputElement) {
 		new ContactPickerModal(this.app, this.plugin, (emails) => {
-			for (const email of emails) {
-				const next = applyAddressChoice(target.value, target.selectionStart ?? target.value.length, email);
-				target.value = next.value;
-				target.setSelectionRange(next.caret, next.caret);
-			}
+			const next = appendAddressChoices(target.value, emails);
+			target.value = next.value;
+			target.setSelectionRange(next.caret, next.caret);
 			target.focus();
 		}, () => this.drawContactRail(this.contactRailEl!)).open();
 	}

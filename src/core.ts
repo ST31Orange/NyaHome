@@ -1787,6 +1787,16 @@ export function applyAddressChoice(value: string, caret: number, email: string):
 	return { value: `${next}${rest}`, caret: next.length };
 }
 
+/** Add a whole contact-picker selection to a recipient box. Unlike a single
+ *  autocomplete choice, this appends every selected address as one clean,
+ *  sendable list and never leaves an empty trailing entry. */
+export function appendAddressChoices(value: string, emails: readonly string[]): { value: string; caret: number } {
+	const current = value.trim().replace(/[\s,;]+$/, "");
+	const chosen = emails.map((email) => email.trim()).filter(Boolean);
+	const next = [current, ...chosen].filter(Boolean).join(", ");
+	return { value: next, caret: next.length };
+}
+
 export interface WhenPreset {
 	label: string;
 	ms: number;
