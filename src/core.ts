@@ -1775,14 +1775,16 @@ export function currentAddressFragment(value: string, caret: number): { start: n
 }
 
 /** A chosen address folded back into the box, replacing only the fragment
- *  that was being typed and leaving a trailing comma to carry on from. */
+ *  that was being typed. A trailing comma is added only when another address
+ *  already follows it; otherwise the box stays immediately sendable. */
 export function applyAddressChoice(value: string, caret: number, email: string): { value: string; caret: number } {
 	const { start } = currentAddressFragment(value, caret);
 	const before = value.slice(0, start);
 	const after = value.slice(caret);
 	const lead = before && !/[\s]$/.test(before) ? " " : "";
-	const next = `${before}${lead}${email}, `;
-	return { value: `${next}${after.replace(/^[\s,;]+/, "")}`, caret: next.length };
+	const rest = after.replace(/^[\s,;]+/, "");
+	const next = `${before}${lead}${email}${rest ? ", " : ""}`;
+	return { value: `${next}${rest}`, caret: next.length };
 }
 
 export interface WhenPreset {

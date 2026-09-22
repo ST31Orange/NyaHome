@@ -7286,8 +7286,54 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 .nya-cache-manager-list {
-	max-height: min(52vh, 520px);
-	overflow: auto;
+	max-height: none;
+	overflow-y: auto;
+}
+
+.nya-cache-manager-window {
+	width: min(760px, calc(100vw - 24px));
+	max-width: calc(100vw - 24px);
+}
+
+.nya-cache-manager {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	min-height: 0;
+	max-height: min(76vh, 760px);
+	overflow: hidden;
+}
+
+.nya-cache-manager .nya-cache-note {
+	flex: 0 0 auto;
+	margin-bottom: 0;
+}
+
+.nya-cache-manager .nya-modal-btns {
+	flex-wrap: wrap;
+	justify-content: flex-start;
+	margin-top: 0;
+}
+
+.nya-cache-manager-list {
+	flex: 1 1 auto;
+	min-height: 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px;
+}
+
+.nya-cache-manager-list .setting-item {
+	min-width: 0;
+	padding: 7px 8px;
+	border-top: none;
+}
+
+.nya-cache-manager-list .setting-item-info,
+.nya-cache-manager-list .setting-item-name,
+.nya-cache-manager-list .setting-item-description {
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 
 @media (max-width: 720px) {

@@ -1374,10 +1374,10 @@ eq(mimeForExtension(""), "application/octet-stream", "and so does no extension a
 
 	// taking a suggestion
 	const one = applyAddressChoice("ste", 3, "steve.palm@irely.com");
-	eq(one.value, "steve.palm@irely.com, ", "a choice replaces the fragment and leaves a comma to carry on");
+	eq(one.value, "steve.palm@irely.com", "a lone choice does not leave a trailing comma");
 	eq(one.caret, one.value.length, "with the caret at the end");
 	const second = applyAddressChoice("bob@x.com, ste", 14, "steve.palm@irely.com");
-	eq(second.value, "bob@x.com, steve.palm@irely.com, ", "an earlier address survives untouched");
+	eq(second.value, "bob@x.com, steve.palm@irely.com", "an earlier address survives untouched");
 	const middle = applyAddressChoice("bob@x.com, ste, later@x.com", 14, "steve.palm@irely.com");
 	eq(middle.value, "bob@x.com, steve.palm@irely.com, later@x.com", "and so does one typed after it");
 	eq(middle.caret, "bob@x.com, steve.palm@irely.com, ".length, "the caret lands ready for the next name");

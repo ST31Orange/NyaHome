@@ -13505,6 +13505,8 @@ class MailCacheManageModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("Manage mail cache");
+		this.modalEl.addClass("nya-cache-manager-window");
+		this.contentEl.addClass("nya-cache-manager");
 		this.render();
 	}
 
@@ -19898,7 +19900,9 @@ class NyaHomeSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Mail history",
-				desc: `Pull the last ${s.mailHistoryDays} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`,
+				desc: UI_LANG === "zh"
+					? `拉取最近 ${s.mailHistoryDays} 天的邮件。同时决定 Power Assistant“询问邮件”能搜索多远，因为它只搜索这里缓存的内容。`
+					: `Pull the last ${s.mailHistoryDays} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`,
 				help: "How far back mail is pulled, up to 7300 days (about 20 years). This is also the ceiling on what Power Assistant's 'Ask your email' can search, because that window only ever indexes messages this plugin has already fetched. Raising it makes the next sync fetch more, once; set it near 7300 for old QQ mail.",
 				build: (st) => {
 					st.addSlider((sl) =>
@@ -19907,7 +19911,11 @@ class NyaHomeSettingTab extends PluginSettingTab {
 							.setValue(Math.min(7300, Math.max(7, s.mailHistoryDays || 45)))
 							.onChange((v) => {
 								s.mailHistoryDays = v;
-								st.setDesc(`Pull the last ${v} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`);
+								st.setDesc(
+									UI_LANG === "zh"
+										? `拉取最近 ${v} 天的邮件。同时决定 Power Assistant“询问邮件”能搜索多远，因为它只搜索这里缓存的内容。`
+										: `Pull the last ${v} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`
+								);
 								save();
 							})
 					);
@@ -19915,7 +19923,9 @@ class NyaHomeSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Messages kept per folder",
-				desc: `Retain up to ${s.mailMaxMessages} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`,
+				desc: UI_LANG === "zh"
+					? `每个文件夹最多保留最新 ${s.mailMaxMessages} 封邮件。数值越高搜索越深、占用内存越多；首次同步也会拉取更多。`
+					: `Retain up to ${s.mailMaxMessages} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`,
 				help: "How many of the newest messages survive each sync, per folder. This is the setting that actually bounds how much mail you can search: a wide day range changes nothing while this stays low, because older messages are dropped no matter how far back the window reaches. Higher costs memory and a longer first sync.",
 				build: (st) => {
 					st.addSlider((sl) =>
@@ -19924,7 +19934,11 @@ class NyaHomeSettingTab extends PluginSettingTab {
 							.setValue(Math.min(5000, Math.max(50, s.mailMaxMessages || 50)))
 							.onChange((v) => {
 								s.mailMaxMessages = v;
-								st.setDesc(`Retain up to ${v} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`);
+								st.setDesc(
+									UI_LANG === "zh"
+										? `每个文件夹最多保留最新 ${v} 封邮件。数值越高搜索越深、占用内存越多；首次同步也会拉取更多。`
+										: `Retain up to ${v} of the newest messages in each folder. Higher means deeper search and more memory; the initial sync fetches more the first time.`
+								);
 								save();
 							})
 					);
