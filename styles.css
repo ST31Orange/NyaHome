@@ -7248,6 +7248,11 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	cursor: pointer;
 }
 
+.nyahome-note.is-file-card {
+	background: color-mix(in srgb, #f59e0b 13%, var(--background-primary));
+	border-color: color-mix(in srgb, #f59e0b 38%, var(--background-modifier-border));
+}
+
 /* The remove action belongs to the tile's corner, not to the document's
    normal grid flow; keeping it absolute also prevents it from creating a
    second button-sized row underneath the title. */

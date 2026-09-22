@@ -513,8 +513,18 @@ export class NyaHomeView extends ItemView {
 			for (const path of card.notes) {
 				body.createDiv("nyahome-note", (noteEl) => {
 					this.applyHomeNoteLayout(noteEl, this.noteLayout(card, path));
-					noteEl.createDiv({ cls: "nyahome-note-label", text: path.split("/").pop() || path });
-					noteEl.createDiv({ cls: "nyahome-note-path", text: path });
+					const file = this.app.vault.getAbstractFileByPath(path);
+					const isMarkdown = file instanceof TFile && /^(md|markdown)$/i.test(file.extension);
+					const title = file instanceof TFile ? file.basename : (path.split("/").pop() || path).replace(/\.md$/i, "");
+					noteEl.createDiv({ cls: "nyahome-note-label", text: title });
+					const sub = noteEl.createDiv({ cls: "nyahome-note-path nya-note-subtitle", text: path });
+					if (file instanceof TFile) {
+						if (isMarkdown) void this.fillNotePreview(sub, file);
+						else {
+							noteEl.addClass("is-file-card");
+							sub.setText(this.fileOpenHint(file));
+						}
+					}
 					noteEl.addEventListener("click", (e) => {
 						if (this.layoutEditing) {
 							e.preventDefault();
@@ -541,6 +551,43 @@ export class NyaHomeView extends ItemView {
 				});
 			}
 		}
+	}
+
+	private async fillNotePreview(el: HTMLElement, file: TFile): Promise<void> {
+		try {
+			const text = await this.app.vault.cachedRead(file);
+			if (el.isConnected) el.setText(this.markdownPreview(text));
+		} catch {
+			el.setText("");
+		}
+	}
+
+	private markdownPreview(text: string): string {
+		const body = text
+			.replace(/^---\s*[\s\S]*?\s*---\s*/i, "")
+			.replace(/```[\s\S]*?```/g, " ")
+			.replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+			.replace(/^\s{0,3}#{1,6}\s+/gm, "")
+			.replace(/^\s{0,3}>\s?/gm, "")
+			.replace(/[*_~`]/g, "")
+			.replace(/\s+/g, " ")
+			.trim();
+		return body || (this.plugin.settings.language === "zh" ? "空白笔记" : "Empty note");
+	}
+
+	private fileOpenHint(file: TFile): string {
+		const ext = file.extension.toLowerCase();
+		const type = ext ? ext.toUpperCase() : "FILE";
+		const zh = this.plugin.settings.language === "zh";
+		let opener: string;
+		if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "ico"].includes(ext)) opener = zh ? "图片查看器" : "Image viewer";
+		else if (ext === "pdf") opener = zh ? "PDF 阅读器" : "PDF viewer";
+		else if (["mp3", "wav", "flac", "ogg", "m4a", "aac", "3gp"].includes(ext)) opener = zh ? "媒体播放器" : "Media player";
+		else if (["mp4", "mkv", "webm", "mov", "avi", "ogv", "m4v"].includes(ext)) opener = zh ? "视频播放器" : "Video player";
+		else if (ext === "canvas") opener = zh ? "Obsidian 画布" : "Obsidian canvas";
+		else opener = zh ? "系统默认应用" : "System default";
+		return `${type} · ${opener}`;
 	}
 
 	private addHomeCard(t: ReturnType<typeof T>): void {
