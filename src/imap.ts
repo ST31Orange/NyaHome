@@ -295,7 +295,11 @@ export interface ImapAttachment {
 	filename: string;
 	contentType: string;
 	size: number;
-	base64: string;
+	/** MIME part id, kept so a cached message can still fetch one file later. */
+	partId?: string;
+	contentId?: string;
+	/** Present only on a freshly parsed message. The disk cache strips it. */
+	base64?: string;
 }
 
 /** Move one or more UIDs. Callers resolve the trash; this adapter only

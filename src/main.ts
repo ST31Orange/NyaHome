@@ -188,7 +188,19 @@ import { lunarTag } from "./lunar";
 import { setI18nLang, startI18n, stopI18n, t } from "./i18n";
 import { KanbanHost, parseKanbanBoard, serializeKanbanBoard, TasksBoard } from "./kanban";
 import { ImapAccount, ImapBody, ImapFolderInfo, ImapMessage, SmtpAttachment, SmtpMail, imapLabel, listImapFolderInfos, listImapFolders, markImapRead, moveImapMessages, permanentlyDeleteImapMessages, searchImapMessages, searchImapSubjects, sendImapMail, setImapFlagged, trashFolderFor, fetchImapBody, fetchImapMessages, testImapAccount } from "./imap";
-import { ImapMailService } from "./mail-service";
+import { ImapMailService, SpamHit, TicketHit } from "./mail-service";
+import { MailCacheFolderMode, MailCacheFolderRef, MailCacheSettings, MailCacheStats, normalizeMailCache } from "./mail-cache";
+import { DEFAULT_SPAM_KEYWORDS, normalizeSpamKeywords } from "./spam";
+import {
+	IMailMessage,
+	MailTranslationResult,
+	SimpleTranslationEventBus,
+	TranslationConfig,
+	TranslationManager,
+	TranslationSettingsTab,
+	normalizeTranslationConfig,
+	obsidianHttpTransport,
+} from "./translation";
 import { newIcsUid, removeIcsEvent, removeIcsOccurrence, rruleOf, upsertIcsEvent, upsertIcsOverride } from "./localics";
 import {
 	DeviceCode,
@@ -304,6 +316,26 @@ const VIEW_TYPE_MAIL_IMAP = "nyahome-mail-imap";
 const VIEW_TYPE_HOME = "nyahome-home";
 /** The Unread search folder's virtual id in folder selections and caches. */
 const UNREAD_FOLDER = "__unread__";
+
+/** IMAP folders keep their wire name for every operation; this changes only
+ *  the label shown in the UI. Providers disagree about INBOX/Sent/Trash and
+ *  QQ often returns a mix of English and Chinese names. */
+function imapFolderDisplayName(folder: Pick<ImapFolderInfo, "name" | "path" | "specialUse">): string {
+	const raw = (folder.name || folder.path.split("/").pop() || folder.path).trim();
+	if (UI_LANG !== "zh") return /^inbox$/i.test(raw) ? "Inbox" : raw;
+	const special = folder.specialUse.toLowerCase();
+	const names = [raw, folder.path.split("/").pop() ?? ""].map((x) => x.trim().toLowerCase());
+	const isName = (values: string[]) => values.some((value) => names.includes(value));
+	if (special.includes("\\inbox") || isName(["inbox", "收件箱"])) return "收件箱";
+	if (special.includes("\\sent") || isName(["sent", "sent items", "sent messages", "已发送", "已发送邮件"])) return "已发送";
+	if (special.includes("\\draft") || isName(["draft", "drafts", "草稿", "草稿箱"])) return "草稿";
+	if (special.includes("\\junk") || isName(["junk", "spam", "bulk mail", "垃圾邮件", "广告邮件"])) return "垃圾邮件";
+	if (special.includes("\\trash") || isName(["trash", "deleted", "deleted items", "deleted messages", "bin", "已删除", "已删除邮件", "回收站", "垃圾箱"])) return "垃圾箱";
+	if (special.includes("\\archive") || isName(["archive", "archives", "归档"])) return "归档";
+	if (special.includes("\\all") || isName(["all", "all mail", "全部邮件"])) return "全部邮件";
+	if (special.includes("\\flagged") || isName(["flagged", "starred", "已加星标"])) return "已加星标";
+	return raw;
+}
 /** How many inline pictures one saved message may bring into the vault. A
  *  newsletter can carry dozens of them; a note wants the ones that are the
  *  message, not every badge in its footer. */
@@ -434,6 +466,16 @@ interface NyaHomeSettings {
 	localCalendars: LocalCalendarSource[];
 	/** Standard-provider mail (IMAP/SMTP, authorization-code passwords). */
 	imapAccounts: ImapAccount[];
+	/** Sender, domain, or keyword entries treated as strong spam signals. */
+	imapSpamBlacklist: string[];
+	/** User words in a subject or preview treated as strong spam signals. */
+	imapSpamKeywords: string[];
+	/** One-time marker for seeding the built-in keyword set into older vaults. */
+	imapSpamKeywordDefaultsVersion: number;
+	/** Independent translation module configuration. */
+	translation: TranslationConfig;
+	/** Which IMAP message bodies live in the plugin's local cache. */
+	mailCache: MailCacheSettings;
 	imapDrafts: ImapDraft[];
 	vaultSources: VaultSource[];
 	/** Folder holding the Tasks mode's kanban boards (one Markdown file per board). */
@@ -698,6 +740,8 @@ interface SketchNote {
 	title: string;
 	date: string;
 	text: string;
+	/** Optional rich formatting for the sketch editor; text stays the plain view. */
+	html?: string;
 	createdMs: number;
 	updatedMs: number;
 }
@@ -718,6 +762,30 @@ const DEFAULT_SETTINGS: NyaHomeSettings = {
 	icsFeeds: [],
 	localCalendars: [],
 	imapAccounts: [],
+	imapSpamBlacklist: [],
+	imapSpamKeywords: [...DEFAULT_SPAM_KEYWORDS],
+	imapSpamKeywordDefaultsVersion: 0,
+	translation: {
+		enabled: false,
+		endpoint: "",
+		token: "",
+		sourceLanguage: "en",
+		targetLanguage: "zh-Hans",
+		autoTranslate: false,
+		translateSubject: true,
+		translateBody: true,
+		cacheEnabled: true,
+		persistentCache: true,
+		timeoutMs: 15000,
+		cacheMaxEntries: 500,
+	},
+	mailCache: {
+		enabled: true,
+		folderMode: "all",
+		folders: [],
+		skipSpamAndTrash: true,
+		attachmentPolicy: "metadata",
+	},
 	imapDrafts: [],
 	vaultSources: [],
 	kanbanFolder: "Boards",
@@ -899,6 +967,7 @@ type WeatherDays = Map<string, { hi: number; lo: number; code: number }>;
 export default class NyaHomePlugin extends Plugin {
 	settings: NyaHomeSettings = DEFAULT_SETTINGS;
 	refreshSettingsTab: (() => void) | null = null;
+	translationManager!: TranslationManager;
 	/** Per-source fetched events, keyed by SourceDef.key. */
 	private cache = new Map<string, SourceState>();
 	/** Open views re-render when a fetch lands. */
@@ -927,12 +996,22 @@ export default class NyaHomePlugin extends Plugin {
 
 	async onload() {
 		this.adoptSettings(Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<NyaHomeSettings> | null));
+		this.settings.mailCache = normalizeMailCache(this.settings.mailCache);
+		this.settings.translation = normalizeTranslationConfig(this.settings.translation);
 		setI18nLang(this.settings.language);
 		setUiLang(this.settings.language);
 		pluginNoticesEnabled = () => this.settings.showNotifications;
 		// baseline is the DISK state, cloned before any migration, so the
 		// migrated keys read as our change and actually persist
 		this.baseline = structuredClone(this.settings);
+		if ((this.settings.imapSpamKeywordDefaultsVersion ?? 0) < 1) {
+			this.settings.imapSpamKeywords = normalizeSpamKeywords([
+				...DEFAULT_SPAM_KEYWORDS,
+				...(this.settings.imapSpamKeywords ?? []),
+			]);
+			this.settings.imapSpamKeywordDefaultsVersion = 1;
+			this.queueSave();
+		}
 		// pre-1.2 single-account connections migrate into the accounts list;
 		// the legacy keys stay in the file, blank, for older synced devices
 		if (this.settings.graphRefresh && !this.settings.graphAccounts.length) {
@@ -969,6 +1048,7 @@ export default class NyaHomePlugin extends Plugin {
 		await this.loadCacheFile();
 		this.mailService = new ImapMailService(this);
 		this.register(() => this.mailService.dispose());
+		await this.initializeTranslation();
 		const stale = this.settings.graphAccounts.filter((a) => a.refresh && a.grantedScope !== this.scopeFor(a));
 		if (stale.length) {
 			const message = `NyaHome: reconnect ${stale.map((a) => this.nameOf(a)).join(", ")} in settings to enable the newest permissions (event editing, mail, reply windows).`;
@@ -1333,6 +1413,7 @@ export default class NyaHomePlugin extends Plugin {
 		this.i18nObserver?.disconnect();
 		this.i18nObserver = null;
 		stopI18n();
+		this.translationManager?.dispose();
 		for (const id of this.snoozeTimers) window.clearTimeout(id);
 		this.snoozeTimers.clear();
 		if (this.saveTimer != null) {
@@ -1344,6 +1425,56 @@ export default class NyaHomePlugin extends Plugin {
 			void this.persistCacheFile();
 		}
 		if (this.notifyTimer != null) window.clearTimeout(this.notifyTimer);
+	}
+
+	/** Dependency injection boundary for the translation feature. The module
+	 *  only sees settings, a logger, an event bus, HTTP, and a cache file. */
+	private async initializeTranslation(): Promise<void> {
+		const events = new SimpleTranslationEventBus();
+		this.translationManager = new TranslationManager({
+			settings: {
+				get: () => this.settings.translation,
+				save: async (config) => {
+					this.settings.translation = config;
+					this.queueSave();
+				},
+			},
+			logger: {
+				debug: (message, ...details) => {
+					if (this.settings.mailDebugLog) console.debug(message, ...details);
+				},
+				warn: (message, ...details) => console.warn(message, ...details),
+			},
+			events,
+			transport: obsidianHttpTransport(),
+			cacheStore: {
+				read: async () => {
+					const path = this.translationCachePath();
+					if (!(await this.app.vault.adapter.exists(path))) return null;
+					return await this.app.vault.adapter.read(path);
+				},
+				write: async (value) => {
+					await this.app.vault.adapter.write(this.translationCachePath(), value);
+				},
+				clear: async () => {
+					const path = this.translationCachePath();
+					if (await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.remove(path);
+				},
+			},
+		});
+		await this.translationManager.initialize();
+		this.translationManager.registerCommands(
+			{ addCommand: (command) => this.addCommand(command) },
+			() => {
+				const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_MAIL_IMAP)[0];
+				const view = leaf?.view;
+				return view instanceof ImapMailView ? view : null;
+			}
+		);
+	}
+
+	private translationCachePath(): string {
+		return normalizePath(`${this.app.vault.configDir}/plugins/${this.manifest.id}/translation-cache.json`);
 	}
 
 	/* ---------------- settings persistence (synced data.json holds tokens,
@@ -1453,6 +1584,7 @@ export default class NyaHomePlugin extends Plugin {
 		// memory can move while we await; adopting a stale read would revert it
 		if (this.busySaving() || JSON.stringify(this.settings) !== before) return;
 		const next = Object.assign({}, DEFAULT_SETTINGS, raw);
+		next.mailCache = normalizeMailCache(next.mailCache);
 		if (JSON.stringify(next) === JSON.stringify(this.settings)) return; // our own write echoing back
 		this.adoptSettings(next);
 		this.baseline = structuredClone(next);
@@ -1818,7 +1950,7 @@ export default class NyaHomePlugin extends Plugin {
 				allDay: span.allDay,
 				startMs: span.startMs,
 				endMs: span.endMs,
-				canEdit: !span.allDay, // a timed note can be dragged; banners stay put
+				canEdit: true,
 				notePath: f.path,
 			});
 		}
@@ -2761,7 +2893,7 @@ export default class NyaHomePlugin extends Plugin {
 	 *  so a tenant quirk costs efficiency, never the mail. */
 	private async syncList(a: GraphAccount, folderId: string, st: { messages: PCMail[]; deltaLink?: string | null }): Promise<void> {
 		const token = await this.graphTokenFor(a);
-		const days = Math.min(365, Math.max(7, this.settings.mailHistoryDays || 45));
+		const days = Math.min(7300, Math.max(7, this.settings.mailHistoryDays || 45));
 		const cap = Math.min(5000, Math.max(50, this.settings.mailMaxMessages || 50));
 		const sinceMs = Date.now() - days * 86400000;
 		const toPC = (raw: unknown[]) => raw.map((m) => graphMailToPC(m as GraphMailLike, a.id, this.nameOf(a), a.label)).filter((m): m is PCMail => m != null);
@@ -4150,11 +4282,13 @@ export default class NyaHomePlugin extends Plugin {
 			for (const list of this.cachedMailLists(a.id)) list.messages = list.messages.filter((x) => x.id !== m.id);
 			try {
 				await markAsJunk(await this.graphTokenFor(a), m.id);
+				this.bodyCache.delete(m.id);
 				n++;
 			} catch (e) {
 				this.graphErrorNotice(e);
 			}
 		}
+		if (n) this.queueCachePersist();
 		this.notify();
 		return n;
 	}
@@ -4964,6 +5098,8 @@ export default class NyaHomePlugin extends Plugin {
 		if (!a || !mine.length) return 0;
 		const ids = new Set(mine.map((m) => m.id));
 		for (const list of this.cachedMailLists(accountId)) list.messages = list.messages.filter((x) => !ids.has(x.id));
+		for (const m of mine) this.bodyCache.delete(m.id);
+		this.queueCachePersist();
 		this.rememberFolder(accountId, folderId, folderName);
 		// whatever is showing the destination is now wrong, so make it refetch
 		const dest = this.folderCache.get(`${accountId}:${folderId}`);
@@ -5020,6 +5156,8 @@ export default class NyaHomePlugin extends Plugin {
 		for (const list of this.cachedMailLists(a.id)) {
 			list.messages = list.messages.filter((x) => x.id !== m.id);
 		}
+		this.bodyCache.delete(m.id);
+		this.queueCachePersist();
 		this.notify();
 		try {
 			await archiveMessage(await this.graphTokenFor(a), m.id);
@@ -5212,6 +5350,8 @@ export default class NyaHomePlugin extends Plugin {
 		for (const list of this.cachedMailLists(a.id)) {
 			list.messages = list.messages.filter((x) => x.id !== m.id);
 		}
+		this.bodyCache.delete(m.id);
+		this.queueCachePersist();
 		this.notify();
 		try {
 			await deleteMessage(await this.graphTokenFor(a), m.id);
@@ -5228,6 +5368,8 @@ export default class NyaHomePlugin extends Plugin {
 		for (const list of this.cachedMailLists(a.id)) {
 			list.messages = list.messages.filter((x) => x.id !== m.id);
 		}
+		this.bodyCache.delete(m.id);
+		this.queueCachePersist();
 		this.notify();
 		try {
 			await permanentDeleteMessage(await this.graphTokenFor(a), m.id);
@@ -5579,7 +5721,8 @@ export default class NyaHomePlugin extends Plugin {
 	): Promise<{ id: string; from: string; subject: string; date: string; webLink?: string; text: string; conversationId: string; focused: boolean; to: string }[]> {
 		const a = this.accountById(accountId);
 		if (!a) return [];
-		const sinceMs = opts.sinceMs ?? Date.now() - 3650 * 86400000;
+		const days = Math.min(7300, Math.max(7, this.settings.mailHistoryDays || 45));
+		const sinceMs = opts.sinceMs ?? Date.now() - days * 86400000;
 		const cap = Math.min(5000, Math.max(1, opts.cap ?? 2000));
 		const token = await this.graphTokenFor(a);
 		const raw = await this.mailboxGate(a.id, () => fetchFolderMessagesDeep(token, folderId, sinceMs, cap));
@@ -5846,15 +5989,26 @@ export default class NyaHomePlugin extends Plugin {
 		return note;
 	}
 
-	updateSketchNote(id: string, patch: { title?: string; text?: string }) {
+	updateSketchNote(id: string, patch: { title?: string; text?: string; html?: string; date?: string }) {
 		const note = (this.settings.sketchNotes ?? []).find((n) => n.id === id);
 		if (!note) return;
-		const before = note.title;
+		const before = {
+			title: note.title,
+			date: note.date,
+			preview: stripHtml(note.html ?? note.text).trim().split(/\r?\n/)[0] ?? "",
+		};
 		if (patch.title !== undefined) note.title = patch.title;
 		if (patch.text !== undefined) note.text = patch.text;
+		if (patch.html !== undefined) note.html = patch.html;
+		if (patch.date !== undefined) note.date = patch.date;
 		note.updatedMs = Date.now();
 		this.queueSave();
-		if (patch.title !== undefined && patch.title !== before) this.notify();
+		const preview = stripHtml(note.html ?? note.text).trim().split(/\r?\n/)[0] ?? "";
+		if (note.title !== before.title || note.date !== before.date || preview !== before.preview) this.notify();
+	}
+
+	moveSketchNote(id: string, date: string) {
+		this.updateSketchNote(id, { date });
 	}
 
 	deleteSketchNote(id: string) {
@@ -12084,6 +12238,8 @@ class ImapMailView extends ItemView {
 	private selectedFolder = "";
 	private selectedMessage: ImapMessage | null = null;
 	private selectedBody: ImapBody | null = null;
+	private selectedTranslation: { key: string; result: MailTranslationResult } | null = null;
+	private translationUnsubscribe: (() => void) | null = null;
 	private expanded = new Set<string>();
 	private query = "";
 	private loadingFolders = false;
@@ -12168,6 +12324,14 @@ class ImapMailView extends ItemView {
 			if (a) this.pickFolderForTargets(a);
 		});
 		addHeaderAction("delete", "trash-2", "Delete selected", () => void this.deleteTargets(this.targetMessages().map((m) => m.uid)));
+		const spamBtn = right.createEl("button", { cls: "nya-spam-btn", attr: { "aria-label": "识别垃圾邮件" } });
+		setIcon(spamBtn, "shield-alert");
+		spamBtn.createSpan({ text: "识别垃圾邮件" });
+		spamBtn.addEventListener("click", () => void this.identifySpam());
+		const ticketBtn = right.createEl("button", { cls: "nya-spam-btn", attr: { "aria-label": "整理票夹" } });
+		setIcon(ticketBtn, "receipt");
+		ticketBtn.createSpan({ text: "票夹" });
+		ticketBtn.addEventListener("click", () => void this.collectInvoices());
 		const newBtn = right.createEl("button", { cls: "nya-new-btn", text: "New mail" });
 		newBtn.addEventListener("click", () => this.compose());
 		const orderBtn = right.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Reorder IMAP accounts" } });
@@ -12216,6 +12380,13 @@ class ImapMailView extends ItemView {
 		this.readEl = body.createDiv("nya-imap-read");
 		this.attachListScroll();
 		this.restoreSelection();
+		this.translationUnsubscribe = this.plugin.translationManager.onTranslationUpdated(({ key, result }) => {
+			const a = this.currentAccount();
+			if (this.selectedMessage && a && key === this.translationKey(a, this.selectedFolder, this.selectedMessage)) {
+				this.selectedTranslation = { key, result };
+				this.renderMessage();
+			}
+		});
 		// Local data first. No server connection, login, or metadata fetch can
 		// delay the first paint; the network runs below and will redraw.
 		this.renderCachedTree();
@@ -12224,6 +12395,8 @@ class ImapMailView extends ItemView {
 	}
 
 	async onClose() {
+		this.translationUnsubscribe?.();
+		this.translationUnsubscribe = null;
 		this.foldersEl?.empty();
 		this.listEl?.empty();
 		this.readEl?.empty();
@@ -12378,7 +12551,8 @@ class ImapMailView extends ItemView {
 				row.toggleClass("is-selected", a.id === this.selectedAccountId && f === this.selectedFolder);
 				const depth = f.split("/").length - 1;
 				row.style.paddingLeft = `${8 + depth * 12}px`;
-				row.createSpan({ cls: "nya-imap-folder-name", text: (infos.find((x) => x.path === f)?.name) || f.split("/").pop() || f });
+				const info = infos.find((x) => x.path === f);
+				row.createSpan({ cls: "nya-imap-folder-name", text: info ? imapFolderDisplayName(info) : f.split("/").pop() || f });
 				row.addEventListener("click", () => void this.selectFolder(a.id, f));
 			}
 		}
@@ -12714,6 +12888,12 @@ class ImapMailView extends ItemView {
 		new ImapFolderPickModal(this.app, infos.filter((f) => f.path !== this.selectedFolder), (folder) => void this.moveTargets(a, targets.map((m) => m.uid), folder)).open();
 	}
 
+	private pickFolderForMessages(a: ImapAccount, targets: ImapMessage[]) {
+		if (!targets.length) return;
+		const infos = this.folderCache.get(a.id) ?? this.plugin.mailService.cachedFolderInfos(a.id);
+		new ImapFolderPickModal(this.app, infos.filter((f) => f.path !== this.selectedFolder), (folder) => void this.moveTargets(a, targets.map((m) => m.uid), folder)).open();
+	}
+
 	private async moveTargets(a: ImapAccount, uids: number[], destination: string) {
 		try {
 			await this.plugin.mailService.move(a, this.selectedFolder, destination, uids);
@@ -12732,25 +12912,33 @@ class ImapMailView extends ItemView {
 	}
 
 	private messageMenu(e: MouseEvent, a: ImapAccount, m: ImapMessage) {
+		// A right-click inside the checkbox selection files every checked mail;
+		// outside it, the menu stays scoped to the row that was clicked.
+		const targets = this.checked.has(m.uid) && this.checked.size ? this.targetMessages() : [m];
+		const plural = targets.length > 1 ? ` ${targets.length} messages` : "";
+		const flagOn = !targets.every((x) => x.flagged);
+		const read = targets.some((x) => x.unread);
 		new Menu()
-			.addItem((i) =>
-				i.setTitle(m.flagged ? "Remove star" : "Star mail").onClick(() =>
-					void this.plugin.mailService.setFlagged(a, this.selectedFolder, m.uid, !m.flagged).then(() => this.loadMessages())
-				)
-			)
-			.addItem((i) =>
-				i.setTitle(m.unread ? "Mark read" : "Mark unread").onClick(() =>
-					void this.plugin.mailService.markRead(a, this.selectedFolder, m.uid, m.unread).then(() => this.loadMessages())
-				)
-			)
+			.addItem((i) => {
+				i.setTitle(flagOn ? `Flag${plural}` : `Remove star${plural}`);
+				i.onClick(() =>
+					void Promise.all(targets.map((x) => this.plugin.mailService.setFlagged(a, this.selectedFolder, x.uid, flagOn))).then(() => this.loadMessages())
+				);
+			})
+			.addItem((i) => {
+				i.setTitle(read ? `Mark${plural} read` : `Mark${plural} unread`);
+				i.onClick(() =>
+					void Promise.all(targets.map((x) => this.plugin.mailService.markRead(a, this.selectedFolder, x.uid, read))).then(() => this.loadMessages())
+				);
+			})
 			.addSeparator()
 			.addItem((i) => i.setTitle("Reply").onClick(() => this.compose("reply", m)))
 			.addItem((i) => i.setTitle("Reply all").onClick(() => this.compose("replyAll", m)))
 			.addItem((i) => i.setTitle("Forward").onClick(() => this.compose("forward", m)))
 			.addItem((i) => {
-				i.setTitle("Move to folder");
+				i.setTitle(`Move${plural} to folder`);
 				i.setDisabled(this.currentFolderInfos().length < 2);
-				i.onClick(() => this.pickFolder(a, m));
+				i.onClick(() => this.pickFolderForMessages(a, targets));
 			})
 			.addItem((i) =>
 				i.setTitle("Make calendar event")
@@ -12763,11 +12951,10 @@ class ImapMailView extends ItemView {
 				)
 			)
 			.addSeparator()
-			.addItem((i) =>
-				i.setTitle(this.isTrash() ? "Delete permanently" : "Move to trash").onClick(() =>
-					void this.removeMessage(a, m)
-				)
-			)
+			.addItem((i) => {
+				i.setTitle(this.isTrash() ? `Delete${plural} permanently` : `Move${plural} to trash`);
+				i.onClick(() => void this.deleteTargets(targets.map((x) => x.uid)));
+			})
 			.showAtMouseEvent(e);
 	}
 
@@ -12882,6 +13069,71 @@ class ImapMailView extends ItemView {
 		}
 	}
 
+	/** Scan the open folder and let the user confirm what moves to trash. */
+	private async identifySpam() {
+		const a = this.currentAccount();
+		if (!a || !this.selectedFolder) {
+			new Notice("NyaHome: pick a folder first.");
+			return;
+		}
+		if (this.isTrash()) {
+			new Notice("NyaHome: this folder is already the trash.");
+			return;
+		}
+		const notice = new Notice("NyaHome: scanning headers and message bodies...", 0);
+		try {
+			await this.refreshMessages();
+			const scan = await this.plugin.mailService.scanFolder(a, this.selectedFolder);
+			notice.hide();
+			if (!scan.spam.length) {
+				new Notice("NyaHome: no obvious spam found.");
+				return;
+			}
+			const trash = trashFolderFor(this.currentFolderInfos());
+			if (!trash) {
+				new Notice("NyaHome: no trash folder found.");
+				return;
+			}
+			new ImapSpamModal(this.app, scan.spam, (uids) => void this.moveTargets(a, uids, trash)).open();
+		} catch (e) {
+			notice.hide();
+			new Notice(`NyaHome: spam scan failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
+		}
+	}
+
+	/** The ticket wallet: invoice mail goes to its own mailbox, not to spam. */
+	private async collectInvoices() {
+		const a = this.currentAccount();
+		if (!a || !this.selectedFolder) {
+			new Notice("NyaHome: pick a folder first.");
+			return;
+		}
+		const infos = this.currentFolderInfos();
+		const invoiceFolder = infos.find((f) => f.name === "电子发票" || f.path === "电子发票");
+		if (invoiceFolder && invoiceFolder.path === this.selectedFolder) {
+			new Notice("NyaHome: this is already the invoice folder.");
+			return;
+		}
+		const notice = new Notice("NyaHome: scanning for invoices...", 0);
+		try {
+			await this.refreshMessages();
+			const scan = await this.plugin.mailService.scanFolder(a, this.selectedFolder);
+			notice.hide();
+			if (!scan.invoices.length) {
+				new Notice("NyaHome: no invoices found.");
+				return;
+			}
+			new ImapTicketModal(this.app, scan.invoices, async (uids) => {
+				const folder = await this.plugin.mailService.ensureInvoiceFolder(a);
+				await this.moveTargets(a, uids, folder);
+				await this.refreshFolders();
+			}).open();
+		} catch (e) {
+			notice.hide();
+			new Notice(`NyaHome: invoice scan failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
+		}
+	}
+
 	private async openMessage(m: ImapMessage) {
 		const a = this.account(this.selectedAccountId);
 		if (!a) return;
@@ -12891,12 +13143,70 @@ class ImapMailView extends ItemView {
 		try {
 			const body = await this.messageBody(a, this.selectedFolder, m);
 			this.selectedBody = body;
+			this.selectedTranslation = null;
+			const key = this.translationKey(a, this.selectedFolder, m);
+			const cached = this.plugin.translationManager.getCachedMail(key);
+			if (cached) this.selectedTranslation = { key, result: cached };
+			this.plugin.translationManager.notifyMailSelected({
+				key,
+				message: this.toTranslationMail(m, body),
+			});
 			if (m.unread) void this.plugin.mailService.markRead(a, this.selectedFolder, m.uid, true).then(() => void this.loadMessages());
 			this.renderMessage();
 		} catch (e) {
 			this.readEl.empty();
 			this.readEl.createDiv({ cls: "nya-empty", text: `Could not read the message (${e instanceof Error ? e.message : String(e)}).` });
 		}
+	}
+
+	/** Translation keys are deliberately independent from mail storage IDs:
+	 *  provider IDs may change, but an account/folder/message identity is enough
+	 *  for a user-visible translation cache. */
+	private translationKey(a: ImapAccount, folder: string, m: ImapMessage): string {
+		return `${a.id}:${folder}:${m.uid}:${m.messageId || m.subject}`;
+	}
+
+	private toTranslationMail(m: ImapMessage, body: ImapBody): IMailMessage {
+		const a = this.currentAccount();
+		return {
+			id: a ? this.translationKey(a, this.selectedFolder, m) : `${m.uid}:${m.messageId}`,
+			subject: m.subject,
+			body: body.html || body.text,
+			isHtml: !!body.html,
+		};
+	}
+
+	async translateCurrent(): Promise<void> {
+		const a = this.currentAccount();
+		const m = this.selectedMessage;
+		if (!a || !m || !this.selectedBody) {
+			new ObsidianNotice("NyaHome: open a message before translating.");
+			return;
+		}
+		try {
+			const result = await this.plugin.translationManager.translateMail(this.toTranslationMail(m, this.selectedBody), { silent: false });
+			if (result) this.selectedTranslation = { key: result.key, result };
+			this.renderMessage();
+		} catch (e) {
+			new ObsidianNotice(`NyaHome: translation failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
+		}
+	}
+
+	async translateSelected(): Promise<void> {
+		const a = this.currentAccount();
+		const targets = this.targetMessages();
+		if (!a || !targets.length) return;
+		let done = 0;
+		for (const m of targets) {
+			try {
+				const body = await this.messageBody(a, this.selectedFolder, m);
+				await this.plugin.translationManager.translateMail(this.toTranslationMail(m, body), { silent: false });
+				done++;
+			} catch (e) {
+				new ObsidianNotice(`NyaHome: could not translate “${m.subject || "message"}” (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			}
+		}
+		if (done) new ObsidianNotice(`NyaHome: translated ${done} message${done === 1 ? "" : "s"}.`);
 	}
 
 	private async messageBody(a: ImapAccount, folder: string, m: ImapMessage): Promise<ImapBody> {
@@ -12918,17 +13228,38 @@ class ImapMailView extends ItemView {
 		if (!m || !body) return;
 		const head = host.createDiv("nya-imap-readhead");
 		head.createDiv({ cls: "nya-imap-readsubject", text: m.subject });
-		head.createDiv({ cls: "nya-imap-readmeta", text: `${m.from} · ${fmtDayShort(keyOfMs(new Date(m.date).getTime()), this.plugin.settings.use24h)}` });
+		const meta = head.createDiv("nya-imap-readmeta");
+		const whenMs = new Date(body.date || m.date).getTime();
+		const when = Number.isFinite(whenMs)
+			? `${fmtDayShort(keyOfMs(whenMs), true)} ${fmtTimeOfMs(whenMs, this.plugin.settings.use24h)}`
+			: "";
+		const headers: { label: string; value: string }[] = [
+			{ label: "From", value: body.from || m.from },
+			{ label: "To", value: body.to || m.to },
+			{ label: "Cc", value: body.cc || m.cc },
+			{ label: "Date", value: when },
+		];
+		for (const row of headers) {
+			if (!row.value) continue;
+			const line = meta.createDiv("nya-imap-readheader");
+			line.createSpan({ cls: "nya-imap-readheader-label", text: row.label });
+			line.createSpan({ cls: "nya-imap-readheader-value", text: row.value });
+		}
 		const btns = host.createDiv("nya-imap-readbtns");
 		btns.createEl("button", { text: "Reply" }).addEventListener("click", () => this.compose("reply"));
 		btns.createEl("button", { text: "Reply all" }).addEventListener("click", () => this.compose("replyAll"));
 		btns.createEl("button", { text: "Forward" }).addEventListener("click", () => this.compose("forward"));
-		if (a) {
+		const account = a;
+		if (account) {
 			btns.createEl("button", { text: m.flagged ? "Unstar" : "Star" }).addEventListener("click", () =>
-				void setImapFlagged(a, this.selectedFolder, m.uid, !m.flagged).then(() => void this.loadMessages())
+				void setImapFlagged(account, this.selectedFolder, m.uid, !m.flagged).then(() => void this.loadMessages())
 			);
-			btns.createEl("button", { text: "Delete" }).addEventListener("click", () => void this.removeMessage(a, m));
+			btns.createEl("button", { text: "Delete" }).addEventListener("click", () => void this.removeMessage(account, m));
 		}
+		const translateBtn = btns.createEl("button", { cls: "nya-translate-btn", attr: { "aria-label": "Translate mail" } });
+		setIcon(translateBtn, "languages");
+		translateBtn.createSpan({ text: this.selectedTranslation ? "重新翻译" : "翻译" });
+		translateBtn.addEventListener("click", () => void this.translateCurrent());
 		const bodyEl = host.createDiv("nya-imap-readbody");
 		if (body.html) {
 			// Render the real content, not its source text. Obsidian's sanitizer strips script/style markup.
@@ -12937,21 +13268,98 @@ class ImapMailView extends ItemView {
 		} else {
 			bodyEl.setText(body.text || "(empty message)");
 		}
+		const translation = this.selectedTranslation;
+		if (translation) {
+			const translated = host.createDiv("nya-mail-translation");
+			translated.createDiv({ cls: "nya-mail-translation-title", text: `翻译 · ${translation.result.targetLanguage}` });
+			if (translation.result.translatedSubject && translation.result.translatedSubject !== m.subject) {
+				translated.createDiv({ cls: "nya-mail-translation-subject", text: translation.result.translatedSubject });
+			}
+			const translatedBody = translated.createDiv("nya-mail-translation-body");
+			if (translation.result.isHtml && translation.result.translatedBody) {
+				translatedBody.addClass("is-html");
+				translatedBody.appendChild(sanitizeHTMLToDom(translation.result.translatedBody));
+			} else {
+				translatedBody.setText(translation.result.translatedBody || "(empty translation)");
+			}
+		}
+		const copyBtn = btns.createEl("button", { cls: "nya-copy-btn", attr: { "aria-label": "复制选中文字或邮件正文" } });
+		setIcon(copyBtn, "copy");
+		copyBtn.createSpan({ text: "复制" });
+		copyBtn.addEventListener("pointerdown", (event) => event.preventDefault());
+		copyBtn.addEventListener("click", () => void this.copyReadText(bodyEl));
 		if (body.attachments?.length) {
 			const atts = host.createDiv("nya-imap-attachments");
 			atts.createDiv({ cls: "nya-imap-attachments-title", text: "Attachments" });
-			for (const a of body.attachments) {
+			for (const att of body.attachments) {
 				const row = atts.createDiv("nya-imap-attachment");
-				if (a.contentType.startsWith("image/")) {
-					row.createEl("img", { attr: { src: `data:${a.contentType};base64,${a.base64}`, alt: a.filename } });
+				if (att.contentType.startsWith("image/") && att.base64) {
+					row.createEl("img", { attr: { src: `data:${att.contentType};base64,${att.base64}`, alt: att.filename } });
 				}
 				const link = row.createEl("a", {
-					href: `data:${a.contentType};base64,${a.base64}`,
-					text: `${a.filename} (${fmtAttachmentSize(a.size)})`,
-					attr: { download: a.filename },
+					text: `${att.filename} (${fmtAttachmentSize(att.size)})`,
 				});
 				link.addClass("nya-imap-attachment-link");
+				if (att.base64) {
+					link.href = `data:${att.contentType};base64,${att.base64}`;
+					link.setAttribute("download", att.filename);
+				} else {
+					link.setAttribute("role", "button");
+					link.setAttribute("title", "Fetch from the server");
+					if (account) {
+						link.addEventListener("click", (event) => {
+							event.preventDefault();
+							void this.downloadAttachment(account, this.selectedFolder, m, att);
+						});
+					}
+				}
 			}
+		}
+	}
+
+	private readSelectionIn(host: HTMLElement): string {
+		const selection = window.getSelection();
+		if (!selection || selection.isCollapsed) return "";
+		const node = selection.anchorNode;
+		if (!node || !host.contains(node)) return "";
+		return selection.toString().trim();
+	}
+
+	private async copyReadText(host: HTMLElement): Promise<void> {
+		const selected = this.readSelectionIn(host);
+		const text = selected || host.innerText.trim();
+		if (!text) {
+			new Notice("NyaHome: nothing to copy.");
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(text);
+			new Notice(selected ? "NyaHome: copied selected text." : "NyaHome: copied message text.");
+		} catch (e) {
+			new Notice(`NyaHome: could not copy text (${e instanceof Error ? e.message : String(e)}).`, 8000);
+		}
+	}
+
+	private async downloadAttachment(a: ImapAccount, folder: string, m: ImapMessage, wanted: { filename: string; contentType: string }) {
+		const notice = new Notice("NyaHome: fetching attachment...", 0);
+		try {
+			const files = await this.plugin.mailService.fetchAttachments(a, folder, m.uid);
+			const file = files.find((f) => f.filename === wanted.filename && f.contentType === wanted.contentType) ?? files.find((f) => f.filename === wanted.filename);
+			if (!file) {
+				new Notice("NyaHome: that attachment is no longer on the message.");
+				return;
+			}
+			const bytes = new Uint8Array(file.content);
+			const url = URL.createObjectURL(new Blob([bytes], { type: file.contentType }));
+			const link = document.createElement("a");
+			link.href = url;
+			link.download = file.filename;
+			link.click();
+			window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+		} catch (e) {
+			new Notice(`NyaHome: could not fetch the attachment (${e instanceof Error ? e.message : String(e)}).`, 8000);
+		} finally {
+			notice.hide();
 		}
 	}
 
@@ -12979,6 +13387,12 @@ class ImapMailView extends ItemView {
 		const cc = kind === "replyAll" ? body.cc : "";
 		const quote = kind === "forward" ? "<p>---------- Forwarded message ----------</p>" : "";
 		const html = `${quote}${quoteMail(body)}`;
+		const needsAttachmentFetch = (body.attachments ?? []).some((att) => att.base64 === undefined);
+		const attachments = kind !== "forward"
+			? []
+			: needsAttachmentFetch
+				? (await this.plugin.mailService.fetchAttachments(a, this.selectedFolder, m.uid)).map((file) => ({ filename: file.filename, contentType: file.contentType, content: file.content }))
+				: (body.attachments ?? []).map((x) => ({ filename: x.filename, contentType: x.contentType, content: Buffer.from(x.base64 ?? "", "base64") }));
 		return {
 			to,
 			cc,
@@ -12986,11 +13400,7 @@ class ImapMailView extends ItemView {
 			subject,
 			html,
 			inReplyTo: kind === "forward" ? undefined : body.messageId,
-			attachments: kind === "forward" ? (body.attachments ?? []).map((x) => ({
-				filename: x.filename,
-				contentType: x.contentType,
-				content: Buffer.from(x.base64, "base64"),
-			})) : [],
+			attachments,
 		};
 	}
 }
@@ -13015,12 +13425,312 @@ class ImapFolderPickModal extends Modal {
 		}
 		for (const f of this.folders) {
 			const row = c.createDiv("nya-imap-folder-pick");
-			row.createSpan({ text: f.name });
+			row.createSpan({ text: imapFolderDisplayName(f) });
 			row.addEventListener("click", () => {
 				this.close();
 				this.onPick(f.path);
 			});
 		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+/** Choose the IMAP folders a body-cache rule applies to. */
+class MailCacheFolderModal extends Modal {
+	constructor(
+		app: App,
+		private plugin: NyaHomePlugin,
+		private initial: MailCacheFolderRef[],
+		private onChange: (folders: MailCacheFolderRef[]) => void
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText("Choose cache folders");
+		const c = this.contentEl;
+		const selected = new Map(this.initial.map((f) => [`${f.accountId}\u0000${f.folderId}`, { ...f }]));
+		for (const a of this.plugin.settings.imapAccounts) {
+			const host = c.createDiv("nya-cache-folder-account");
+			host.createDiv({ cls: "nya-cache-folder-account-name", text: imapLabel(a) });
+			const rows = host.createDiv("nya-cache-folder-rows");
+			rows.createDiv({ cls: "nya-empty", text: "Loading folders..." });
+			void this.plugin.mailService.folderInfosForManagement(a).then((infos) => {
+				rows.empty();
+				if (!infos.length) {
+					rows.createDiv({ cls: "nya-empty", text: "No folders loaded." });
+					return;
+				}
+				for (const info of infos) {
+					const key = `${a.id}\u0000${info.path}`;
+					const row = rows.createDiv("nya-cache-folder-row");
+					const box = row.createEl("input", { type: "checkbox" });
+					box.checked = selected.has(key);
+					box.addEventListener("change", () => {
+						if (box.checked) selected.set(key, { accountId: a.id, folderId: info.path, name: info.name });
+						else selected.delete(key);
+					});
+					row.createSpan({ text: imapFolderDisplayName(info) });
+					row.setAttribute("title", info.path);
+				}
+			});
+		}
+		const btns = c.createDiv("nya-modal-btns");
+		btns.createEl("button", { text: "Done", cls: "mod-cta" }).addEventListener("click", () => {
+			this.onChange([...selected.values()]);
+			this.close();
+		});
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+/** Folder-level cleanup for cached message bodies. It only touches the
+ *  plugin's own cache directory, never mail notes or server messages. */
+class MailCacheManageModal extends Modal {
+	private selected = new Set<string>();
+	private stats: MailCacheStats[] = [];
+
+	constructor(
+		app: App,
+		private plugin: NyaHomePlugin
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText("Manage mail cache");
+		this.render();
+	}
+
+	private render() {
+		const c = this.contentEl;
+		c.empty();
+		const note = c.createDiv({ cls: "nya-cache-note", text: "Scanning cache folders..." });
+		const actions = c.createDiv("nya-modal-btns");
+		const all = actions.createEl("button", { text: "Select all" });
+		const none = actions.createEl("button", { text: "Clear selection" });
+		const strip = actions.createEl("button", { text: "Remove attachment payloads" });
+		const orphans = actions.createEl("button", { text: "Clean orphans" });
+		const clear = actions.createEl("button", { text: "Clear selected", cls: "mod-warning" });
+		const list = c.createDiv("nya-cache-manager-list");
+		all.addEventListener("click", () => {
+			this.selected = new Set(this.stats.map((s) => this.key(s)));
+			this.renderRows(list, note);
+		});
+		none.addEventListener("click", () => {
+			this.selected.clear();
+			this.renderRows(list, note);
+		});
+		strip.addEventListener("click", () => void this.run("strip", list, note));
+		orphans.addEventListener("click", () => void this.run("orphans", list, note));
+		clear.addEventListener("click", () => {
+			const refs = this.refs();
+			if (!refs.length) {
+				new Notice("NyaHome: select at least one folder.");
+				return;
+			}
+			new ConfirmModal(this.app, "Clear cached bodies", `Remove cached message text from ${refs.length} folder${refs.length === 1 ? "" : "s"}?`, "Clear", () =>
+				void this.run("clear", list, note)
+			).open();
+		});
+		void this.load(list, note);
+	}
+
+	private key(s: MailCacheStats): string {
+		return `${s.accountId}\u0000${s.folderId}`;
+	}
+
+	private refs(): MailCacheFolderRef[] {
+		return this.stats
+			.filter((s) => this.selected.has(this.key(s)))
+			.map((s) => ({ accountId: s.accountId, folderId: s.folderId, name: s.folderName }));
+	}
+
+	private async load(list: HTMLElement, note: HTMLElement): Promise<void> {
+		try {
+			const stats = await this.plugin.mailService.cacheStats();
+			this.stats = stats;
+			note.setText(
+				stats.length
+					? `${stats.reduce((sum, s) => sum + s.bodyCount, 0)} cached bodies in ${stats.length} folders.`
+					: "No message bodies are cached yet."
+			);
+			this.renderRows(list, note);
+		} catch (e) {
+			note.setText(`Could not scan the cache (${e instanceof Error ? e.message : String(e)}).`);
+		}
+	}
+
+	private renderRows(list: HTMLElement, note: HTMLElement) {
+		list.empty();
+		if (!this.stats.length) return;
+		for (const stat of this.stats) {
+			const row = new Setting(list).setName(`${stat.accountLabel} · ${stat.folderName}`).setDesc(`${stat.bodyCount} bodies · ${fmtAttachmentSize(stat.bodyBytes)}`);
+			row.addToggle((t) =>
+				t.setValue(this.selected.has(this.key(stat))).onChange((v) => {
+					if (v) this.selected.add(this.key(stat));
+					else this.selected.delete(this.key(stat));
+				})
+			);
+		}
+		note.setText(`${this.selected.size} of ${this.stats.length} folders selected.`);
+	}
+
+	private async run(kind: "strip" | "orphans" | "clear", list: HTMLElement, note: HTMLElement): Promise<void> {
+		const refs = this.refs();
+		if (!refs.length) {
+			new Notice("NyaHome: select at least one folder.");
+			return;
+		}
+		note.setText(kind === "strip" ? "Removing old attachment payloads..." : kind === "orphans" ? "Cleaning orphan bodies..." : "Clearing selected bodies...");
+		try {
+			if (kind === "strip") {
+				const n = await this.plugin.mailService.stripCachedAttachmentData(refs);
+				new Notice(`NyaHome: stripped attachment payloads from ${n} cached message${n === 1 ? "" : "s"}.`);
+			} else if (kind === "orphans") {
+				const n = await this.plugin.mailService.cleanOrphanBodies(refs);
+				new Notice(`NyaHome: removed ${n} orphan cache file${n === 1 ? "" : "s"}.`);
+			} else {
+				const n = await this.plugin.mailService.cleanBodies(refs);
+				new Notice(`NyaHome: cleared body cache for ${n} folder${n === 1 ? "" : "s"}.`);
+			}
+			this.selected.clear();
+			await this.load(list, note);
+		} catch (e) {
+			new Notice(`NyaHome: cache cleanup failed (${e instanceof Error ? e.message : String(e)}).`, 8000);
+			note.setText("Cache cleanup failed.");
+		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+class ImapSpamModal extends Modal {
+	private selected = new Set<number>();
+
+	constructor(
+		app: App,
+		private hits: SpamHit[],
+		private onConfirm: (uids: number[]) => void
+	) {
+		super(app);
+		for (const hit of hits) this.selected.add(hit.message.uid);
+	}
+
+	onOpen() {
+		this.titleEl.setText("识别垃圾邮件");
+		makeMovable(this.app, this, "nyahome:imap-spam", { w: 640, h: 560 });
+		const c = this.contentEl;
+		c.addClass("nya-spam");
+		c.createDiv({ cls: "nya-modal-desc", text: "这些邮件命中了垃圾邮件规则。请确认后再移动到垃圾箱。" });
+		const list = c.createDiv("nya-spam-list");
+		for (const hit of this.hits) {
+			const row = list.createDiv("nya-spam-row");
+			const check = row.createEl("input", { type: "checkbox" });
+			check.checked = this.selected.has(hit.message.uid);
+			check.addEventListener("change", () => {
+				if (check.checked) this.selected.add(hit.message.uid);
+				else this.selected.delete(hit.message.uid);
+				this.renderConfirm();
+			});
+			const mid = row.createDiv("nya-spam-mid");
+			mid.createDiv({ cls: "nya-spam-from", text: hit.message.from || "(unknown sender)" });
+			mid.createDiv({ cls: "nya-spam-subject", text: hit.message.subject });
+			mid.createDiv({ cls: "nya-spam-reasons", text: hit.reasons.join(" · ") });
+			row.createDiv({ cls: "nya-spam-score", text: String(hit.score) });
+			row.addEventListener("click", (e) => {
+				if (e.target === check) return;
+				check.checked = !check.checked;
+				check.dispatchEvent(new Event("change"));
+			});
+		}
+		const btns = c.createDiv("nya-modal-btns");
+		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		this.confirmBtn = btns.createEl("button", { text: "移动到垃圾箱", cls: "mod-warning" });
+		this.confirmBtn.addEventListener("click", () => {
+			if (!this.selected.size) return;
+			this.close();
+			this.onConfirm([...this.selected]);
+		});
+		this.renderConfirm();
+	}
+
+	private confirmBtn: HTMLButtonElement | null = null;
+
+	private renderConfirm() {
+		if (!this.confirmBtn) return;
+		this.confirmBtn.disabled = !this.selected.size;
+		this.confirmBtn.textContent = `移动 ${this.selected.size} 封到垃圾箱`;
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+class ImapTicketModal extends Modal {
+	private selected = new Set<number>();
+
+	constructor(
+		app: App,
+		private hits: TicketHit[],
+		private onConfirm: (uids: number[]) => Promise<void>
+	) {
+		super(app);
+		for (const hit of hits) this.selected.add(hit.message.uid);
+	}
+
+	onOpen() {
+		this.titleEl.setText("票夹");
+		makeMovable(this.app, this, "nyahome:imap-ticket", { w: 640, h: 560 });
+		const c = this.contentEl;
+		c.addClass("nya-spam");
+		c.createDiv({ cls: "nya-modal-desc", text: "这些邮件命中了电子发票关键词。确认后会移入邮箱的“电子发票”文件夹，没有则自动创建。" });
+		const list = c.createDiv("nya-spam-list");
+		for (const hit of this.hits) {
+			const row = list.createDiv("nya-spam-row");
+			const check = row.createEl("input", { type: "checkbox" });
+			check.checked = this.selected.has(hit.message.uid);
+			check.addEventListener("change", () => {
+				if (check.checked) this.selected.add(hit.message.uid);
+				else this.selected.delete(hit.message.uid);
+				this.renderConfirm();
+			});
+			const mid = row.createDiv("nya-spam-mid");
+			mid.createDiv({ cls: "nya-spam-from", text: hit.message.from || "(unknown sender)" });
+			mid.createDiv({ cls: "nya-spam-subject", text: hit.message.subject });
+			mid.createDiv({ cls: "nya-spam-reasons", text: hit.reasons.join(" · ") });
+			row.addEventListener("click", (e) => {
+				if (e.target === check) return;
+				check.checked = !check.checked;
+				check.dispatchEvent(new Event("change"));
+			});
+		}
+		const btns = c.createDiv("nya-modal-btns");
+		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		this.confirmBtn = btns.createEl("button", { text: "移入电子发票", cls: "mod-cta" });
+		this.confirmBtn.addEventListener("click", () => {
+			if (!this.selected.size) return;
+			this.close();
+			void this.onConfirm([...this.selected]);
+		});
+		this.renderConfirm();
+	}
+
+	private confirmBtn: HTMLButtonElement | null = null;
+
+	private renderConfirm() {
+		if (!this.confirmBtn) return;
+		this.confirmBtn.disabled = !this.selected.size;
+		this.confirmBtn.textContent = `移入电子发票 ${this.selected.size} 封`;
 	}
 
 	onClose() {
@@ -13245,6 +13955,7 @@ class SketchNoteModal extends Modal {
 
 	onOpen() {
 		this.titleEl.setText("随笔集");
+		makeMovable(this.app, this, "nyahome:sketch-window", { w: 720, h: 520 });
 		const c = this.contentEl;
 		c.addClass("nya-sketch-modal");
 		const head = c.createDiv("nya-sketch-head");
@@ -13260,10 +13971,67 @@ class SketchNoteModal extends Modal {
 			}).open();
 		});
 		const body = c.createDiv("nya-sketch-body");
-		const text = body.createEl("textarea", { attr: { placeholder: "把灵感随手写在这里..." } });
-		text.value = this.note.text;
-		text.addEventListener("input", () => this.plugin.updateSketchNote(this.note.id, { text: text.value }));
+		const text = body.createDiv("nya-sketch-editor");
+		text.setAttribute("contenteditable", "true");
+		text.setAttribute("data-placeholder", "把灵感随手写在这里...");
+		if (this.note.html) text.appendChild(sanitizeHTMLToDom(this.note.html));
+		else text.setText(this.note.text);
+		const save = () => this.plugin.updateSketchNote(this.note.id, { text: text.innerText, html: text.innerHTML });
+		text.addEventListener("input", save);
+		text.addEventListener("contextmenu", (e) => {
+			const sel = window.getSelection();
+			const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+			if (!sel || !range || sel.isCollapsed || !text.contains(range.commonAncestorContainer)) return;
+			e.preventDefault();
+			e.stopPropagation();
+			const selectedRange = range.cloneRange();
+			const source = selectedRange.toString().trim();
+			if (!source) return;
+			const menu = new Menu();
+			menu.addItem((i) =>
+				i
+					.setTitle("翻译")
+					.setIcon("languages")
+					.onClick(() => void this.translateSelection(text, selectedRange, source, save))
+			);
+			menu.addSeparator();
+			menu.addItem((i) =>
+				i
+					.setTitle("删除线")
+					.setIcon("strikethrough")
+					.onClick(() => {
+						text.focus();
+						document.execCommand("strikeThrough", false);
+						save();
+					})
+			);
+			menu.showAtMouseEvent(e);
+		});
 		window.setTimeout(() => text.focus(), 20);
+	}
+
+	private async translateSelection(text: HTMLElement, range: Range, source: string, save: () => void) {
+		try {
+			new Notice("NyaHome: translating...");
+			const translated = await this.plugin.translationManager.translatePlainText(source);
+			if (!range.startContainer.isConnected || !range.endContainer.isConnected) return;
+			if (!text.contains(range.startContainer) || !text.contains(range.endContainer)) return;
+			text.focus();
+			const selection = window.getSelection();
+			selection?.removeAllRanges();
+			selection?.addRange(range);
+			range.deleteContents();
+			const node = document.createTextNode(translated);
+			range.insertNode(node);
+			range.setStartAfter(node);
+			range.collapse(true);
+			selection?.removeAllRanges();
+			selection?.addRange(range);
+			save();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			new Notice(`NyaHome: translation failed (${message}).`);
+		}
 	}
 
 	onClose() {
@@ -13273,7 +14041,7 @@ class SketchNoteModal extends Modal {
 
 /* ---------------- the calendar view ---------------- */
 
-const HOUR_H = 48;
+const HOUR_H = 40;
 
 class PowerCalendarView extends ItemView {
 	private mode: ViewMode;
@@ -13290,6 +14058,8 @@ class PowerCalendarView extends ItemView {
 	private dayLabelEl: HTMLElement | null = null;
 	/** The event being dragged between month cells (HTML5 drag & drop). */
 	private monthDragEv: PCEvent | null = null;
+	/** The sketch note being dragged between week/day columns. */
+	private sketchDragNote: SketchNote | null = null;
 	private sidebarEl!: HTMLElement;
 	private fullscreen = false;
 	/** The sidebar mini-month's own month, navigable without moving the view. */
@@ -13411,6 +14181,7 @@ class PowerCalendarView extends ItemView {
 			if (e.target instanceof Node && newCaret.contains(e.target)) {
 				const menu = new Menu();
 				menu.addItem((i) => i.setTitle("Event").onClick(() => this.quickCreate()));
+				menu.addItem((i) => i.setTitle("新建随笔集").setIcon("sticky-note").onClick(() => this.promptNewSketchNote(this.sketchCreateKey())));
 				menu.addItem((i) => i.setTitle("Mail").onClick(() => this.plugin.openNewMailCompose()));
 				menu.showAtMouseEvent(e);
 				return;
@@ -14103,6 +14874,19 @@ class PowerCalendarView extends ItemView {
 		this.openEventModal(null, start, start + 30 * 60000, false);
 	}
 
+	private sketchCreateKey(): string {
+		const s = this.plugin.settings;
+		const win = viewWindow(this.mode, this.anchorKey, s.weekStartsMonday, s.agendaDays, s.dayViewDays);
+		return this.todayKey >= win.fromKey && this.todayKey <= win.toKey ? this.todayKey : this.anchorKey;
+	}
+
+	private promptNewSketchNote(key: string) {
+		new PromptModal(this.app, "新建随笔集", [{ label: "标题", value: "", placeholder: "灵感" }], ([title]) => {
+			if (!title.trim()) return;
+			this.plugin.createSketchNote(title, key);
+		}).open();
+	}
+
 	private openEventModal(ev: PCEvent | null, startMs: number, endMs: number, allDay: boolean, prefill?: { title?: string; location?: string; invites?: string }) {
 		new EventModal(this.app, this.plugin, ev, startMs, endMs, allDay, prefill).open();
 	}
@@ -14246,7 +15030,7 @@ class PowerCalendarView extends ItemView {
 			el.dataset.key = cell.key;
 			cellMap.set(cell.key, el);
 			el.addEventListener("dragover", (e) => {
-				if (!this.monthDragEv) return;
+				if (!this.monthDragEv && !this.sketchDragNote) return;
 				e.preventDefault();
 				el.addClass("is-droptarget");
 			});
@@ -14254,9 +15038,15 @@ class PowerCalendarView extends ItemView {
 			el.addEventListener("drop", () => {
 				el.removeClass("is-droptarget");
 				const ev = this.monthDragEv;
+				const note = this.sketchDragNote;
 				this.monthDragEv = null;
-				if (!ev) return;
+				this.sketchDragNote = null;
 				const targetKey = el.dataset.key;
+				if (note && targetKey && note.date !== targetKey) {
+					this.plugin.moveSketchNote(note.id, targetKey);
+					return;
+				}
+				if (!ev) return;
 				if (!targetKey || dayDiff(keyOfMs(ev.startMs), targetKey) === 0) return;
 				// same wall-clock time, shifted to the dropped day
 				const newStart = msOfKey(targetKey) + minutesOfMs(ev.startMs) * 60000;
@@ -14290,7 +15080,7 @@ class PowerCalendarView extends ItemView {
 			const timed = timedOnDay(events, cell.key);
 			const cap = 4;
 			for (const ev of timed.slice(0, cap)) this.renderChip(chipArea, ev);
-			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === cell.key) ?? []) this.renderSketchChip(chipArea, note);
+			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === cell.key) ?? []) this.renderSketchChip(chipArea, note, "month");
 			if (timed.length > cap) {
 				const more = chipArea.createEl("button", { cls: "nya-more-btn", text: `+${timed.length - cap} more` });
 				more.addEventListener("click", () => this.goDay(cell.key));
@@ -14365,23 +15155,32 @@ class PowerCalendarView extends ItemView {
 			i
 				.setTitle("新建随笔集")
 				.setIcon("sticky-note")
-				.onClick(() =>
-					new PromptModal(this.app, "新建随笔集", [{ label: "标题", value: "", placeholder: "灵感" }], ([title]) => {
-						if (!title.trim()) return;
-						this.plugin.createSketchNote(title, key);
-					}).open()
-				)
+				.onClick(() => this.promptNewSketchNote(key))
 		);
 		menu.showAtMouseEvent(e);
 	}
 
-	private renderSketchChip(parent: HTMLElement, note: SketchNote) {
-		const chip = parent.createDiv("nya-chip nya-sketch-chip");
-		const icon = chip.createSpan("nya-sketch-icon");
-		setIcon(icon, "sticky-note");
-		chip.toggleClass("is-starred", false);
-		chip.createSpan({ cls: "nya-chip-time", text: "随笔" });
-		chip.createSpan({ cls: "nya-chip-title", text: note.title });
+	private renderSketchChip(parent: HTMLElement, note: SketchNote, variant: "month" | "strip" = "month") {
+		const chip = parent.createDiv(`nya-chip nya-sketch-chip is-${variant}`);
+		chip.setAttribute("aria-label", `随笔：${note.title}`);
+		if (variant === "month") {
+			const title = chip.createSpan({ cls: "nya-chip-title", text: note.title });
+			title.setAttribute("title", note.title);
+		} else {
+			const title = chip.createDiv({ cls: "nya-chip-title", text: note.title });
+			title.setAttribute("title", note.title);
+			const preview = stripHtml(note.html ?? note.text).trim().split(/\r?\n/)[0];
+			if (preview) chip.createDiv({ cls: "nya-chip-note", text: preview });
+		}
+		chip.draggable = true;
+		chip.addEventListener("dragstart", () => {
+			this.sketchDragNote = note;
+			chip.addClass("is-dragging");
+		});
+		chip.addEventListener("dragend", () => {
+			chip.removeClass("is-dragging");
+			this.sketchDragNote = null;
+		});
 		chip.addEventListener("dblclick", () => new SketchNoteModal(this.app, this.plugin, note).open());
 		chip.addEventListener("contextmenu", (e) => {
 			e.preventDefault();
@@ -14414,7 +15213,20 @@ class PowerCalendarView extends ItemView {
 				e.stopPropagation();
 				this.openBlankAreaMenu(key, e);
 			});
-			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === key) ?? []) this.renderSketchChip(cell, note);
+			cell.addEventListener("dragover", (e) => {
+				if (!this.sketchDragNote) return;
+				e.preventDefault();
+				cell.addClass("is-droptarget");
+			});
+			cell.addEventListener("dragleave", () => cell.removeClass("is-droptarget"));
+			cell.addEventListener("drop", () => {
+				cell.removeClass("is-droptarget");
+				const note = this.sketchDragNote;
+				this.sketchDragNote = null;
+				if (!note) return;
+				if (note.date !== key) this.plugin.moveSketchNote(note.id, key);
+			});
+			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === key) ?? []) this.renderSketchChip(cell, note, "strip");
 		}
 	}
 
@@ -14484,19 +15296,50 @@ class PowerCalendarView extends ItemView {
 			strip.createDiv({ cls: "nya-gutter-spacer nya-allday-label", text: "all-day" });
 			const lanesEl = strip.createDiv("nya-allday-lanes");
 			const laneCount = spans.reduce((m, sp) => Math.max(m, sp.lane + 1), 0);
-			lanesEl.style.height = `${laneCount * 24 + 2}px`;
+			lanesEl.style.height = `${laneCount * 30 + 2}px`;
+			lanesEl.addEventListener("dragover", (e) => {
+				if (!this.monthDragEv) return;
+				e.preventDefault();
+				lanesEl.addClass("is-droptarget");
+			});
+			lanesEl.addEventListener("dragleave", () => lanesEl.removeClass("is-droptarget"));
+			lanesEl.addEventListener("drop", (e) => {
+				lanesEl.removeClass("is-droptarget");
+				const ev = this.monthDragEv;
+				this.monthDragEv = null;
+				if (!ev) return;
+				const rect = lanesEl.getBoundingClientRect();
+				const idx = Math.max(0, Math.min(days.length - 1, Math.floor(((e.clientX - rect.left) / rect.width) * days.length)));
+				const targetKey = days[idx];
+				if (!targetKey || dayDiff(keyOfMs(ev.startMs), targetKey) === 0) return;
+				const newStart = msOfKey(targetKey) + minutesOfMs(ev.startMs) * 60000;
+				void this.plugin.moveEvent(ev, newStart, newStart + (ev.endMs - ev.startMs));
+			});
 			for (const sp of spans) {
 				const el = lanesEl.createDiv("nya-span");
 				el.style.left = `calc(${(sp.startIdx / days.length) * 100}% + 2px)`;
 				el.style.width = `calc(${((sp.endIdx - sp.startIdx + 1) / days.length) * 100}% - 4px)`;
-				el.style.top = `${sp.lane * 24}px`;
+				el.style.top = `${sp.lane * 30}px`;
 				this.paintEventEl(el, sp.ev);
 				el.toggleClass("continues-left", !sp.startsHere);
 				el.toggleClass("continues-right", !sp.endsHere);
 				el.createSpan({ cls: "nya-span-title", text: sp.ev.title });
+				const sub = [sp.ev.calendarName, sp.ev.location].filter(Boolean).join(" · ");
+				if (sub) el.createDiv({ cls: "nya-span-sub", text: sub });
 				if (this.plugin.noteExistsFor(sp.ev)) el.addClass("has-note");
 				el.addEventListener("click", (e) => this.openCard(sp.ev, e.currentTarget as HTMLElement));
 				this.attachQuickDelete(el, sp.ev);
+				if (sp.ev.canEdit) {
+					el.draggable = true;
+					el.addEventListener("dragstart", () => {
+						this.monthDragEv = sp.ev;
+						el.addClass("is-dragging");
+					});
+					el.addEventListener("dragend", () => {
+						el.removeClass("is-dragging");
+						this.monthDragEv = null;
+					});
+				}
 			}
 		}
 
@@ -15399,7 +16242,7 @@ class EventModal extends Modal {
 	onOpen() {
 		this.titleEl.setText(this.ev ? "Edit event" : "New event");
 		this.modalEl.addClass("nya-event-window");
-		makeMovable(this.app, this, "nyahome:event-window", { w: 780, h: 620 });
+		makeMovable(this.app, this, "nyahome:event-window", { w: 780, h: 650 });
 		const c = this.contentEl;
 		c.addClass("nya-event-modal");
 		let titleInput: HTMLInputElement | null = null;
@@ -15407,6 +16250,7 @@ class EventModal extends Modal {
 		const titleRow = top.createDiv("nya-event-title-row");
 		new Setting(titleRow).setName(t("Title")).addText((field) => {
 			titleInput = field.inputEl;
+			field.inputEl.addClass("nya-event-title-input");
 			field.setPlaceholder(t("Event title")).setValue(this.etitle).onChange((v) => (this.etitle = v));
 			field.inputEl.addEventListener("keydown", (e) => {
 				if (e.key === "Enter") {
@@ -17693,6 +18537,65 @@ class NyaHomeSettingTab extends PluginSettingTab {
 		};
 	}
 
+	/** A small chip editor for a list setting. It keeps bulk entry possible
+	 *  through commas and semicolons, while making individual removal obvious. */
+	private buildSpamKeywordEditor(st: Setting) {
+		const s = this.plugin.settings;
+		const editor = st.controlEl.createDiv("nya-keyword-editor");
+		const addRow = editor.createDiv("nya-keyword-addrow");
+		const input = addRow.createEl("input", {
+			cls: "nya-keyword-input",
+			attr: { type: "text", placeholder: "输入关键词后回车添加，可用逗号分隔多个词" },
+		});
+		const addBtn = addRow.createEl("button", { cls: "mod-cta nya-keyword-add", text: "添加" });
+		const chips = editor.createDiv("nya-keyword-chips");
+		const meta = editor.createDiv("nya-keyword-meta");
+		const actions = editor.createDiv("nya-keyword-actions");
+		const resetBtn = actions.createEl("button", { cls: "nya-keyword-reset", text: "恢复默认" });
+		const clearBtn = actions.createEl("button", { cls: "nya-keyword-clear", text: "清空" });
+
+		const current = () => normalizeSpamKeywords(s.imapSpamKeywords ?? []);
+		const commit = (next: readonly string[]) => {
+			s.imapSpamKeywords = normalizeSpamKeywords(next);
+			this.plugin.queueSave();
+			render();
+		};
+		const parse = (value: string) => normalizeSpamKeywords(value.split(/[\r\n,;]+/));
+		const add = () => {
+			const values = parse(input.value);
+			if (!values.length) return;
+			commit([...current(), ...values]);
+			input.value = "";
+			input.focus();
+		};
+		const render = () => {
+			const list = current();
+			chips.empty();
+			if (!list.length) chips.createSpan({ cls: "nya-keyword-empty", text: "还没有敏感词" });
+			for (const keyword of list) {
+				const chip = chips.createSpan("nya-keyword-chip");
+				chip.createSpan({ cls: "nya-keyword-chip-text", text: keyword });
+				const remove = chip.createEl("button", {
+					cls: "nya-keyword-chip-remove",
+					attr: { type: "button", "aria-label": `删除关键词 ${keyword}` },
+					text: "×",
+				});
+				remove.addEventListener("click", () => commit(list.filter((x) => x !== keyword)));
+			}
+			meta.setText(`${list.length} 个关键词 · 命中后仍由你确认是否移动邮件`);
+		};
+
+		input.addEventListener("keydown", (event) => {
+			if (event.key !== "Enter") return;
+			event.preventDefault();
+			add();
+		});
+		addBtn.addEventListener("click", add);
+		resetBtn.addEventListener("click", () => commit(DEFAULT_SPAM_KEYWORDS));
+		clearBtn.addEventListener("click", () => commit([]));
+		render();
+	}
+
 	/** The Microsoft accounts, each expanding to its name, inbox, and calendars. */
 	private drawGraphAccounts() {
 		const host = this.graphHost;
@@ -18467,6 +19370,29 @@ class NyaHomeSettingTab extends PluginSettingTab {
 					);
 				},
 			},
+			{
+				name: "Spam blacklist",
+				desc: "One sender, domain, or keyword per line. Anything matching is treated as a strong spam signal.",
+				help: "Used by the IMAP spam scanner when you click the spam button in the mail header. It never moves mail by itself; the scanner only suggests a list you confirm.",
+				build: (st) => {
+					st.addTextArea((t) =>
+						t
+							.setPlaceholder("ads@example.com\nspam.net\n中奖")
+							.setValue((s.imapSpamBlacklist ?? []).join("\n"))
+							.onChange((v) => {
+								s.imapSpamBlacklist = v.split(/[\r\n,;]+/).map((x) => x.trim()).filter(Boolean);
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "垃圾邮件敏感词",
+				aliases: ["spam sensitive words", "keywords", "敏感词", "关键词"],
+				desc: "用标签管理关键词。命中主题或摘要后只会进入确认列表，不会自动移动邮件。",
+				help: "默认包含邮件拦截提醒、已用流量、愿望单上的、一次性、登入、Epic、验证、Steam、verify。可以添加自己的词，也可以逐项删除；大小写不敏感，重复项会自动合并。",
+				build: (st) => this.buildSpamKeywordEditor(st),
+			},
 		];
 
 		/* ---------------- ICS feeds ---------------- */
@@ -18858,6 +19784,83 @@ class NyaHomeSettingTab extends PluginSettingTab {
 
 		/* ---------------- Mail ---------------- */
 
+		const cache = s.mailCache;
+		const cacheFolderLabel = () => (cache.folderMode === "all" ? "Every ordinary folder" : `${cache.folders.length} selected`);
+		const mailCache: Row[] = [
+			intro("Cache IMAP message bodies on this device so mail opens instantly. Attachments are never cached as files; downloading one fetches it from the server again."),
+			{
+				name: "Cache message bodies",
+				desc: "Keep message text locally. Folder lists still sync so counts and structure stay current.",
+				aliases: ["offline", "imap cache", "mail cache"],
+				build: (st) => {
+					st.addToggle((t) => t.setValue(cache.enabled).onChange((v) => ((cache.enabled = v), save())));
+				},
+			},
+			{
+				name: "Cache scope",
+				desc: cacheFolderLabel(),
+				aliases: ["cache folders", "exclude folders", "selected folders"],
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ all: "All ordinary folders", exclude: "Exclude folders", selected: "Only folders I choose" })
+							.setValue(cache.folderMode)
+							.onChange((v) => {
+								cache.folderMode = v as MailCacheFolderMode;
+								st.setDesc(cacheFolderLabel());
+								save();
+							})
+					);
+					st.addButton((b) =>
+						b.setButtonText("Choose folders").onClick(() => {
+							new MailCacheFolderModal(this.app, this.plugin, cache.folders, (folders) => {
+								cache.folders = folders;
+								save();
+								this.refresh();
+							}).open();
+						})
+					);
+				},
+			},
+			{
+				name: "Skip spam and trash",
+				desc: "Junk, spam, trash, and deleted folders stay metadata-only.",
+				help: "Their folder lists still appear in the mail tree, but message bodies are not written to the local cache. Opening one reads it from the server without persisting it.",
+				build: (st) => {
+					st.addToggle((t) => t.setValue(cache.skipSpamAndTrash).onChange((v) => ((cache.skipSpamAndTrash = v), save())));
+				},
+			},
+			{
+				name: "Attachment metadata",
+				desc: cache.attachmentPolicy === "metadata" ? "Keep names and sizes" : "Hide attachment metadata",
+				help: "Metadata means the reading pane can show that a file exists and how large it is, while the file itself is fetched only when needed. None hides the attachment list as well.",
+				build: (st) => {
+					st.addDropdown((d) =>
+						d
+							.addOptions({ metadata: "Keep names and sizes", none: "Hide attachment metadata" })
+							.setValue(cache.attachmentPolicy)
+							.onChange((v) => {
+								cache.attachmentPolicy = v as MailCacheSettings["attachmentPolicy"];
+								st.setDesc(cache.attachmentPolicy === "metadata" ? "Keep names and sizes" : "Hide attachment metadata");
+								save();
+							})
+					);
+				},
+			},
+			{
+				name: "Manage cache",
+				desc: "Inspect folders, remove old attachment payloads, clean orphan bodies, or clear selected folders.",
+				aliases: ["clean cache", "clear cache", "cache size"],
+				build: (st) => {
+					st.addButton((b) => b.setButtonText("Open manager").onClick(() => new MailCacheManageModal(this.app, this.plugin).open()));
+				},
+			},
+		];
+
+		/* ---------------- Translation ---------------- */
+
+		const translationRows: Row[] = new TranslationSettingsTab(this.app, this.plugin.translationManager, this.plugin).buildRows();
+
 		const mail: Row[] = [
 			{
 				name: "When mail opens",
@@ -18896,12 +19899,12 @@ class NyaHomeSettingTab extends PluginSettingTab {
 			{
 				name: "Mail history",
 				desc: `Pull the last ${s.mailHistoryDays} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`,
-				help: "How far back mail is pulled. This is also the ceiling on what Power Assistant's 'Ask your email' can search, because that window only ever indexes messages this plugin has already fetched. Raising it makes the next sync fetch more, once.",
+				help: "How far back mail is pulled, up to 7300 days (about 20 years). This is also the ceiling on what Power Assistant's 'Ask your email' can search, because that window only ever indexes messages this plugin has already fetched. Raising it makes the next sync fetch more, once; set it near 7300 for old QQ mail.",
 				build: (st) => {
 					st.addSlider((sl) =>
 						showSliderValue(sl)
-							.setLimits(7, 365, 1)
-							.setValue(Math.min(365, Math.max(7, s.mailHistoryDays || 45)))
+							.setLimits(7, 7300, 1)
+							.setValue(Math.min(7300, Math.max(7, s.mailHistoryDays || 45)))
 							.onChange((v) => {
 								s.mailHistoryDays = v;
 								st.setDesc(`Pull the last ${v} days of mail. Also sets how far back Power Assistant's "Ask your email" can reach, since it searches only what is cached here.`);
@@ -19369,7 +20372,19 @@ class NyaHomeSettingTab extends PluginSettingTab {
 					{ heading: "Weather", rows: weather },
 				],
 			},
-			{ id: "mail", label: "Mail", groups: [{ heading: "Mail", rows: mail }] },
+			{
+				id: "mail",
+				label: "Mail",
+				groups: [
+					{ heading: "Mail", rows: mail },
+					{ heading: "Mail cache", rows: mailCache },
+				],
+			},
+			{
+				id: "translation",
+				label: "Translation",
+				groups: [{ heading: "Translation", rows: translationRows }],
+			},
 			{
 				id: "connected",
 				label: "Connected services",

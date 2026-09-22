@@ -9,15 +9,42 @@ import {
 	imapLabel,
 	parseMessage,
 	sendImapMail,
+	SmtpAttachment,
 	SmtpMail,
 } from "./imap";
+import {
+	MailCacheFolderRef,
+	MailCacheSettings,
+	MailCacheStats,
+	shouldCacheMailFolder,
+} from "./mail-cache";
 import { decryptSecret } from "./secret";
+import { invoiceReasons, parseRawHeaders, plainTextForSpam, scoreSpam, SPAM_THRESHOLD } from "./spam";
 
 interface ImapHost {
 	app: App;
-	settings: { imapAccounts: ImapAccount[]; mailDebugLog: boolean };
+	settings: { imapAccounts: ImapAccount[]; mailDebugLog: boolean; imapSpamBlacklist?: string[]; imapSpamKeywords?: string[]; mailHistoryDays?: number; mailCache?: MailCacheSettings };
 	manifest: { id: string };
 }
+
+export interface SpamHit {
+	message: ImapMessage;
+	score: number;
+	reasons: string[];
+}
+
+export interface TicketHit {
+	message: ImapMessage;
+	reasons: string[];
+}
+
+export interface FolderScan {
+	spam: SpamHit[];
+	invoices: TicketHit[];
+}
+
+const INVOICE_FOLDER_NAME = "电子发票";
+const SPAM_BODY_SAMPLE_BYTES = 64 * 1024;
 
 interface ImapFolderCache {
 	accountId: string;
@@ -215,12 +242,23 @@ export class ImapMailService {
 					cache.lastUid = 0;
 				}
 				const have = new Set(cache.messages.map((m) => m.uid));
+				let historyUids: number[] | null = null;
+				const historyDays = Math.min(7300, Math.max(7, this.host.settings.mailHistoryDays || 45));
+				try {
+					const since = new Date(Date.now() - historyDays * 86400000);
+					const found = await client.search({ since }, { uid: true });
+					if (Array.isArray(found)) historyUids = found.map(Number);
+				} catch {
+					// A provider that refuses the date search still gets the
+					// ordinary all-mail pass below.
+				}
 				let serverUids: number[] = [];
 				if (exists) serverUids = ((await client.search({ all: true }, { uid: true })) ?? []).map(Number);
 				else cache.messages = [];
+				const history = historyUids ?? serverUids.slice(-1000);
 				const wanted = cache.messages.length
-					? serverUids.filter((uid) => !have.has(uid) && uid >= cache.lastUid + 1)
-					: serverUids.slice(-1000);
+					? [...new Set([...history.filter((uid) => !have.has(uid)), ...serverUids.filter((uid) => !have.has(uid) && uid >= cache.lastUid + 1)])]
+					: history;
 				const fetched: ImapMessage[] = [];
 				if (wanted.length) {
 					const chunks: number[][] = [];
@@ -261,12 +299,14 @@ export class ImapMailService {
 			const cached = await this.readCache<ImapBody>(this.bodyPath(a, folder, uid));
 			if (cached) return cached;
 			const out = await this.fetchBody(a, folder, uid);
-			await this.writeCache(this.bodyPath(a, folder, uid), out);
-			const cache = await this.getFolderCache(a, folder);
-			const m = cache.messages.find((x) => x.uid === uid);
-			if (m) {
-				this.patchMessageBody(m, out);
-				await this.saveFolderCache(cache);
+			if (this.shouldCacheBody(a, folder)) {
+				await this.writeCache(this.bodyPath(a, folder, uid), this.cacheableBody(out));
+				const cache = await this.getFolderCache(a, folder);
+				const m = cache.messages.find((x) => x.uid === uid);
+				if (m) {
+					this.patchMessageBody(m, out);
+					await this.saveFolderCache(cache);
+				}
 			}
 			return out;
 		});
@@ -276,10 +316,28 @@ export class ImapMailService {
 		return `${this.baseDir()}/${this.safe(a.id)}/bodies/${this.safe(folder)}/${uid}.json`;
 	}
 
+	private bodyDir(a: ImapAccount, folder: string): string {
+		return `${this.baseDir()}/${this.safe(a.id)}/bodies/${this.safe(folder)}`;
+	}
+
+	private cacheableBody(body: ImapBody): ImapBody {
+		if (this.host.settings.mailCache?.attachmentPolicy === "none") return { ...body, attachments: undefined };
+		if (!body.attachments?.some((a) => a.base64 !== undefined)) return body;
+		return {
+			...body,
+			attachments: body.attachments.map(({ base64: _base64, ...meta }) => meta),
+		};
+	}
+
+	private shouldCacheBody(a: ImapAccount, folder: string, info?: ImapFolderInfo): boolean {
+		const known = info ?? this.folderLists.get(a.id)?.folders.find((f) => f.path === folder);
+		return shouldCacheMailFolder(folder, a.id, known?.specialUse ?? "", this.host.settings.mailCache);
+	}
+
 	private patchMessageBody(m: ImapMessage, out: ImapBody) {
 		m.bodyLoaded = true;
 		m.snippet = out.text.slice(0, 160);
-		if (!out.attachments?.length) m.hasAttachment = false;
+		if (out.attachments && !out.attachments.length) m.hasAttachment = false;
 	}
 
 	private async fetchBody(a: ImapAccount, folder: string, uid: number): Promise<ImapBody> {
@@ -298,12 +356,16 @@ export class ImapMailService {
 				subject: String(parsed.subject ?? ""),
 				date: parsed.date ? new Date(parsed.date).toISOString() : "",
 				messageId: String(parsed.messageId ?? ""),
-				attachments: (parsed.attachments ?? []).map((att: any) => ({
-					filename: String(att.filename ?? "attachment"),
-					contentType: String(att.contentType ?? "application/octet-stream"),
-					size: Number(att.size ?? 0),
-					base64: Buffer.from(att.content ?? Buffer.alloc(0)).toString("base64"),
-				})),
+				attachments: this.host.settings.mailCache?.attachmentPolicy === "none"
+					? undefined
+					: (parsed.attachments ?? []).map((att: any) => ({
+							filename: String(att.filename ?? "attachment"),
+							contentType: String(att.contentType ?? "application/octet-stream"),
+							size: Number(att.size ?? 0),
+							partId: att.partId ? String(att.partId) : undefined,
+							contentId: att.contentId ? String(att.contentId) : undefined,
+							base64: Buffer.from(att.content ?? Buffer.alloc(0)).toString("base64"),
+						})),
 			};
 		} finally {
 			lock.release();
@@ -317,14 +379,16 @@ export class ImapMailService {
 		const cached = await this.readCache<ImapBody>(this.bodyPath(a, folder, uid));
 		if (cached) return;
 		const out = await this.fetchBody(a, folder, uid);
-		await this.writeCache(this.bodyPath(a, folder, uid), out);
+		if (!this.shouldCacheBody(a, folder)) return;
+		await this.writeCache(this.bodyPath(a, folder, uid), this.cacheableBody(out));
 		const cache = await this.getFolderCache(a, folder);
 		const m = cache.messages.find((x) => x.uid === uid);
 		if (m) this.patchMessageBody(m, out);
 	}
 
-	/** Cache every message body of every folder of every account. Lists were
-	 *  already cached; this is what makes opening a mail instant and offline. */
+	/** Cache every permitted message body of every folder of every account.
+	 *  Lists are already cached; this makes opening mail instant and offline,
+	 *  while spam and trash stay metadata-only by default. */
 	async cacheAllMail(onProgress?: (label: string, done: number, total: number) => void): Promise<{ accounts: number; folders: number; bodies: number }> {
 		let folderCount = 0;
 		let bodies = 0;
@@ -334,7 +398,7 @@ export class ImapMailService {
 				for (const f of infos) {
 					const msgs = await this.syncFolder(a, f.path);
 					folderCount++;
-					const todo = msgs.filter((m) => !m.bodyLoaded);
+					const todo = this.shouldCacheBody(a, f.path, f) ? msgs.filter((m) => !m.bodyLoaded) : [];
 					let done = 0;
 					for (const m of todo) {
 						try {
@@ -368,6 +432,253 @@ export class ImapMailService {
 		});
 	}
 
+	/** Fetch attachment bytes again for a message whose body is cached without
+	 *  payloads. This is the deliberate cost of keeping large files off disk. */
+	async fetchAttachments(a: ImapAccount, folder: string, uid: number): Promise<SmtpAttachment[]> {
+		const body = await this.fetchBody(a, folder, uid);
+		return (body.attachments ?? [])
+			.filter((att) => !!att.base64)
+			.map((att) => ({ filename: att.filename, contentType: att.contentType, content: Buffer.from(att.base64 ?? "", "base64") }));
+	}
+
+	/** Folder metadata for management screens, preferring the local list so
+	 *  cache cleanup also works while the mailbox is offline. */
+	async folderInfosForManagement(a: ImapAccount): Promise<ImapFolderInfo[]> {
+		const memory = this.folderLists.get(a.id)?.folders ?? [];
+		if (memory.length) return memory;
+		const disk = (await this.readCache<ImapFolderListCache>(this.folderListPath(a)))?.folders ?? [];
+		if (disk.length) return disk;
+		try {
+			return await this.refreshFolderInfos(a);
+		} catch {
+			return [];
+		}
+	}
+
+	private matchesCacheRefs(refs: MailCacheFolderRef[] | null, accountId: string, folder: string): boolean {
+		return !refs?.length || refs.some((r) => r.accountId === accountId && r.folderId === folder);
+	}
+
+	async cacheStats(): Promise<MailCacheStats[]> {
+		const out: MailCacheStats[] = [];
+		for (const a of this.host.settings.imapAccounts) {
+			for (const info of await this.folderInfosForManagement(a)) {
+				const dir = this.bodyDir(a, info.path);
+				try {
+					if (!(await this.host.app.vault.adapter.exists(dir))) continue;
+					const listing = await this.host.app.vault.adapter.list(dir);
+					const files = listing.files.filter((path: string) => path.endsWith(".json"));
+					let bytes = 0;
+					for (const file of files) {
+						try {
+							bytes += (await this.host.app.vault.adapter.stat(file))?.size ?? 0;
+						} catch {
+							/* a file removed during the scan simply does not count */
+						}
+					}
+					out.push({ accountId: a.id, accountLabel: imapLabel(a), folderId: info.path, folderName: info.name, bodyCount: files.length, bodyBytes: bytes });
+				} catch {
+					/* unreadable folders are skipped rather than breaking the modal */
+				}
+			}
+		}
+		return out;
+	}
+
+	async cleanBodies(refs: MailCacheFolderRef[]): Promise<number> {
+		let removed = 0;
+		for (const a of this.host.settings.imapAccounts) {
+			for (const info of await this.folderInfosForManagement(a)) {
+				if (!this.matchesCacheRefs(refs, a.id, info.path)) continue;
+				const dir = this.bodyDir(a, info.path);
+				try {
+					if (!(await this.host.app.vault.adapter.exists(dir))) continue;
+					await this.host.app.vault.adapter.rmdir(dir, true);
+					removed++;
+				} catch (e) {
+					console.warn(`NyaHome: could not clean mail body cache for ${info.path} (${imapLabel(a)}).`, e);
+				}
+			}
+		}
+		return removed;
+	}
+
+	/** Keep the words, drop old attachment payloads already written by earlier
+	 *  versions. This never touches a message on the server. */
+	async stripCachedAttachmentData(refs: MailCacheFolderRef[]): Promise<number> {
+		let stripped = 0;
+		for (const a of this.host.settings.imapAccounts) {
+			for (const info of await this.folderInfosForManagement(a)) {
+				if (!this.matchesCacheRefs(refs, a.id, info.path)) continue;
+				const dir = this.bodyDir(a, info.path);
+				try {
+					if (!(await this.host.app.vault.adapter.exists(dir))) continue;
+					const listing = await this.host.app.vault.adapter.list(dir);
+					for (const file of listing.files.filter((path: string) => path.endsWith(".json"))) {
+						const parsed = await this.readCache<any>(file);
+						if (!parsed?.attachments?.length || !parsed.attachments.some((att: any) => typeof att.base64 === "string")) continue;
+						parsed.attachments = parsed.attachments.map(({ base64: _base64, ...meta }: any) => meta);
+						await this.host.app.vault.adapter.write(file, JSON.stringify(parsed));
+						stripped++;
+					}
+				} catch (e) {
+					console.warn(`NyaHome: could not strip cached attachment data for ${info.path} (${imapLabel(a)}).`, e);
+				}
+			}
+		}
+		return stripped;
+	}
+
+	/** Remove body files whose UID no longer appears in that folder's list. */
+	async cleanOrphanBodies(refs: MailCacheFolderRef[]): Promise<number> {
+		let removed = 0;
+		for (const a of this.host.settings.imapAccounts) {
+			for (const info of await this.folderInfosForManagement(a)) {
+				if (!this.matchesCacheRefs(refs, a.id, info.path)) continue;
+				const dir = this.bodyDir(a, info.path);
+				try {
+					if (!(await this.host.app.vault.adapter.exists(dir))) continue;
+					const cache = await this.readCache<ImapFolderCache>(this.cachePath(a, info.path));
+					const live = new Set((cache?.messages ?? []).map((m) => `${m.uid}.json`));
+					const listing = await this.host.app.vault.adapter.list(dir);
+					for (const file of listing.files.filter((path: string) => path.endsWith(".json"))) {
+						if (live.has(file.split("/").pop() ?? "")) continue;
+						await this.host.app.vault.adapter.remove(file);
+						removed++;
+					}
+				} catch (e) {
+					console.warn(`NyaHome: could not clean orphan mail cache for ${info.path} (${imapLabel(a)}).`, e);
+				}
+			}
+		}
+		return removed;
+	}
+
+	/** Make sure the invoice mailbox exists, creating it on demand. */
+	async ensureInvoiceFolder(a: ImapAccount): Promise<string> {
+		const folders = await this.refreshFolderInfos(a);
+		const found = folders.find((f) => f.name === INVOICE_FOLDER_NAME || f.path === INVOICE_FOLDER_NAME);
+		if (found) return found.path;
+		const client = await this.client(a);
+		const created = await client.mailboxCreate(INVOICE_FOLDER_NAME);
+		const path = String(created?.path ?? INVOICE_FOLDER_NAME);
+		await this.refreshFolderInfos(a);
+		return path;
+	}
+
+	/** Bulk header scan for one folder. It never pulls bodies and never acts
+	 *  on its own: the view shows the lists and asks the user to confirm. */
+	async scanFolder(a: ImapAccount, folder: string): Promise<FolderScan> {
+		const cache = await this.getFolderCache(a, folder);
+		if (!cache.messages.length) return { spam: [], invoices: [] };
+		const client = await this.client(a);
+		const lock = await client.getMailboxLock(folder);
+		const hits: SpamHit[] = [];
+		const invoices: TicketHit[] = [];
+		try {
+			const wanted = cache.messages.map((m) => m.uid);
+			const chunks: number[][] = [];
+			for (let i = 0; i < wanted.length; i += 200) chunks.push(wanted.slice(i, i + 200));
+			const pending: Array<{ message: ImapMessage; headers: Record<string, string>; hint: string }> = [];
+			for (const chunk of chunks) {
+				for await (const raw of client.fetch(
+					chunk.map(String).join(","),
+					{
+						uid: true,
+						headers: [
+							"X-Spam-Flag",
+							"X-Spam-Status",
+							"X-Spam-Score",
+							"X-Spam-Level",
+							"X-Spam",
+							"X-Original-Spam-Flag",
+							"X-Rspamd-Score",
+							"Authentication-Results",
+							"ARC-Authentication-Results",
+							"Received-SPF",
+							"List-Unsubscribe",
+							"Precedence",
+						],
+					},
+					{ uid: true }
+				)) {
+					const message = cache.messages.find((m) => m.uid === raw.uid);
+					if (!message) continue;
+					const headers = parseRawHeaders(raw.headers);
+					const hint = message.snippet ?? "";
+					const ticketReasons = invoiceReasons({
+						subject: message.subject,
+						from: message.from,
+						snippet: hint,
+					});
+					if (ticketReasons.length) {
+						invoices.push({ message, reasons: ticketReasons });
+						continue;
+					}
+					pending.push({ message, headers, hint });
+				}
+			}
+
+			// Headers above are cheap; body samples are fetched only after that
+			// pass, so a folder scan still avoids attachments and unlimited MIME.
+			const { simpleParser } = await import("mailparser");
+			const bodyChunks: Array<typeof pending> = [];
+			for (let i = 0; i < pending.length; i += 20) bodyChunks.push(pending.slice(i, i + 20));
+			for (const bodyChunk of bodyChunks) {
+				const samples = new Map<number, string>();
+				for await (const raw of client.fetch(
+					bodyChunk.map((item) => String(item.message.uid)).join(","),
+					{ uid: true, source: { start: 0, maxLength: SPAM_BODY_SAMPLE_BYTES } },
+					{ uid: true }
+				)) {
+					const source = raw.source;
+					if (!source) continue;
+					let text = "";
+					try {
+						const parsed = await simpleParser(source);
+						text = String(parsed.text ?? "").trim();
+						if (!text && parsed.html) text = plainTextForSpam(String(parsed.html));
+					} catch {
+						text = plainTextForSpam(source.toString("utf8"));
+					}
+					if (!text) text = plainTextForSpam(source.toString("utf8"));
+					if (text) samples.set(Number(raw.uid), text);
+				}
+				for (const item of bodyChunk) {
+					const body = samples.get(item.message.uid) ?? "";
+					const ticketReasons = invoiceReasons({
+						subject: item.message.subject,
+						from: item.message.from,
+						snippet: item.hint,
+						body,
+					});
+					if (ticketReasons.length) {
+						invoices.push({ message: item.message, reasons: ticketReasons });
+						continue;
+					}
+					const verdict = scoreSpam({
+						subject: item.message.subject,
+						from: item.message.from,
+						snippet: item.hint,
+						body,
+						headers: item.headers,
+						blacklist: this.host.settings.imapSpamBlacklist ?? [],
+						keywords: this.host.settings.imapSpamKeywords,
+					});
+					if (verdict.score >= SPAM_THRESHOLD) {
+						hits.push({ message: item.message, score: verdict.score, reasons: verdict.reasons });
+					}
+				}
+			}
+		} finally {
+			lock.release();
+		}
+		return {
+			spam: hits.sort((x, y) => y.score - x.score || y.message.uid - x.message.uid),
+			invoices,
+		};
+	}
+
 	async setFlagged(a: ImapAccount, folder: string, uid: number, flagged: boolean): Promise<void> {
 		return this.time(`flags ${imapLabel(a)}`, async () => {
 			const client = await this.client(a);
@@ -394,22 +705,86 @@ export class ImapMailService {
 			const client = await this.client(a);
 			const lock = await client.getMailboxLock(folder);
 			try {
-				if (client.capabilities?.has?.("MOVE")) {
-					const ok = await client.messageMove(uids.join(","), destination, { uid: true });
-					if (ok === false) throw new Error("the server refused the move");
-				} else {
-					const ok = await client.messageCopy(uids.join(","), destination, { uid: true });
-					if (ok === false) throw new Error("the server refused the copy");
+				const moved: number[] = [];
+				const missing: number[] = [];
+				const failed: number[] = [];
+				let verifySource = false;
+				if ((await client.messageMove(uids.join(","), destination, { uid: true })) !== false) {
+					moved.push(...uids);
+				} else if ((await client.messageCopy(uids.join(","), destination, { uid: true })) !== false) {
+					verifySource = true;
 					await client.messageFlagsAdd(uids.join(","), ["\\Deleted"], { uid: true });
-					await client.messageDelete(uids.join(","), { uid: true });
+					if ((await client.messageDelete(uids.join(","), { uid: true })) === false) await client.mailboxClose();
+					moved.push(...uids);
+				} else {
+					// A spam scan can be a little stale by the time the user
+					// confirms it: one vanished UID used to fail the whole batch.
+					// Move what is still live, and let the server say whether a
+					// single stubborn mail is actually gone.
+					for (const uid of uids) {
+						if (!(await this.uidExists(client, uid))) {
+							missing.push(uid);
+							continue;
+						}
+						if (await this.moveOne(client, destination, uid)) {
+							moved.push(uid);
+							verifySource = true;
+						}
+						else failed.push(uid);
+					}
 				}
-				await this.removeMessages(a, folder, uids);
+				if (verifySource) {
+					const verified = await this.verifySourceGone(client, moved);
+					if (verified.length) await this.removeMessages(a, folder, [...verified, ...missing]);
+					if (verified.length !== moved.length) throw new Error("the server did not confirm that the source messages were removed");
+				} else if (moved.length || missing.length) {
+					await this.removeMessages(a, folder, [...moved, ...missing]);
+				}
+				if (failed.length) throw new Error(`the server refused to move ${failed.length} message${failed.length === 1 ? "" : "s"}`);
 				// Keep the destination honest without making the click wait.
 				if (destination !== folder) void this.syncFolder(a, destination).catch(() => {});
 			} finally {
 				lock.release();
 			}
 		});
+	}
+
+	private async uidExists(client: any, uid: number): Promise<boolean> {
+		try {
+			const found = await client.search({ uid }, { uid: true });
+			return Array.isArray(found) ? found.includes(uid) : found !== false;
+		} catch {
+			// An inconclusive search must not silently treat live mail as gone.
+			return true;
+		}
+	}
+
+	/** Confirm the source UID is gone before touching the local cache. This is
+	 *  deliberately used only for compatibility fallbacks; a provider can say
+	 *  COPY succeeded while refusing the following EXPUNGE. */
+	private async verifySourceGone(client: any, uids: number[]): Promise<number[]> {
+		const gone: number[] = [];
+		for (const uid of uids) {
+			if (!(await this.uidExists(client, uid))) gone.push(uid);
+		}
+		return gone;
+	}
+
+	/** MOVE, then the older COPY + \Deleted + EXPUNGE path for providers that
+	 *  reject MOVE on a particular mailbox or mid-sync. */
+	private async moveOne(client: any, destination: string, uid: number): Promise<boolean> {
+		const range = String(uid);
+		if ((await client.messageMove(range, destination, { uid: true })) !== false) return true;
+		if ((await client.messageCopy(range, destination, { uid: true })) === false) return false;
+		try {
+			await client.messageFlagsAdd(range, ["\\Deleted"], { uid: true });
+			if ((await client.messageDelete(range, { uid: true })) === false) await client.mailboxClose();
+		} catch (e) {
+			// The copy already landed, so the move succeeded even if this
+			// provider is slow to expunge the source copy.
+			console.warn(`NyaHome: copied UID ${uid} but could not expunge it immediately.`, e);
+		}
+		return true;
 	}
 
 	async remove(a: ImapAccount, folder: string, uids: number[]): Promise<void> {
@@ -432,7 +807,9 @@ export class ImapMailService {
 					ok = await client.mailboxClose();
 				}
 				if (ok === false) throw new Error("the server refused the delete");
-				await this.removeMessages(a, folder, uids);
+				const verified = await this.verifySourceGone(client, uids);
+				await this.removeMessages(a, folder, verified);
+				if (verified.length !== uids.length) throw new Error("the server did not confirm that the messages were removed");
 			} finally {
 				lock.release();
 			}
@@ -444,6 +821,14 @@ export class ImapMailService {
 		const gone = new Set(uids);
 		cache.messages = cache.messages.filter((m) => !gone.has(m.uid));
 		await this.saveFolderCache(cache);
+		for (const uid of uids) {
+			try {
+				const path = this.bodyPath(a, folder, uid);
+				if (await this.host.app.vault.adapter.exists(path)) await this.host.app.vault.adapter.remove(path);
+			} catch (e) {
+				console.warn(`NyaHome: could not remove the cached body of ${folder} uid ${uid} (${imapLabel(a)}).`, e);
+			}
+		}
 	}
 
 	async send(a: ImapAccount, mail: SmtpMail): Promise<void> {

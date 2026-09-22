@@ -156,6 +156,12 @@ import {
 	ReconcileParent,
 	ReconcileItem,
 } from "../src/core";
+import { invoiceReasons, parseRawHeaders, plainTextForSpam, scoreSpam } from "../src/spam";
+import { isJunkOrTrashFolder, normalizeMailCache, shouldCacheMailFolder } from "../src/mail-cache";
+import { DEFAULT_TRANSLATION_CONFIG, ITranslationServiceV1 } from "../src/translation/types";
+import { MTranServerTranslationService } from "../src/translation/mtran-service";
+import { TranslationManager } from "../src/translation/manager";
+import { htmlToPlainText, splitTranslationChunks } from "../src/translation/text";
 
 let failures = 0;
 function eq(a: unknown, b: unknown, msg: string) {
@@ -206,7 +212,7 @@ eq(weekDays("2026-07-17", false)[0], "2026-07-12", "sunday-start week begins Sun
 eq(weekDays("2026-07-13", true)[0], "2026-07-13", "a Monday starts its own monday week");
 
 // --- monthGrid ---
-{
+void (async () => {
 	const july = monthGrid(2026, 6, true);
 	eq(july.length, 42, "month grid is always 42 cells");
 	eq(july[0].key, "2026-06-29", "monday-start July 2026 leads with prior Monday");
@@ -214,7 +220,7 @@ eq(weekDays("2026-07-13", true)[0], "2026-07-13", "a Monday starts its own monda
 	eq(july[0].inMonth, false, "lead cells are out-of-month");
 	const sun = monthGrid(2026, 6, false);
 	eq(sun[0].key, "2026-06-28", "sunday-start July 2026 leads with prior Sunday");
-}
+})();
 
 // --- local bridges ---
 eq(keyOfMs(msOfKey("2026-07-17")), "2026-07-17", "msOfKey and keyOfMs round-trip");
@@ -2394,3 +2400,154 @@ console.log("\nAll tests passed");
 	// a key that appears twice must not let the second row replace the first
 	redraw("a duplicated key", ["A"], ["A", "A", "B"], 2);
 }
+
+// --- the imap spam scorer ---
+{
+	const headers = parseRawHeaders(Buffer.from("X-Spam-Flag: YES\r\nX-Spam-Score: 6.5\r\nList-Unsubscribe: <https://example.com/u>\r\nSubject: Hi\r\n"));
+	eq(headers["x-spam-flag"], "YES", "spam headers parse by lowercase key");
+	eq(headers["subject"], undefined, "and unrelated headers are not kept");
+	const repeatedAuth = parseRawHeaders(Buffer.from("Authentication-Results: spf=fail\r\nAuthentication-Results: dkim=fail\r\n"));
+	eq(repeatedAuth["authentication-results"], "spf=fail dkim=fail", "repeated authentication headers are combined");
+
+	eq(scoreSpam({ subject: "hello", from: "friend@example.com", headers }).score, 7, "the spam flag and score clear the threshold");
+	eq(scoreSpam({ subject: "hello", from: "friend@example.com" }).score, 0, "a plain mail stays below it");
+	eq(scoreSpam({ subject: "hello", from: "friend@example.com", headers: { "x-spam-level": "*****" } }).score, 3, "spam level counts asterisks");
+	eq(scoreSpam({ subject: "A note", from: "friend@example.com", headers: { "x-spam-score": "6.5/10" } }).score, 2, "a score with a provider suffix still parses");
+	eq(scoreSpam({ subject: "A note", from: "friend@example.com", headers: { "authentication-results": "spf=fail dkim=fail dmarc=fail" } }).score, 4, "SPF, DKIM, and DMARC failures add evidence without runaway scoring");
+	eq(scoreSpam({ subject: "A note", from: "friend@example.com", headers: { "received-spf": "fail (sender is not authorized)" } }).score, 2, "a Received-SPF failure is recognized");
+	eq(scoreSpam({ subject: "限时优惠", from: "friend@example.com" }).score, 2, "promotional language alone is only a hint");
+	eq(scoreSpam({ subject: "限时优惠", from: "friend@example.com", headers: { "list-unsubscribe": "<https://x>" } }).score, 3, "and bulk hints can push it over");
+	eq(scoreSpam({ subject: "hello", from: "ads@example.com", blacklist: ["ads@example.com"] }).score, 4, "a blacklist hit clears it");
+	eq(scoreSpam({ subject: "邮件拦截提醒", from: "mailer@buaa.edu.cn" }).score, 4, "mail interception notices clear it");
+	eq(scoreSpam({ subject: "Steam 登录验证", from: "support@example.com" }).score, 4, "built-in Steam and verification words are active by default");
+	eq(scoreSpam({ subject: "Epic verify your login", from: "support@example.com" }).score, 4, "built-in Epic and verify words are active by default");
+	eq(scoreSpam({ subject: "Account notice", from: "Steam Support <no-reply@example.com>", body: "Please sign in." }).score, 4, "sender keywords are scanned");
+	eq(scoreSpam({ subject: "Account notice", from: "support@example.com", body: "Please verify your account." }).score, 4, "body keywords are scanned");
+	eq(scoreSpam({ subject: "Notice", from: "mailer@example.com", snippet: "北航邮件拦截" }).score, 4, "a sensitive word clears it");
+	eq(scoreSpam({ subject: "Notice", from: "mailer@example.com", keywords: ["拦截提醒"] }).score, 0, "custom words are opt-in per input");
+	eq(scoreSpam({ subject: "No subject", from: "friend@example.com", body: "促销 优惠券 点击这里" }).score, 2, "body marketing terms contribute without firing alone");
+
+	eq(invoiceReasons({ subject: "电子发票", from: "billing@example.com" }).join(","), "Invoice keyword: 发票", "chinese invoice text is detected");
+	eq(invoiceReasons({ subject: "Your invoice", from: "billing@example.com" }).join(","), "Invoice keyword: invoice", "english invoice text is detected");
+	eq(invoiceReasons({ subject: "Hello", from: "friend@example.com", body: "Your invoice is attached." }).length, 1, "invoice keywords are scanned in the body");
+	eq(invoiceReasons({ subject: "Hello", from: "friend@example.com" }).length, 0, "ordinary mail is not an invoice");
+	eq(plainTextForSpam("<p>Hello<br>world</p>").includes("\n"), true, "the spam body fallback keeps line breaks");
+}
+
+// --- local mail cache policy ---
+{
+	const settings = normalizeMailCache({ folderMode: "exclude", folders: [{ accountId: "a", folderId: "News" }], attachmentPolicy: "metadata" });
+	eq(settings.enabled, true, "cache defaults on when normalized");
+	eq(shouldCacheMailFolder("INBOX", "a", "", settings), true, "ordinary folders cache");
+	eq(shouldCacheMailFolder("News", "a", "", settings), false, "excluded folders do not cache");
+	eq(shouldCacheMailFolder("Junk", "a", "\\Junk", { ...settings, skipSpamAndTrash: true }), false, "junk never caches when skipped");
+	eq(shouldCacheMailFolder("Junk", "a", "", { ...settings, skipSpamAndTrash: true }), false, "localized junk names are recognized");
+	eq(isJunkOrTrashFolder("公司邮箱/回收站"), true, "chinese trash is recognized");
+
+	const selected = normalizeMailCache({ folderMode: "selected", folders: [{ accountId: "a", folderId: "INBOX" }] });
+	eq(shouldCacheMailFolder("INBOX", "a", "", selected), true, "selected mode keeps chosen folders");
+	eq(shouldCacheMailFolder("Archive", "a", "", selected), false, "selected mode skips others");
+	eq(normalizeMailCache({ attachmentPolicy: "weird" }).attachmentPolicy, "metadata", "bad attachment policy falls back");
+}
+
+// --- translation service and orchestration ---
+void (async () => {
+	const requests: unknown[] = [];
+	const service = new MTranServerTranslationService(
+		() => ({ ...DEFAULT_TRANSLATION_CONFIG, enabled: true, endpoint: "http://127.0.0.1:8989", timeoutMs: 1000 }),
+		{
+			async request(request) {
+				requests.push(request);
+				return { status: 200, body: JSON.stringify({ result: "你好" }) };
+			},
+		}
+	);
+	const result = await service.translateText("Hello", true, "en", "zh-Hans");
+	eq(result.translatedText, "你好", "MTranServer translation reads translatedText");
+	eq(requests.length, 1, "MTranServer transport gets one request");
+	eq((requests[0] as { url: string }).url, "http://127.0.0.1:8989/translate", "the /translate path is appended");
+	eq(JSON.parse((requests[0] as { body: string }).body), { from: "en", to: "zh-Hans", text: "Hello", html: true }, "the request body has the MTranServer shape");
+
+	const failing = new MTranServerTranslationService(
+		() => ({ ...DEFAULT_TRANSLATION_CONFIG, enabled: true, endpoint: "http://127.0.0.1:8989" }),
+		{ async request() { return { status: 500, body: "unexpected" }; } }
+	);
+	let failed = false;
+	try {
+		await failing.translateText("Hello", false, "en", "zh-Hans");
+	} catch {
+		failed = true;
+	}
+	eq(failed, true, "server errors surface as translation errors");
+})();
+
+void (async () => {
+	const saved: unknown[] = [];
+	const calls: string[] = [];
+	const mockService: ITranslationServiceV1 = {
+		version: "v1",
+		async translateText(text) {
+			calls.push(text);
+			return { translatedText: `[${text}]`, fromCache: false };
+		},
+		async healthCheck() {
+			return true;
+		},
+	};
+	const manager = new TranslationManager({
+		settings: {
+			get: () => ({ ...DEFAULT_TRANSLATION_CONFIG, enabled: true, endpoint: "http://127.0.0.1:8989", sourceLanguage: "en", targetLanguage: "zh-Hans", cacheEnabled: true }),
+			save: (config) => {
+				saved.push(config);
+			},
+		},
+		service: mockService,
+	});
+	await manager.initialize();
+	const first = await manager.translateMail({ id: "mail-1", subject: "Hello", body: "<p>World</p>", isHtml: true }, { silent: false });
+	const second = await manager.translateMail({ id: "mail-1", subject: "Hello", body: "<p>World</p>", isHtml: true }, { silent: false });
+	eq(first?.translatedSubject, "[Hello]", "mail orchestration translates the subject");
+	eq(first?.translatedBody, "[World]", "mail orchestration translates HTML body as plain text");
+	eq(second?.key, "mail-1", "a repeated selection returns the mail-sized result");
+	eq(calls.length, 2, "the back end is called once for subject and once for body");
+	eq(calls[1], "World", "mail orchestration strips HTML before sending the body");
+	eq(saved.length, 0, "configuration is saved only when settings change");
+	eq(await manager.translatePlainText("Sketch note"), "[Sketch note]", "plain editor text uses the same translation service");
+})();
+
+void (async () => {
+	const requests: { text: string; html: boolean }[] = [];
+	const fallbackService: ITranslationServiceV1 = {
+		version: "v1",
+		async translateText(text, html) {
+			requests.push({ text, html });
+			if (html) throw new Error("MTranServer request failed (status 500): Internal Server Error.");
+			return { translatedText: text === "Hello\nworld" ? "你好<br>世界" : `[${text}]`, fromCache: false };
+		},
+		async healthCheck() {
+			return true;
+		},
+	};
+	const manager = new TranslationManager({
+		settings: {
+			get: () => ({ ...DEFAULT_TRANSLATION_CONFIG, enabled: true, endpoint: "http://127.0.0.1:8989", cacheEnabled: false }),
+			save: () => undefined,
+		},
+		service: fallbackService,
+	});
+	await manager.initialize();
+	const result = await manager.translateMail({ id: "mail-html-fallback", subject: "Hello", body: "<p>Hello<br>world</p>", isHtml: true }, { silent: false });
+	eq(result?.translatedBody, "你好\n世界", "HTML translation keeps line boundaries and removes model markup");
+	eq(result?.isHtml, false, "translated mail renders as plain text with preserved newlines");
+	eq(requests.map((r) => r.html).join(","), "false,false", "HTML is converted before the subject and body requests");
+	eq(splitTranslationChunks("a".repeat(7500), 3000).length, 3, "long text splits into bounded chunks");
+	eq(htmlToPlainText("Line1<br>Line2").includes("\n"), true, "htmlToPlainText converts br tags to line breaks");
+	const longText = "a".repeat(220) + "\n" + "b".repeat(220);
+	const lineChunks = splitTranslationChunks(longText, 250);
+	eq(lineChunks[0]?.separator, "\n", "chunk splitting preserves line separators");
+	eq(lineChunks.map((chunk) => chunk.text + chunk.separator).join(""), longText, "chunk pieces reconstruct the original line layout");
+	const beforeLongBody = requests.length;
+	const longBody = await manager.translateMail({ id: "mail-long-body", subject: "", body: "Word ".repeat(900), isHtml: false }, { silent: false });
+	eq(requests.length - beforeLongBody > 1, true, "long bodies are split before the provider can truncate them");
+	eq(!!longBody?.translatedBody, true, "long body translation returns a combined result");
+})();

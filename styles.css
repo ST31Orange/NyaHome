@@ -803,6 +803,32 @@
 	text-overflow: ellipsis;
 }
 
+/* Week and day events get two lines: the first reads in normal text, the
+   continuation fades to muted text, then the cell clips with an ellipsis. */
+.nya-week .nya-span-title,
+.nya-block-title,
+.nya-sketch-chip.is-strip .nya-chip-title {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-height: 1.2;
+	white-space: normal;
+	overflow: hidden;
+	color: var(--text-normal);
+	background: linear-gradient(to bottom, var(--text-normal) 0 1.2em, var(--text-muted) 1.2em 2.4em);
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+}
+
+.nya-span-sub {
+	font-size: 10px;
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .nya-month-chips {
 	display: flex;
 	flex-direction: column;
@@ -813,6 +839,7 @@
 	display: flex;
 	align-items: baseline;
 	gap: 4px;
+	flex-wrap: wrap;
 	padding: 0 3px 0 5px;
 	border-radius: 4px;
 	font-size: var(--font-ui-smaller);
@@ -855,10 +882,54 @@
 	min-width: 0;
 }
 
+.nya-chip-note {
+	flex-basis: 100%;
+	color: var(--text-muted);
+	font-size: 10px;
+	line-height: 1.25;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
 /* sketch notes are deliberately not events: a flat blue tile and a tiny note
    mark, so a scheduled meeting and a loose thought read apart at a glance */
 .nya-sketch-chip {
 	--nya-ev-color: #4f8cff;
+}
+
+/* The month cell is one compact title line, matching a timed event chip. */
+.nya-month .nya-sketch-chip {
+	height: 19px;
+	min-height: 19px;
+	max-height: 19px;
+	flex-wrap: nowrap;
+	padding: 0 4px;
+}
+
+.nya-month .nya-sketch-chip .nya-chip-title {
+	background: none;
+	-webkit-text-fill-color: currentColor;
+	color: var(--text-normal);
+	white-space: nowrap;
+}
+
+/* The week/day strip has room for one title line plus one muted continuation
+   or body preview; longer content is clipped instead of growing the lane. */
+.nya-sketch-chip.is-strip {
+	display: block;
+	flex-wrap: nowrap;
+	max-height: 34px;
+	padding: 2px 5px;
+	overflow: hidden;
+}
+
+.nya-sketch-chip.is-strip .nya-chip-note {
+	display: block;
+	font-size: 10px;
+	line-height: 1.2;
+	color: var(--text-muted);
 }
 
 .nya-sketch-icon {
@@ -988,8 +1059,9 @@ button.nya-more-btn:hover {
 }
 
 .nya-allday-lanes .nya-span {
-	height: 22px;
-	line-height: 22px;
+	height: 30px;
+	line-height: 1.25;
+	padding: 2px 6px;
 }
 
 .nya-sketch-strip {
@@ -1019,10 +1091,20 @@ button.nya-more-btn:hover {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
-	min-height: 32px;
 	padding: 2px 3px;
-	overflow-y: auto;
+	min-height: 0;
 	cursor: default;
+}
+
+.nya-sketch-cell:empty {
+	min-height: 20px;
+}
+
+.nya-sketch-cell.is-droptarget,
+.nya-allday-lanes.is-droptarget {
+	outline: 2px dashed var(--interactive-accent);
+	outline-offset: -2px;
+	background: var(--background-modifier-hover);
 }
 
 .nya-sketch-cell.is-today {
@@ -1046,7 +1128,7 @@ button.nya-more-btn:hover {
 	width: 52px;
 	flex-shrink: 0;
 	position: relative;
-	height: 1152px; /* 24 * HOUR_H */
+	height: 960px; /* 24 * HOUR_H */
 }
 
 .nya-gutter-hour {
@@ -1078,13 +1160,13 @@ button.nya-more-btn:hover {
 	display: grid;
 	grid-auto-flow: column;
 	grid-auto-columns: minmax(0, 1fr);
-	height: 1152px;
+	height: 960px;
 }
 
 .nya-week-col {
 	position: relative;
 	border-left: 1px solid var(--background-modifier-border);
-	background-image: repeating-linear-gradient(to bottom, var(--background-modifier-border) 0 1px, transparent 1px 48px);
+	background-image: repeating-linear-gradient(to bottom, var(--background-modifier-border) 0 1px, transparent 1px 40px);
 	background-position: 0 -1px;
 }
 
@@ -1106,10 +1188,10 @@ button.nya-more-btn:hover {
 .nya-block-title {
 	color: var(--text-normal);
 	font-weight: var(--font-medium);
-	line-height: 1.25;
+	line-height: 1.2;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	white-space: nowrap;
+	white-space: normal;
 }
 
 .nya-block-time {
@@ -1790,6 +1872,19 @@ button.nya-card-more .svg-icon {
 
 .nya-event-title-row.nya-has-calendar > .setting-item:last-child {
 	flex: 0 1 220px;
+}
+
+.nya-event-modal .setting-item-control input.nya-event-title-input {
+	height: 38px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-modifier-form-field);
+	box-shadow: none;
+}
+
+.nya-event-modal .setting-item-control input.nya-event-title-input:focus {
+	border-color: var(--interactive-accent);
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
 }
 
 .nya-event-controls {
@@ -2795,6 +2890,64 @@ button.nya-card-more .svg-icon {
 	white-space: nowrap;
 }
 
+.nya-spam-list {
+	max-height: 420px;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px;
+}
+
+.nya-spam-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.nya-spam-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.nya-spam-mid {
+	flex: 1;
+	min-width: 0;
+}
+
+.nya-spam-from {
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nya-spam-subject {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nya-spam-reasons {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nya-spam-score {
+	flex-shrink: 0;
+	width: 24px;
+	text-align: right;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
 /* the actions stay quiet until the row is under the pointer */
 .nya-people-acts {
 	display: flex;
@@ -2904,7 +3057,7 @@ button.nya-card-more .svg-icon {
 	min-height: 0;
 }
 
-.nya-sketch-body textarea {
+.nya-sketch-body .nya-sketch-editor {
 	width: 100%;
 	height: 100%;
 	min-height: 260px;
@@ -2915,7 +3068,16 @@ button.nya-card-more .svg-icon {
 	padding: 10px 12px;
 	font-size: var(--font-ui-small);
 	line-height: 1.5;
-	resize: vertical;
+	overflow-y: auto;
+	outline: none;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.nya-sketch-body .nya-sketch-editor:empty::before {
+	content: attr(data-placeholder);
+	color: var(--text-faint);
+	pointer-events: none;
 }
 
 /* the compose window: header rows, a bar, then an editor that takes the rest
@@ -3751,6 +3913,29 @@ button.nya-card-more .svg-icon {
 .nya-mail-header button.nya-icon-btn:hover {
 	color: var(--text-normal);
 	background: var(--background-modifier-hover);
+}
+
+.nya-mail-header button.nya-spam-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-muted);
+	cursor: default;
+	font-size: var(--font-ui-small);
+}
+
+.nya-mail-header button.nya-spam-btn:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.nya-mail-header button.nya-spam-btn .svg-icon {
+	width: 14px;
+	height: 14px;
 }
 
 .nya-mail-title {
@@ -5138,6 +5323,98 @@ button.nya-card-more .svg-icon {
 	height: 14px;
 }
 
+.nya-keyword-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	width: 100%;
+	min-width: 0;
+}
+
+.nya-keyword-addrow {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+}
+
+.nya-keyword-input {
+	flex: 1;
+	min-width: 0;
+	height: 34px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-modifier-form-field);
+	color: var(--text-normal);
+	padding: 0 10px;
+}
+
+.nya-keyword-add {
+	flex-shrink: 0;
+}
+
+.nya-keyword-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	max-height: 132px;
+	overflow-y: auto;
+}
+
+.nya-keyword-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 100%;
+	padding: 3px 5px 3px 9px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.4;
+}
+
+.nya-keyword-chip-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nya-keyword-editor button.nya-keyword-chip-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border: none;
+	border-radius: 50%;
+	background: transparent;
+	color: var(--text-muted);
+	font-size: 16px;
+	line-height: 1;
+	cursor: pointer;
+	box-shadow: none;
+}
+
+.nya-keyword-editor button.nya-keyword-chip-remove:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.nya-keyword-meta {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.4;
+}
+
+.nya-keyword-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
 /* the help popover: a soft theme-colored card instead of the native black
    tooltip; shows on hover, and a click pins it open */
 .nya-help-pop {
@@ -5925,12 +6202,35 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	opacity: 0.65;
 }
 
+.nya-imap-readheader {
+	display: grid;
+	grid-template-columns: 44px minmax(0, 1fr);
+	gap: 6px;
+	margin-top: 3px;
+	font-size: var(--font-smaller);
+	line-height: 1.35;
+}
+
+.nya-imap-readheader-label {
+	color: var(--text-faint);
+	text-transform: uppercase;
+}
+
+.nya-imap-readheader-value {
+	color: var(--text-muted);
+	overflow-wrap: anywhere;
+	user-select: text;
+}
+
 .nya-imap-readbody {
 	white-space: pre-wrap;
 	font-size: var(--font-ui-small);
 	width: 100%;
 	min-width: 0;
 	overflow-wrap: anywhere;
+	user-select: text;
+	-webkit-user-select: text;
+	cursor: text;
 }
 
 .nya-imap-readbody.is-html {
@@ -5966,6 +6266,67 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	display: block;
 	margin-top: 4px;
 	font-size: var(--font-smaller);
+}
+
+.nya-imap-readbtns .nya-translate-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+.nya-imap-readbtns .nya-translate-btn:hover {
+	background: var(--interactive-accent-hover);
+	color: var(--text-on-accent);
+}
+
+.nya-mail-translation {
+	margin-top: 10px;
+	border: 1px solid color-mix(in srgb, var(--interactive-accent) 35%, var(--background-modifier-border));
+	border-left: 3px solid var(--interactive-accent);
+	border-radius: 6px;
+	padding: 9px 11px;
+	background: color-mix(in srgb, var(--interactive-accent) 5%, var(--background-primary));
+}
+
+.nya-mail-translation-title {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0;
+	color: var(--text-muted);
+}
+
+.nya-mail-translation-subject {
+	margin-top: 5px;
+	font-weight: 600;
+}
+
+.nya-mail-translation-body {
+	margin-top: 6px;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	word-break: break-word;
+	user-select: text;
+	-webkit-user-select: text;
+	cursor: text;
+}
+
+/* HTML messages often carry inline rules that disable selection. Keep the
+   reading pane selectable even when a sender's stylesheet says otherwise. */
+.nya-imap-readbody *,
+.nya-mail-translation-body * {
+	user-select: text !important;
+	-webkit-user-select: text !important;
+}
+
+.nya-imap-readbody a,
+.nya-imap-readbody img,
+.nya-imap-readbody table,
+.nya-mail-translation-body a,
+.nya-mail-translation-body img {
+	cursor: default;
 }
 
 .nya-imap-readbtns {
@@ -6883,6 +7244,50 @@ body.theme-light .notice:not(.pw-self-styled) a {
 
 .nyahome-modal input[type="text"] {
 	width: 100%;
+}
+
+.nya-cache-folder-account + .nya-cache-folder-account {
+	margin-top: 12px;
+}
+
+.nya-cache-folder-account-name {
+	font-weight: 600;
+	margin-bottom: 5px;
+}
+
+.nya-cache-folder-rows {
+	display: grid;
+	gap: 3px;
+}
+
+.nya-cache-folder-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 28px;
+	padding: 3px 6px;
+	border-radius: 5px;
+}
+
+.nya-cache-folder-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.nya-cache-folder-row span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nya-cache-note {
+	color: var(--text-muted);
+	margin-bottom: 10px;
+}
+
+.nya-cache-manager-list {
+	max-height: min(52vh, 520px);
+	overflow: auto;
 }
 
 @media (max-width: 720px) {
