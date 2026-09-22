@@ -284,6 +284,7 @@ export class NyaHomeView extends ItemView {
 			tile.setAttribute("aria-pressed", String(this.searchFilter === group.id));
 			const icon = tile.createDiv("nyahome-filter-icon");
 			setIcon(icon, group.icon);
+			tile.createSpan({ cls: "nyahome-filter-label", text: this.plugin.settings.language === "zh" ? group.labelZh : group.labelEn });
 			const toggle = () => {
 				const active = this.searchFilter !== group.id;
 				this.searchFilter = active ? group.id : null;
@@ -1002,18 +1003,48 @@ export class NyaHomeView extends ItemView {
 	private draggedPaths(dt: DataTransfer | null): string[] {
 		if (!dt) return [];
 		const out: string[] = [];
-		for (const type of ["application/x-obsidian-file", "text/uri-list", "text/plain"]) {
+		for (const file of Array.from(dt.files ?? [])) {
+			const path = (file as File & { path?: string }).path;
+			if (path) this.pushDroppedPath(out, path);
+		}
+		for (const type of ["application/x-obsidian-file", "text/uri-list", "text/plain", "text/html"]) {
 			const raw = dt.getData(type);
 			if (!raw) continue;
 			for (const line of raw.split(/\r?\n/)) {
-				const path = line.trim().replace(/^obsidian:\/\/open\?path=/, "").replace(/^file:\/\/\//, "");
-				if (!path) continue;
-				const decoded = decodeURIComponent(path);
-				const hit = this.resolvePath(decoded);
-				if (hit) out.push(hit);
+				this.pushDroppedPath(out, line);
 			}
 		}
 		return [...new Set(out)];
+	}
+
+	private pushDroppedPath(out: string[], raw: string): void {
+		let value = raw.trim();
+		if (!value) return;
+		try {
+			const parsed = JSON.parse(value) as { path?: unknown; file?: unknown; target?: unknown };
+			value = String(parsed.path ?? parsed.file ?? parsed.target ?? value);
+		} catch {
+			/* ordinary URL/path text */
+		}
+		value = value
+			.replace(/^obsidian:\/\/open\?path=/, "")
+			.replace(/^file:\/\/\//, "")
+			.replace(/^app:\/\/local\//, "")
+			.replace(/^\[\[|\]\]$/g, "")
+			.split("|")[0]
+			.split("#")[0]
+			.trim();
+		const dataPath = value.match(/data-path=["']([^"']+)["']/i)?.[1];
+		if (dataPath) value = dataPath;
+		const href = value.match(/(?:href|src)=["']([^"']+)["']/i)?.[1];
+		if (href) value = href;
+		try {
+			value = decodeURIComponent(value);
+		} catch {
+			/* keep the original text */
+		}
+		const hit = this.resolvePath(value);
+		if (hit) out.push(hit);
 	}
 
 	private resolvePath(raw: string): string | null {

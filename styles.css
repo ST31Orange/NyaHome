@@ -6833,18 +6833,19 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: flex-start;
-	column-gap: clamp(8px, calc((100% - var(--n, 1) * 38px) / max(var(--n, 1) - 1, 1)), 48px);
-	row-gap: 8px;
+	gap: 7px;
 	width: 100%;
 }
 
 .nyahome-filter {
 	display: flex;
 	align-items: center;
-	justify-content: center;
-	width: 38px;
-	height: 38px;
-	border-radius: 10px;
+	justify-content: flex-start;
+	gap: 5px;
+	min-width: 0;
+	height: 32px;
+	padding: 0 9px;
+	border-radius: 8px;
 	border: 1px solid var(--background-modifier-border);
 	background: var(--background-primary);
 	color: var(--text-muted);
@@ -6876,6 +6877,12 @@ body.theme-light .notice:not(.pw-self-styled) a {
 .nyahome-filter-icon .svg-icon {
 	width: 16px;
 	height: 16px;
+}
+
+.nyahome-filter-label {
+	font-size: 11px;
+	line-height: 1;
+	white-space: nowrap;
 }
 
 .nyahome-hit {
