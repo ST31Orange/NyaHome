@@ -12251,7 +12251,6 @@ class ImapMailView extends ItemView {
 	private messages: ImapMessage[] = [];
 	private renderId = 0;
 	private bodyCache = new Map<string, ImapBody>();
-	private readonly listRowHeight = 78;
 	private actionBtns = new Map<string, HTMLButtonElement>();
 	private listInner: HTMLElement | null = null;
 	private rowPool = new Map<number, HTMLElement>();
@@ -12263,6 +12262,17 @@ class ImapMailView extends ItemView {
 	) {
 		super(leaf);
 		this.selectedAccountId = this.plugin.settings.imapAccounts[0]?.id ?? "";
+	}
+
+	private get listRowHeight(): number {
+		return this.plugin.settings.mailDensity === "compact" ? 60 : this.plugin.settings.mailDensity === "comfortable" ? 96 : 78;
+	}
+
+	private applyListDensity(): void {
+		const density = this.plugin.settings.mailDensity;
+		this.contentEl.toggleClass("is-list-small", density === "compact");
+		this.contentEl.toggleClass("is-list-medium", density === "cozy");
+		this.contentEl.toggleClass("is-list-large", density === "comfortable");
 	}
 
 	getViewType(): string {
@@ -12282,6 +12292,7 @@ class ImapMailView extends ItemView {
 		root.empty();
 		root.removeClass("nya-root", "nya-mail-root");
 		root.addClass("nya-imap-mail");
+		this.applyListDensity();
 		const header = root.createDiv("nya-mail-header");
 		const foldToggle = header.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Full width: fold the vault's notes away while this tab is open" } });
 		setIcon(foldToggle, "panel-left");
@@ -12326,6 +12337,17 @@ class ImapMailView extends ItemView {
 			if (a) this.pickFolderForTargets(a);
 		});
 		addHeaderAction("delete", "trash-2", "Delete selected", () => void this.deleteTargets(this.targetMessages().map((m) => m.uid)));
+		const sizeSelect = actions.createEl("select", { cls: "nya-mail-size-select", attr: { "aria-label": "邮件列表显示大小" } });
+		sizeSelect.createEl("option", { value: "compact", text: "小" });
+		sizeSelect.createEl("option", { value: "cozy", text: "中" });
+		sizeSelect.createEl("option", { value: "comfortable", text: "大" });
+		sizeSelect.value = this.plugin.settings.mailDensity;
+		sizeSelect.addEventListener("change", () => {
+			this.plugin.settings.mailDensity = sizeSelect.value as "compact" | "cozy" | "comfortable";
+			this.plugin.queueSave();
+			this.applyListDensity();
+			this.renderList(this.listEl);
+		});
 		const spamBtn = right.createEl("button", { cls: "nya-spam-btn", attr: { "aria-label": "识别垃圾邮件" } });
 		setIcon(spamBtn, "shield-alert");
 		spamBtn.createSpan({ text: "识别垃圾邮件" });
@@ -12744,6 +12766,7 @@ class ImapMailView extends ItemView {
 
 	private messageRow(host: HTMLElement, a: ImapAccount, m: ImapMessage): HTMLElement {
 		const row = host.createDiv("nya-imap-message");
+		row.style.height = `${this.listRowHeight}px`;
 		row.dataset.uid = String(m.uid);
 		row.toggleClass("is-unread", m.unread);
 		row.toggleClass("is-selected", this.selectedMessage?.uid === m.uid);
@@ -12759,8 +12782,9 @@ class ImapMailView extends ItemView {
 		if (m.flagged) top.createSpan({ cls: "nya-imap-flag", attr: { "aria-label": "Starred" }, text: "★" });
 		top.createDiv({ cls: "nya-imap-from", text: m.from || "(unknown sender)" });
 		top.createDiv({ cls: "nya-imap-date", text: fmtDayShort(keyOfMs(new Date(m.date).getTime()), this.plugin.settings.use24h) });
-		row.createDiv({ cls: "nya-imap-subject", text: m.subject });
-		if (m.hasAttachment) row.createSpan({ cls: "nya-imap-attachment", text: "📎" });
+		const subjectRow = row.createDiv("nya-imap-subjectrow");
+		subjectRow.createDiv({ cls: "nya-imap-subject", text: m.subject });
+		if (m.hasAttachment) subjectRow.createSpan({ cls: "nya-imap-attachment", text: "📎" });
 		if (m.snippet) row.createDiv({ cls: "nya-imap-snippet", text: m.snippet });
 		row.addEventListener("click", () => {
 			this.listEl?.focus();
@@ -12922,7 +12946,20 @@ class ImapMailView extends ItemView {
 		const read = targets.some((x) => x.unread);
 		new Menu()
 			.addItem((i) => {
-				i.setTitle(flagOn ? `Flag${plural}` : `Remove star${plural}`);
+				i.setTitle(
+					UI_LANG === "zh"
+						? flagOn
+							? targets.length > 1
+								? `星标这 ${targets.length} 封邮件`
+								: "星标邮件"
+							: targets.length > 1
+								? `取消这 ${targets.length} 封邮件的星标`
+								: "取消星标"
+						: flagOn
+							? `Flag${plural}`
+							: `Remove star${plural}`
+				);
+				i.setIcon("star");
 				i.onClick(() =>
 					void Promise.all(targets.map((x) => this.plugin.mailService.setFlagged(a, this.selectedFolder, x.uid, flagOn))).then(() => this.loadMessages())
 				);
@@ -14184,9 +14221,10 @@ class PowerCalendarView extends ItemView {
 		this.newBtn.addEventListener("click", (e) => {
 			if (e.target instanceof Node && newCaret.contains(e.target)) {
 				const menu = new Menu();
-				menu.addItem((i) => i.setTitle("Event").onClick(() => this.quickCreate()));
-				menu.addItem((i) => i.setTitle("新建随笔集").setIcon("sticky-note").onClick(() => this.promptNewSketchNote(this.sketchCreateKey())));
-				menu.addItem((i) => i.setTitle("Mail").onClick(() => this.plugin.openNewMailCompose()));
+				const zh = UI_LANG === "zh";
+				menu.addItem((i) => i.setTitle(zh ? "新建日程" : "New event").setIcon("calendar-plus").onClick(() => this.quickCreate()));
+				menu.addItem((i) => i.setTitle(zh ? "新建随笔集" : "New sketch note").setIcon("sticky-note").onClick(() => this.promptNewSketchNote(this.sketchCreateKey())));
+				menu.addItem((i) => i.setTitle(zh ? "新建邮件" : "New mail").setIcon("mail").onClick(() => this.plugin.openNewMailCompose()));
 				menu.showAtMouseEvent(e);
 				return;
 			}

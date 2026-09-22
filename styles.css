@@ -6089,15 +6089,15 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	position: absolute;
 	left: 0;
 	right: 0;
-	height: 78px;
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
 	justify-content: center;
 	gap: 2px;
-	padding: 6px 8px;
+	padding: 7px 10px;
 	border-bottom: 1px solid var(--background-modifier-border);
 	cursor: default;
+	overflow: hidden;
 }
 
 .nya-imap-spacer {
@@ -6142,11 +6142,42 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 .nya-imap-message .nya-imap-subject {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nya-imap-subjectrow {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
 	margin-left: 22px;
 }
 
 .nya-imap-message .nya-imap-attachment {
-	margin-left: 22px;
+	flex: 0 0 auto;
+	line-height: 1;
+}
+
+.nya-mail-size-select {
+	flex: 0 0 auto;
+	height: 28px;
+	padding: 0 6px;
+}
+
+.nya-imap-mail.is-list-small .nya-imap-message {
+	font-size: var(--font-smaller);
+}
+
+.nya-imap-mail.is-list-small .nya-imap-snippet {
+	display: none;
+}
+
+.nya-imap-mail.is-list-large .nya-imap-message {
+	font-size: var(--font-ui-medium);
 }
 
 .nya-imap-listbar {
