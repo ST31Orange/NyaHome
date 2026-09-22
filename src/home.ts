@@ -513,7 +513,7 @@ export class NyaHomeView extends ItemView {
 					noteEl.createDiv({ cls: "nyahome-note-label", text: path.split("/").pop() || path });
 					noteEl.createDiv({ cls: "nyahome-note-path", text: path });
 					noteEl.addEventListener("click", () => void this.app.workspace.openLinkText(path, "", true));
-					noteEl.createEl("button", { attr: { "aria-label": t.removeNote }, text: "×" }).addEventListener("click", (e) => {
+					noteEl.createEl("button", { cls: "nyahome-note-remove", attr: { "aria-label": t.removeNote }, text: "×" }).addEventListener("click", (e) => {
 						e.stopPropagation();
 						card.notes = card.notes.filter((x) => x !== path);
 						if (card.noteLayouts) delete card.noteLayouts[path];
@@ -554,8 +554,7 @@ export class NyaHomeView extends ItemView {
 		for (const card of cardList) {
 			const current = this.cardLayout(card);
 			let layout = current;
-			if (card.x == null || card.y == null || card.w == null || card.h == null ||
-				!this.layoutFits(current) || !this.layoutIsFree(current, placed, card)) {
+			if (card.x == null || card.y == null || card.w == null || card.h == null || !this.layoutFits(current)) {
 				layout = this.firstFreeLayout(placed, current.w, current.h) ?? { x: 0, y: 0, w: 1, h: 1 };
 				changed = true;
 			}
@@ -629,18 +628,12 @@ export class NyaHomeView extends ItemView {
 			card.x = x;
 			card.y = y;
 			this.applyHomeCardLayout(el, layout);
-			el.toggleClass("is-layout-invalid", !this.layoutIsFree(layout, this.plugin.settings.homeCards, card));
 		});
 		const finish = () => {
 			if (!active) return;
 			active = false;
 			el.removeClass("is-layout-dragging is-layout-invalid");
-			if (el.hasClass("is-layout-invalid")) {
-				Object.assign(card, origin);
-				this.applyHomeCardLayout(el, origin);
-			} else {
-				void this.plugin.persistNow();
-			}
+			void this.plugin.persistNow();
 		};
 		handle.addEventListener("pointerup", finish);
 		handle.addEventListener("pointercancel", finish);
@@ -671,19 +664,12 @@ export class NyaHomeView extends ItemView {
 			card.w = w;
 			card.h = h;
 			this.applyHomeCardLayout(el, layout);
-			el.toggleClass("is-layout-invalid", !this.layoutIsFree(layout, this.plugin.settings.homeCards, card));
 		});
 		const finish = () => {
 			if (!active) return;
 			active = false;
 			el.removeClass("is-layout-resizing is-layout-invalid");
-			if (el.hasClass("is-layout-invalid")) {
-				card.w = origin.w;
-				card.h = origin.h;
-				this.applyHomeCardLayout(el, origin);
-			} else {
-				void this.plugin.persistNow();
-			}
+			void this.plugin.persistNow();
 		};
 		handle.addEventListener("pointerup", finish);
 		handle.addEventListener("pointercancel", finish);

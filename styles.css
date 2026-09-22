@@ -7249,6 +7249,38 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	cursor: pointer;
 }
 
+/* The remove action belongs to the tile's corner, not to the document's
+   normal grid flow; keeping it absolute also prevents it from creating a
+   second button-sized row underneath the title. */
+.nyahome-note button.nyahome-note-remove {
+	position: absolute;
+	top: 2px;
+	right: 2px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	min-width: 18px;
+	height: 18px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: 14px;
+	line-height: 1;
+}
+
+.nyahome-note button.nyahome-note-remove:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.nyahome-note-label,
+.nyahome-note-path {
+	padding-right: 20px;
+}
+
 .nyahome-grid.is-layout-editing .nyahome-note {
 	cursor: default;
 }
