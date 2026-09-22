@@ -579,16 +579,7 @@ export class NyaHomeView extends ItemView {
 
 	private fileOpenHint(file: TFile): string {
 		const ext = file.extension.toLowerCase();
-		const type = ext ? ext.toUpperCase() : "FILE";
-		const zh = this.plugin.settings.language === "zh";
-		let opener: string;
-		if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "ico"].includes(ext)) opener = zh ? "图片查看器" : "Image viewer";
-		else if (ext === "pdf") opener = zh ? "PDF 阅读器" : "PDF viewer";
-		else if (["mp3", "wav", "flac", "ogg", "m4a", "aac", "3gp"].includes(ext)) opener = zh ? "媒体播放器" : "Media player";
-		else if (["mp4", "mkv", "webm", "mov", "avi", "ogv", "m4v"].includes(ext)) opener = zh ? "视频播放器" : "Video player";
-		else if (ext === "canvas") opener = zh ? "Obsidian 画布" : "Obsidian canvas";
-		else opener = zh ? "系统默认应用" : "System default";
-		return `${type} · ${opener}`;
+		return ext ? ext.toUpperCase() : (this.plugin.settings.language === "zh" ? "文件" : "FILE");
 	}
 
 	private addHomeCard(t: ReturnType<typeof T>): void {
