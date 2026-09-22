@@ -162,6 +162,7 @@ import { chunk, GRAPH_BATCH_MAX,
 	currentAddressFragment,
 	applyAddressChoice,
 	appendAddressChoices,
+	parseRecipientList,
 	GeoHit,
 	pickGeoHit,
 	splitPlaceQuery,
@@ -16936,14 +16937,9 @@ class RichComposeModal extends Modal {
 	 *  to become a draft first, since the send time is a property of a
 	 *  message, so it cannot take the plain sendMail path. */
 	private async send(whenMs?: number) {
-		const split = (s: string) =>
-			s
-				.split(/[,;]+/)
-				.map((x) => x.trim())
-				.filter(Boolean);
-		const to = split(this.toInput.value);
-		const cc = split(this.ccInput.value);
-		const bcc = split(this.bccInput.value);
+		const to = parseRecipientList(this.toInput.value);
+		const cc = parseRecipientList(this.ccInput.value);
+		const bcc = parseRecipientList(this.bccInput.value);
 		const subject = this.subjInput.value.trim() || "(no subject)";
 		const html = this.editorEl.innerHTML;
 		if (!to.length) {

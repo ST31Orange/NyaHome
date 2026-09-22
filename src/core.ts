@@ -1775,26 +1775,37 @@ export function currentAddressFragment(value: string, caret: number): { start: n
 }
 
 /** A chosen address folded back into the box, replacing only the fragment
- *  that was being typed. A trailing comma is added only when another address
- *  already follows it; otherwise the box stays immediately sendable. */
+ *  that was being typed and leaving a trailing comma to carry on from. */
 export function applyAddressChoice(value: string, caret: number, email: string): { value: string; caret: number } {
 	const { start } = currentAddressFragment(value, caret);
 	const before = value.slice(0, start);
 	const after = value.slice(caret);
 	const lead = before && !/[\s]$/.test(before) ? " " : "";
 	const rest = after.replace(/^[\s,;]+/, "");
-	const next = `${before}${lead}${email}${rest ? ", " : ""}`;
+	const next = `${before}${lead}${email}, `;
 	return { value: `${next}${rest}`, caret: next.length };
 }
 
 /** Add a whole contact-picker selection to a recipient box. Unlike a single
- *  autocomplete choice, this appends every selected address as one clean,
- *  sendable list and never leaves an empty trailing entry. */
+ *  autocomplete choice, this appends every selected address as one list and
+ *  leaves the caret ready for the next name. */
 export function appendAddressChoices(value: string, emails: readonly string[]): { value: string; caret: number } {
 	const current = value.trim().replace(/[\s,;]+$/, "");
 	const chosen = emails.map((email) => email.trim()).filter(Boolean);
-	const next = [current, ...chosen].filter(Boolean).join(", ");
+	if (!chosen.length) return { value: current, caret: current.length };
+	const next = `${[current, ...chosen].filter(Boolean).join(", ")}, `;
 	return { value: next, caret: next.length };
+}
+
+/** Parse a comma/semicolon-separated recipient box for sending. The editor
+ *  deliberately leaves a trailing separator after a picked contact, so this
+ *  removes empty trailing entries before the message reaches the provider. */
+export function parseRecipientList(value: string): string[] {
+	return value
+		.replace(/[\s,;]+$/, "")
+		.split(/[,;]+/)
+		.map((entry) => entry.trim())
+		.filter(Boolean);
 }
 
 export interface WhenPreset {

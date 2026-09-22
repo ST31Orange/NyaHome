@@ -122,6 +122,7 @@ import {
 	currentAddressFragment,
 	applyAddressChoice,
 	appendAddressChoices,
+	parseRecipientList,
 	PALETTE,
 	pickGeoHit,
 	searchFolderQuery,
@@ -1375,17 +1376,18 @@ eq(mimeForExtension(""), "application/octet-stream", "and so does no extension a
 
 	// taking a suggestion
 	const one = applyAddressChoice("ste", 3, "steve.palm@irely.com");
-	eq(one.value, "steve.palm@irely.com", "a lone choice does not leave a trailing comma");
+	eq(one.value, "steve.palm@irely.com, ", "a choice replaces the fragment and leaves a comma to carry on");
 	eq(one.caret, one.value.length, "with the caret at the end");
 	const second = applyAddressChoice("bob@x.com, ste", 14, "steve.palm@irely.com");
-	eq(second.value, "bob@x.com, steve.palm@irely.com", "an earlier address survives untouched");
+	eq(second.value, "bob@x.com, steve.palm@irely.com, ", "an earlier address survives untouched");
 	const middle = applyAddressChoice("bob@x.com, ste, later@x.com", 14, "steve.palm@irely.com");
 	eq(middle.value, "bob@x.com, steve.palm@irely.com, later@x.com", "and so does one typed after it");
 	eq(middle.caret, "bob@x.com, steve.palm@irely.com, ".length, "the caret lands ready for the next name");
 	const picked = appendAddressChoices("", ["one@x.com", "two@x.com"]);
-	eq(picked.value, "one@x.com, two@x.com", "a contact-picker selection appends every address without a trailing comma");
+	eq(picked.value, "one@x.com, two@x.com, ", "a contact-picker selection appends every address and leaves a separator");
 	const appended = appendAddressChoices("old@x.com, ", ["new@x.com"]);
-	eq(appended.value, "old@x.com, new@x.com", "picking a contact appends to an existing address cleanly");
+	eq(appended.value, "old@x.com, new@x.com, ", "picking a contact appends to an existing address cleanly");
+	eq(parseRecipientList("one@x.com, two@x.com, "), ["one@x.com", "two@x.com"], "sending strips the editor's trailing separator");
 }
 
 // --- the "later" presets, for snooze and schedule send ---
