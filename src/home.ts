@@ -40,6 +40,8 @@ export interface HomeCard {
 	id: string;
 	title: string;
 	notes: string[];
+	/** Per-note grid spans inside the card body, keyed by vault path. */
+	noteLayouts?: Record<string, { w?: number; h?: number }>;
 	/** Explicit 12×12 grid placement. Older cards are migrated on first render. */
 	x?: number;
 	y?: number;
@@ -507,15 +509,23 @@ export class NyaHomeView extends ItemView {
 		else {
 			for (const path of card.notes) {
 				body.createDiv("nyahome-note", (noteEl) => {
+					this.applyHomeNoteLayout(noteEl, this.noteLayout(card, path));
 					noteEl.createDiv({ cls: "nyahome-note-label", text: path.split("/").pop() || path });
 					noteEl.createDiv({ cls: "nyahome-note-path", text: path });
 					noteEl.addEventListener("click", () => void this.app.workspace.openLinkText(path, "", true));
 					noteEl.createEl("button", { attr: { "aria-label": t.removeNote }, text: "×" }).addEventListener("click", (e) => {
 						e.stopPropagation();
 						card.notes = card.notes.filter((x) => x !== path);
+						if (card.noteLayouts) delete card.noteLayouts[path];
 						this.plugin.queueSave();
 						this.render();
 					});
+					if (this.layoutEditing) {
+						const resize = noteEl.createDiv("nyahome-note-resize");
+						resize.setAttribute("title", t.resizeCard);
+						resize.addEventListener("click", (e) => e.stopPropagation());
+						this.bindHomeNoteResize(resize, noteEl, card, path, body);
+					}
 				});
 			}
 		}
@@ -678,6 +688,72 @@ export class NyaHomeView extends ItemView {
 		handle.addEventListener("pointerup", finish);
 		handle.addEventListener("pointercancel", finish);
 		handle.addEventListener("lostpointercapture", finish);
+	}
+
+	private noteLayout(card: HomeCard, path: string): { w: number; h: number } {
+		const saved = card.noteLayouts?.[path];
+		return {
+			w: clampInteger(saved?.w, 1, 4, 1),
+			h: clampInteger(saved?.h, 1, 4, 1),
+		};
+	}
+
+	private applyHomeNoteLayout(el: HTMLElement, layout: { w: number; h: number }): void {
+		el.style.gridColumn = `span ${layout.w}`;
+		el.style.gridRow = `span ${layout.h}`;
+	}
+
+	private bindHomeNoteResize(handle: HTMLElement, el: HTMLElement, card: HomeCard, path: string, body: HTMLElement): void {
+		const origin = this.noteLayout(card, path);
+		const start = { x: 0, y: 0 };
+		let active = false;
+
+		handle.addEventListener("pointerdown", (e: PointerEvent) => {
+			if (!this.layoutEditing || e.button !== 0) return;
+			Object.assign(origin, this.noteLayout(card, path));
+			start.x = e.clientX;
+			start.y = e.clientY;
+			active = true;
+			el.addClass("is-layout-resizing");
+			handle.setPointerCapture(e.pointerId);
+			e.preventDefault();
+			e.stopPropagation();
+		});
+		handle.addEventListener("pointermove", (e: PointerEvent) => {
+			if (!active) return;
+			const geometry = this.noteGridGeometry(body);
+			const layout = {
+				w: clampInteger(origin.w + Math.round((e.clientX - start.x) / geometry.stepX), 1, Math.min(4, geometry.columns), origin.w),
+				h: clampInteger(origin.h + Math.round((e.clientY - start.y) / geometry.stepY), 1, 4, origin.h),
+			};
+			card.noteLayouts = { ...(card.noteLayouts ?? {}), [path]: layout };
+			this.applyHomeNoteLayout(el, layout);
+			e.preventDefault();
+		});
+		const finish = () => {
+			if (!active) return;
+			active = false;
+			el.removeClass("is-layout-resizing");
+			void this.plugin.persistNow();
+		};
+		handle.addEventListener("pointerup", finish);
+		handle.addEventListener("pointercancel", finish);
+		handle.addEventListener("lostpointercapture", finish);
+	}
+
+	private noteGridGeometry(body: HTMLElement): { stepX: number; stepY: number; gap: number; columns: number } {
+		const rect = body.getBoundingClientRect();
+		const styles = window.getComputedStyle(body);
+		const gap = Number.parseFloat(styles.columnGap) || 0;
+		const columnWidth = Number.parseFloat(styles.gridTemplateColumns.split(" ")[0] ?? "") || 88;
+		const rowHeight = Number.parseFloat(styles.gridAutoRows.split(" ")[0] ?? "") || 54;
+		const columns = Math.max(1, Math.floor((rect.width + gap) / (columnWidth + gap)));
+		return {
+			gap,
+			stepX: columnWidth + gap,
+			stepY: rowHeight + gap + 1,
+			columns,
+		};
 	}
 
 	private gridGeometry(grid: HTMLElement): { rect: DOMRect; stepX: number; stepY: number; gap: number } {

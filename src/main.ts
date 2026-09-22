@@ -12337,17 +12337,6 @@ class ImapMailView extends ItemView {
 			if (a) this.pickFolderForTargets(a);
 		});
 		addHeaderAction("delete", "trash-2", "Delete selected", () => void this.deleteTargets(this.targetMessages().map((m) => m.uid)));
-		const sizeSelect = actions.createEl("select", { cls: "nya-mail-size-select", attr: { "aria-label": "邮件列表显示大小" } });
-		sizeSelect.createEl("option", { value: "compact", text: "小" });
-		sizeSelect.createEl("option", { value: "cozy", text: "中" });
-		sizeSelect.createEl("option", { value: "comfortable", text: "大" });
-		sizeSelect.value = this.plugin.settings.mailDensity;
-		sizeSelect.addEventListener("change", () => {
-			this.plugin.settings.mailDensity = sizeSelect.value as "compact" | "cozy" | "comfortable";
-			this.plugin.queueSave();
-			this.applyListDensity();
-			this.renderList(this.listEl);
-		});
 		const spamBtn = right.createEl("button", { cls: "nya-spam-btn", attr: { "aria-label": "识别垃圾邮件" } });
 		setIcon(spamBtn, "shield-alert");
 		spamBtn.createSpan({ text: "识别垃圾邮件" });
@@ -12653,6 +12642,17 @@ class ImapMailView extends ItemView {
 		const del = tools.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Delete selected" } });
 		setIcon(del, "trash-2");
 		del.addEventListener("click", () => void this.deleteChecked());
+		const sizeSelect = tools.createEl("select", { cls: "nya-mail-size-select", attr: { "aria-label": "邮件列表显示大小" } });
+		sizeSelect.createEl("option", { value: "compact", text: "小" });
+		sizeSelect.createEl("option", { value: "cozy", text: "中" });
+		sizeSelect.createEl("option", { value: "comfortable", text: "大" });
+		sizeSelect.value = this.plugin.settings.mailDensity;
+		sizeSelect.addEventListener("change", () => {
+			this.plugin.settings.mailDensity = sizeSelect.value as "compact" | "cozy" | "comfortable";
+			this.plugin.queueSave();
+			this.applyListDensity();
+			this.renderList(this.listEl);
+		});
 		const inner = host.createDiv("nya-imap-listinner");
 		this.listInner = inner;
 		inner.style.height = `${this.messages.length * this.listRowHeight}px`;
