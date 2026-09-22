@@ -40,8 +40,8 @@ export interface HomeCard {
 	id: string;
 	title: string;
 	notes: string[];
-	/** Per-note grid spans inside the card body, keyed by vault path. */
-	noteLayouts?: Record<string, { w?: number; h?: number }>;
+	/** Per-note grid placement inside the card body, keyed by vault path. */
+	noteLayouts?: Record<string, { x?: number; y?: number; w?: number; h?: number }>;
 	/** Explicit 12×12 grid placement. Older cards are migrated on first render. */
 	x?: number;
 	y?: number;
@@ -57,6 +57,8 @@ const HOME_GRID_COLS = 12;
 const HOME_GRID_ROWS = 24;
 const HOME_CARD_COLS = 4;
 const HOME_CARD_ROWS = 2;
+const HOME_NOTE_COLS = 4;
+const HOME_NOTE_ROWS = 8;
 
 const SEARCH_FILTERS: Array<{ id: string; icon: string; labelZh: string; labelEn: string; extensions: string[] }> = [
 	{ id: "folders", icon: "folder", labelZh: "文件夹", labelEn: "Folders", extensions: [] },
@@ -326,6 +328,7 @@ export class NyaHomeView extends ItemView {
 		actions.createDiv("nyahome-feature-gap is-right");
 
 		this.ensureHomeLayouts();
+		this.ensureHomeNoteLayouts();
 		const grid = page.createDiv("nyahome-grid-wrap");
 		const sectionHead = grid.createDiv("nyahome-section-head");
 		sectionHead.createDiv({ cls: "nyahome-section-title", text: t.folders });
@@ -512,7 +515,14 @@ export class NyaHomeView extends ItemView {
 					this.applyHomeNoteLayout(noteEl, this.noteLayout(card, path));
 					noteEl.createDiv({ cls: "nyahome-note-label", text: path.split("/").pop() || path });
 					noteEl.createDiv({ cls: "nyahome-note-path", text: path });
-					noteEl.addEventListener("click", () => void this.app.workspace.openLinkText(path, "", true));
+					noteEl.addEventListener("click", (e) => {
+						if (this.layoutEditing) {
+							e.preventDefault();
+							e.stopPropagation();
+							return;
+						}
+						void this.app.workspace.openLinkText(path, "", true);
+					});
 					noteEl.createEl("button", { cls: "nyahome-note-remove", attr: { "aria-label": t.removeNote }, text: "×" }).addEventListener("click", (e) => {
 						e.stopPropagation();
 						card.notes = card.notes.filter((x) => x !== path);
@@ -521,6 +531,8 @@ export class NyaHomeView extends ItemView {
 						this.render();
 					});
 					if (this.layoutEditing) {
+						noteEl.addClass("is-layout-note");
+						this.bindHomeNoteMove(noteEl, card, path, body);
 						const resize = noteEl.createDiv("nyahome-note-resize");
 						resize.setAttribute("title", t.resizeCard);
 						resize.addEventListener("click", (e) => e.stopPropagation());
@@ -676,17 +688,95 @@ export class NyaHomeView extends ItemView {
 		handle.addEventListener("lostpointercapture", finish);
 	}
 
-	private noteLayout(card: HomeCard, path: string): { w: number; h: number } {
+	private noteLayout(card: HomeCard, path: string): { x: number; y: number; w: number; h: number } {
 		const saved = card.noteLayouts?.[path];
 		return {
+			x: clampInteger(saved?.x, 0, HOME_NOTE_COLS - 1, 0),
+			y: clampInteger(saved?.y, 0, HOME_NOTE_ROWS - 1, 0),
 			w: clampInteger(saved?.w, 1, 4, 1),
 			h: clampInteger(saved?.h, 1, 4, 1),
 		};
 	}
 
-	private applyHomeNoteLayout(el: HTMLElement, layout: { w: number; h: number }): void {
-		el.style.gridColumn = `span ${layout.w}`;
-		el.style.gridRow = `span ${layout.h}`;
+	private applyHomeNoteLayout(el: HTMLElement, layout: { x: number; y: number; w: number; h: number }): void {
+		el.style.gridColumn = `${layout.x + 1} / span ${layout.w}`;
+		el.style.gridRow = `${layout.y + 1} / span ${layout.h}`;
+	}
+
+	private ensureHomeNoteLayouts(): void {
+		let changed = false;
+		for (const card of this.plugin.settings.homeCards) {
+			const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
+			for (const path of card.notes) {
+				const saved = card.noteLayouts?.[path];
+				let layout = {
+					x: clampInteger(saved?.x, 0, HOME_NOTE_COLS - 1, 0),
+					y: clampInteger(saved?.y, 0, HOME_NOTE_ROWS - 1, 0),
+					w: clampInteger(saved?.w, 1, HOME_NOTE_COLS, 1),
+					h: clampInteger(saved?.h, 1, HOME_NOTE_ROWS, 1),
+				};
+				const fits = layout.x + layout.w <= HOME_NOTE_COLS && layout.y + layout.h <= HOME_NOTE_ROWS;
+				if (!saved || !fits) {
+					const first = this.firstFreeNoteLayout(placed, layout.w, layout.h);
+					layout = first ?? { x: 0, y: 0, w: 1, h: 1 };
+					card.noteLayouts = { ...(card.noteLayouts ?? {}), [path]: layout };
+					changed = true;
+				}
+				placed.push(layout);
+			}
+		}
+		if (changed) this.plugin.queueSave();
+	}
+
+	private firstFreeNoteLayout(placed: Array<{ x: number; y: number; w: number; h: number }>, w: number, h: number): { x: number; y: number; w: number; h: number } | null {
+		const width = clampInteger(w, 1, HOME_NOTE_COLS, 1);
+		const height = clampInteger(h, 1, HOME_NOTE_ROWS, 1);
+		for (let y = 0; y <= HOME_NOTE_ROWS - height; y++) {
+			for (let x = 0; x <= HOME_NOTE_COLS - width; x++) {
+				const layout = { x, y, w: width, h: height };
+				if (placed.every((other) => layout.x + layout.w <= other.x || other.x + other.w <= layout.x || layout.y + layout.h <= other.y || other.y + other.h <= layout.y)) return layout;
+			}
+		}
+		return null;
+	}
+
+	private bindHomeNoteMove(el: HTMLElement, card: HomeCard, path: string, body: HTMLElement): void {
+		const origin = this.noteLayout(card, path);
+		const start = { x: 0, y: 0 };
+		let active = false;
+		el.addEventListener("pointerdown", (e: PointerEvent) => {
+			if (!this.layoutEditing || e.button !== 0 || (e.target as HTMLElement).closest("button, .nyahome-note-resize")) return;
+			Object.assign(origin, this.noteLayout(card, path));
+			start.x = e.clientX;
+			start.y = e.clientY;
+			active = true;
+			el.addClass("is-layout-dragging");
+			el.setPointerCapture(e.pointerId);
+			e.preventDefault();
+			e.stopPropagation();
+		});
+		el.addEventListener("pointermove", (e: PointerEvent) => {
+			if (!active) return;
+			const geometry = this.noteGridGeometry(body);
+			const layout = {
+				x: clampInteger(origin.x + Math.round((e.clientX - start.x) / geometry.stepX), 0, HOME_NOTE_COLS - origin.w, origin.x),
+				y: clampInteger(origin.y + Math.round((e.clientY - start.y) / geometry.stepY), 0, HOME_NOTE_ROWS - origin.h, origin.y),
+				w: origin.w,
+				h: origin.h,
+			};
+			card.noteLayouts = { ...(card.noteLayouts ?? {}), [path]: layout };
+			this.applyHomeNoteLayout(el, layout);
+			e.preventDefault();
+		});
+		const finish = () => {
+			if (!active) return;
+			active = false;
+			el.removeClass("is-layout-dragging");
+			void this.plugin.persistNow();
+		};
+		el.addEventListener("pointerup", finish);
+		el.addEventListener("pointercancel", finish);
+		el.addEventListener("lostpointercapture", finish);
 	}
 
 	private bindHomeNoteResize(handle: HTMLElement, el: HTMLElement, card: HomeCard, path: string, body: HTMLElement): void {
@@ -709,8 +799,10 @@ export class NyaHomeView extends ItemView {
 			if (!active) return;
 			const geometry = this.noteGridGeometry(body);
 			const layout = {
-				w: clampInteger(origin.w + Math.round((e.clientX - start.x) / geometry.stepX), 1, Math.min(4, geometry.columns), origin.w),
-				h: clampInteger(origin.h + Math.round((e.clientY - start.y) / geometry.stepY), 1, 4, origin.h),
+				x: origin.x,
+				y: origin.y,
+				w: clampInteger(origin.w + Math.round((e.clientX - start.x) / geometry.stepX), 1, Math.min(4, geometry.columns, HOME_NOTE_COLS - origin.x), origin.w),
+				h: clampInteger(origin.h + Math.round((e.clientY - start.y) / geometry.stepY), 1, Math.min(4, HOME_NOTE_ROWS - origin.y), origin.h),
 			};
 			card.noteLayouts = { ...(card.noteLayouts ?? {}), [path]: layout };
 			this.applyHomeNoteLayout(el, layout);
