@@ -763,7 +763,7 @@
 
 .nya-month-row {
 	position: relative;
-	flex: 1;
+	flex: 0 0 auto;
 	min-height: 96px;
 	border-top: 1px solid var(--background-modifier-border);
 }
