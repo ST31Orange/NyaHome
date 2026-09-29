@@ -650,7 +650,7 @@
 	top: 3px;
 	left: 3px;
 	z-index: 2;
-	color: #f0a51a;
+	color: #e83e8c;
 	line-height: 0;
 	pointer-events: none;
 }
@@ -666,7 +666,35 @@
 .is-starred.nya-chip,
 .is-starred.nya-agenda-row,
 .nya-sb-ev.is-starred {
-	padding-left: 19px;
+	padding-left: 20px;
+}
+
+/* These containers set their own padding later in the stylesheet. Keep the
+   starred slot at higher specificity so week/day banners and month chips
+   cannot run underneath the marker. */
+.nya-allday-lanes .nya-span.is-starred,
+.nya-row-spans .nya-span.is-starred,
+.nya-month-chips .nya-timed-chip.is-starred {
+	padding-left: 20px;
+}
+
+/* Month cells stay compact: a starred event still uses one line with an
+   ellipsis, unlike the roomier agenda and sidebar lists. */
+.nya-month-chips .nya-timed-chip.is-starred .nya-chip-title {
+	display: block;
+	-webkit-line-clamp: unset;
+	max-height: none;
+	line-height: 1.05;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The star is the status marker for a starred event, so the ordinary
+   calendar-colour dot is intentionally omitted in list views. */
+.nya-sb-ev.is-starred .nya-sb-dot,
+.nya-agenda-row.is-starred .nya-agenda-dot {
+	display: none;
 }
 
 .nya-agenda-row.is-starred .nya-agenda-title,

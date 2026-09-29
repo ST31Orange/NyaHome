@@ -14588,13 +14588,14 @@ class PowerCalendarView extends ItemView {
 			for (const ev of dayEvents) {
 				const row = ag.createDiv("nya-sb-ev");
 				row.toggleClass("is-completed", s.sidebarCompletedMode === "completed" && !!ev.completed);
-				if (this.plugin.isStarred(ev)) {
+				const starred = this.plugin.isStarred(ev);
+				if (starred) {
 					row.addClass("is-starred");
 					const star = row.createDiv("nya-star");
 					setIcon(star, "star");
 					row.prepend(star);
 				}
-				row.createSpan("nya-sb-dot").style.background = ev.color || "var(--interactive-accent)";
+				if (!starred) row.createSpan("nya-sb-dot").style.background = ev.color || "var(--interactive-accent)";
 				const tx = row.createDiv("nya-sb-ev-text");
 				tx.createDiv({ cls: "nya-sb-ev-title", text: ev.title });
 				tx.createDiv({ cls: "nya-sb-ev-time", text: this.sidebarEventTime(ev) });
@@ -15508,7 +15509,7 @@ class PowerCalendarView extends ItemView {
 				const row = day.createDiv("nya-agenda-row");
 				this.paintEventEl(row, ev);
 				row.toggleClass("has-note", this.plugin.noteExistsFor(ev));
-				row.createDiv("nya-agenda-dot");
+				if (!this.plugin.isStarred(ev)) row.createDiv("nya-agenda-dot");
 				row.createDiv({ cls: "nya-agenda-time", text: ev.allDay ? "All day" : fmtTimeOfMs(ev.startMs, s.use24h) });
 				const main = row.createDiv("nya-agenda-main");
 				main.createDiv({ cls: "nya-agenda-title", text: ev.title });
