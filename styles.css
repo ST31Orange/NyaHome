@@ -849,6 +849,28 @@
 	gap: 1px;
 }
 
+.nya-month-chips .nya-chip {
+	flex-wrap: nowrap;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	max-width: 100%;
+}
+
+.nya-month-chips .nya-chip-time {
+	flex: 0 0 auto;
+	line-height: 1;
+}
+
+.nya-month-chips .nya-chip-title {
+	flex: 1 1 auto;
+	display: block;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .nya-chip {
 	display: flex;
 	align-items: baseline;
