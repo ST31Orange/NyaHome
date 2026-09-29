@@ -528,6 +528,20 @@
 	min-width: 0;
 }
 
+.nya-sb-ev.is-completed {
+	opacity: 0.62;
+}
+
+.nya-sb-ev.is-completed .nya-sb-ev-title,
+.nya-sb-ev.is-completed .nya-sb-ev-time {
+	color: var(--text-faint);
+	text-decoration: line-through;
+}
+
+.nya-sb-ev.is-completed .nya-sb-dot {
+	opacity: 0.45;
+}
+
 .nya-sb-ev-title {
 	font-size: var(--font-ui-small);
 	color: var(--text-normal);

@@ -22,7 +22,7 @@ export class TranslationSettingsTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
-		containerEl.createEl("h2", { text: "Translation" });
+		new Setting(containerEl).setName("Translation").setHeading();
 		for (const row of this.rows()) {
 			const setting = new Setting(containerEl).setName(row.name);
 			if (row.desc) setting.setDesc(row.desc);

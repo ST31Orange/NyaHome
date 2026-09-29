@@ -494,6 +494,8 @@ interface NyaHomeSettings {
 	/** The sidebar's calendar list folds away to give the agenda room. */
 	sidebarCalsCollapsed: boolean;
 	sidebarAgendaCollapsed: boolean;
+	/** How completed events behave in the calendar's lower-left agenda rail. */
+	sidebarCompletedMode: "show" | "completed" | "hide";
 	/** Open-Meteo coordinates for the sidebar agenda's weather; empty = off.
 	 *  Filled by looking up weatherPlace, or by hand. */
 	weatherLat: string;
@@ -799,6 +801,7 @@ const DEFAULT_SETTINGS: NyaHomeSettings = {
 	sidebarOpen: true,
 	sidebarCalsCollapsed: false,
 	sidebarAgendaCollapsed: false,
+	sidebarCompletedMode: "completed",
 	weatherLat: "",
 	weatherLon: "",
 	weatherPlace: "",
@@ -14569,7 +14572,7 @@ class PowerCalendarView extends ItemView {
 		const agEvents = this.plugin.eventsForWindow(from, to);
 		for (let i = 0; i < 14; i++) {
 			const key = addDays(from, i);
-			const dayEvents = eventsOnDay(agEvents, key);
+			const dayEvents = eventsOnDay(agEvents, key).filter((ev) => s.sidebarCompletedMode !== "hide" || !ev.completed);
 			const head = ag.createDiv("nya-sb-dayhead");
 			head.createSpan({ cls: "nya-sb-dayname", text: relativeDayLabel(key, this.todayKey, s.weekStartsMonday) });
 			const w = this.plugin.weatherFor(key);
@@ -14584,6 +14587,7 @@ class PowerCalendarView extends ItemView {
 			}
 			for (const ev of dayEvents) {
 				const row = ag.createDiv("nya-sb-ev");
+				row.toggleClass("is-completed", s.sidebarCompletedMode === "completed" && !!ev.completed);
 				row.createSpan("nya-sb-dot").style.background = ev.color || "var(--interactive-accent)";
 				const tx = row.createDiv("nya-sb-ev-text");
 				tx.createDiv({ cls: "nya-sb-ev-title", text: ev.title });
@@ -15064,6 +15068,14 @@ class PowerCalendarView extends ItemView {
 		const rowKeys = rowCells.map((c) => c.key);
 		const spans = spansForRow(events, rowKeys);
 		const row = grid.createDiv("nya-month-row");
+		const laneCount = spans.reduce((m, sp) => Math.max(m, sp.lane + 1), 0);
+		const maxStack = rowCells.reduce((max, cell) => {
+			const timed = timedOnDay(events, cell.key).length;
+			const sketches = this.plugin.settings.sketchNotes?.filter((n) => n.date === cell.key).length ?? 0;
+			return Math.max(max, timed + sketches);
+		}, 0);
+		row.style.flex = "0 0 auto";
+		row.style.minHeight = `${Math.max(96, 30 + laneCount * 22 + maxStack * 21)}px`;
 		if (this.plugin.settings.showWeekNumbers) row.createDiv({ cls: "nya-weeknum", text: `W${isoWeekNum(rowKeys[0])}` });
 
 		const cellsEl = row.createDiv("nya-month-cells");
@@ -15120,13 +15132,8 @@ class PowerCalendarView extends ItemView {
 				this.openEventModal(null, msOfKey(cell.key), msOfKey(addDays(cell.key, 1)), true);
 			});
 			const timed = timedOnDay(events, cell.key);
-			const cap = 4;
-			for (const ev of timed.slice(0, cap)) this.renderChip(chipArea, ev);
+			for (const ev of timed) this.renderChip(chipArea, ev);
 			for (const note of this.plugin.settings.sketchNotes?.filter((n) => n.date === cell.key) ?? []) this.renderSketchChip(chipArea, note, "month");
-			if (timed.length > cap) {
-				const more = chipArea.createEl("button", { cls: "nya-more-btn", text: `+${timed.length - cap} more` });
-				more.addEventListener("click", () => this.goDay(cell.key));
-			}
 		}
 
 		if (spans.length) {
@@ -19671,6 +19678,22 @@ class NyaHomeSettingTab extends PluginSettingTab {
 							this.plugin.notify();
 						})
 					);
+				},
+			},
+			{
+				name: "Completed events in the sidebar agenda",
+				desc: "Choose whether completed events appear normally, with completed styling, or not at all in the lower-left agenda.",
+				build: (st) => {
+					st.addDropdown((d) => {
+						d.addOption("show", "Show normally");
+						d.addOption("completed", "Show completed style");
+						d.addOption("hide", "Hide");
+						d.setValue(s.sidebarCompletedMode).onChange((v) => {
+							s.sidebarCompletedMode = v as "show" | "completed" | "hide";
+							save();
+							this.plugin.notify();
+						});
+					});
 				},
 			},
 			{
