@@ -850,25 +850,36 @@
 }
 
 .nya-month-chips .nya-chip {
-	flex-wrap: nowrap;
-	align-items: center;
-	gap: 5px;
 	min-width: 0;
 	max-width: 100%;
 }
 
-.nya-month-chips .nya-chip-time {
-	flex: 0 0 auto;
-	line-height: 1;
+.nya-month-chips .nya-timed-chip {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	align-items: start;
+	column-gap: 5px;
+	row-gap: 0;
+	padding-top: 1px;
+	padding-bottom: 1px;
+	line-height: 1.05;
 }
 
-.nya-month-chips .nya-chip-title {
-	flex: 1 1 auto;
-	display: block;
+.nya-month-chips .nya-timed-chip .nya-chip-time {
+	line-height: 1.05;
+	padding-top: 1px;
+}
+
+.nya-month-chips .nya-timed-chip .nya-chip-title {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
 	min-width: 0;
-	white-space: nowrap;
+	line-height: 1.05;
+	white-space: normal;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	max-height: 2.1em;
 }
 
 .nya-chip {

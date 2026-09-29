@@ -15075,7 +15075,7 @@ class PowerCalendarView extends ItemView {
 			return Math.max(max, timed + sketches);
 		}, 0);
 		row.style.flex = "0 0 auto";
-		row.style.minHeight = `${Math.max(96, 30 + laneCount * 22 + maxStack * 21)}px`;
+		row.style.minHeight = `${Math.max(96, 30 + laneCount * 22 + maxStack * 25)}px`;
 		if (this.plugin.settings.showWeekNumbers) row.createDiv({ cls: "nya-weeknum", text: `W${isoWeekNum(rowKeys[0])}` });
 
 		const cellsEl = row.createDiv("nya-month-cells");
@@ -15167,7 +15167,7 @@ class PowerCalendarView extends ItemView {
 
 	private renderChip(parent: HTMLElement, ev: PCEvent) {
 		const s = this.plugin.settings;
-		const chip = parent.createDiv("nya-chip");
+		const chip = parent.createDiv("nya-chip nya-timed-chip");
 		this.paintEventEl(chip, ev);
 		chip.toggleClass("has-note", this.plugin.noteExistsFor(ev));
 		chip.createSpan({ cls: "nya-chip-time", text: fmtTimeOfMs(ev.startMs, s.use24h, true) });
