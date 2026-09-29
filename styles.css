@@ -508,6 +508,7 @@
 }
 
 .nya-sb-ev {
+	position: relative;
 	display: flex;
 	align-items: flex-start;
 	gap: 7px;
@@ -642,19 +643,40 @@
 	opacity: 0.75;
 }
 
-/* a starred event keeps its dot, then earns a tiny star in the corner */
+/* A starred event keeps a reserved slot on the left, so the marker never
+   covers the title or the time. */
 .nya-star {
 	position: absolute;
 	top: 3px;
-	right: 4px;
-	color: #ffbb33;
+	left: 3px;
+	z-index: 2;
+	color: #f0a51a;
 	line-height: 0;
 	pointer-events: none;
 }
 
 .nya-star .svg-icon {
-	width: 11px;
-	height: 11px;
+	width: 13px;
+	height: 13px;
+	fill: currentColor;
+}
+
+.is-starred.nya-span,
+.is-starred.nya-block,
+.is-starred.nya-chip,
+.is-starred.nya-agenda-row,
+.nya-sb-ev.is-starred {
+	padding-left: 19px;
+}
+
+.nya-agenda-row.is-starred .nya-agenda-title,
+.nya-sb-ev.is-starred .nya-sb-ev-title {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	white-space: normal;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* a linked note exists: a small accent dot in the corner */

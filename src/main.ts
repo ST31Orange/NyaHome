@@ -14588,6 +14588,12 @@ class PowerCalendarView extends ItemView {
 			for (const ev of dayEvents) {
 				const row = ag.createDiv("nya-sb-ev");
 				row.toggleClass("is-completed", s.sidebarCompletedMode === "completed" && !!ev.completed);
+				if (this.plugin.isStarred(ev)) {
+					row.addClass("is-starred");
+					const star = row.createDiv("nya-star");
+					setIcon(star, "star");
+					row.prepend(star);
+				}
 				row.createSpan("nya-sb-dot").style.background = ev.color || "var(--interactive-accent)";
 				const tx = row.createDiv("nya-sb-ev-text");
 				tx.createDiv({ cls: "nya-sb-ev-title", text: ev.title });
@@ -15300,7 +15306,11 @@ class PowerCalendarView extends ItemView {
 		this.paintNeedsAction(el, ev);
 		el.toggleClass("is-starred", this.plugin.isStarred(ev));
 		el.querySelector(".nya-star")?.remove();
-		if (this.plugin.isStarred(ev)) setIcon(el.createDiv("nya-star"), "star");
+		if (this.plugin.isStarred(ev)) {
+			const star = el.createDiv("nya-star");
+			setIcon(star, "star");
+			el.prepend(star);
+		}
 		el.addEventListener("contextmenu", (e) => this.openEventMenu(ev, e));
 	}
 
