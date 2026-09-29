@@ -9737,14 +9737,19 @@ function makeDraggable(
 	anchor?: () => { x: number; y: number },
 	/** Ignore whatever is remembered and open at the fallback size, centered.
 	 *  For dialogs whose remembered geometry can go stale or garbage. */
-	reset = false
+	reset = false,
+	min: { w: number; h: number } = { w: 380, h: 300 }
 ): () => void {
 	const store = app as unknown as { loadLocalStorage: (k: string) => unknown; saveLocalStorage: (k: string, v: unknown) => void };
 	el.addClass("nya-movable");
 
 	const saved = reset ? null : (store.loadLocalStorage(key) as { x?: number; y?: number; w?: number; h?: number } | null);
-	const w = Math.min(Math.max(saved?.w ?? fallback.w, 380), window.innerWidth - 20);
-	const h = Math.min(Math.max(saved?.h ?? fallback.h, 300), window.innerHeight - 20);
+	const maxW = Math.max(240, window.innerWidth - 20);
+	const maxH = Math.max(240, window.innerHeight - 20);
+	const minW = Math.min(min.w, maxW);
+	const minH = Math.min(min.h, maxH);
+	const w = Math.min(Math.max(saved?.w ?? fallback.w, minW), maxW);
+	const h = Math.min(Math.max(saved?.h ?? fallback.h, minH), maxH);
 	el.style.width = `${w}px`;
 	el.style.height = `${h}px`;
 	// a window remembered off the edge of a smaller screen is a lost window
@@ -9770,6 +9775,8 @@ function makeDraggable(
 	bar.addClass("nya-movable-grip");
 	bar.addEventListener("mousedown", (e) => {
 		if (e.button !== 0) return;
+		const target = e.target instanceof HTMLElement ? e.target : null;
+		if (target?.closest("input, textarea, button, a, select, [contenteditable='true']")) return;
 		e.preventDefault();
 		const startX = e.clientX - el.offsetLeft;
 		const startY = e.clientY - el.offsetTop;
@@ -16158,14 +16165,23 @@ class PowerCalendarView extends ItemView {
 		// viewport and flipping above when there is no room below; after
 		// that it opens where it was left, and "Follow the event again"
 		// returns it to landing beside whatever was clicked.
-		const stopDrag = makeDraggable(this.app, card, head, "nyahome:event-card", { w: 340, h: Math.min(420, window.innerHeight - 40) }, () => {
-			const r = anchor.getBoundingClientRect();
-			const below = r.bottom + 6;
-			return {
-				x: Math.max(8, Math.min(r.left, window.innerWidth - card.offsetWidth - 8)),
-				y: below + card.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - card.offsetHeight - 6) : below,
-			};
-		});
+		const stopDrag = makeDraggable(
+			this.app,
+			card,
+			head,
+			"nyahome:event-card",
+			{ w: 480, h: Math.min(640, window.innerHeight - 40) },
+			() => {
+				const r = anchor.getBoundingClientRect();
+				const below = r.bottom + 6;
+				return {
+					x: Math.max(8, Math.min(r.left, window.innerWidth - card.offsetWidth - 8)),
+					y: below + card.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - card.offsetHeight - 6) : below,
+				};
+			},
+			false,
+			{ w: 480, h: 560 }
+		);
 
 		const onDocDown = (e: MouseEvent) => {
 			if (e.target instanceof Node && (card.contains(e.target) || anchor.contains(e.target))) return;
