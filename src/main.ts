@@ -187,6 +187,7 @@ import donateQr from "../donate-alipay.jpg";
 import donateWxQr from "../donate-wechat.jpg";
 import { decryptSecret, encryptSecret, secretIsEncrypted } from "./secret";
 import { lunarTag } from "./lunar";
+import { isRestDay } from "./workdays";
 import { setI18nLang, startI18n, stopI18n, t } from "./i18n";
 import { KanbanHost, parseKanbanBoard, serializeKanbanBoard, TasksBoard } from "./kanban";
 import { ImapAccount, ImapBody, ImapFolderInfo, ImapMessage, SmtpAttachment, SmtpMail, imapLabel, listImapFolderInfos, listImapFolders, markImapRead, moveImapMessages, permanentlyDeleteImapMessages, searchImapMessages, searchImapSubjects, sendImapMail, setImapFlagged, trashFolderFor, fetchImapBody, fetchImapMessages, testImapAccount } from "./imap";
@@ -15090,6 +15091,7 @@ class PowerCalendarView extends ItemView {
 			const el = cellsEl.createDiv("nya-month-cell");
 			el.dataset.key = cell.key;
 			cellMap.set(cell.key, el);
+			el.toggleClass("is-rest-day", isRestDay(cell.key));
 			el.addEventListener("dragover", (e) => {
 				if (!this.monthDragEv && !this.sketchDragNote) return;
 				e.preventDefault();
@@ -15264,6 +15266,7 @@ class PowerCalendarView extends ItemView {
 		for (const key of days) {
 			const cell = cells.createDiv("nya-sketch-cell");
 			cell.toggleClass("is-today", key === this.todayKey);
+			cell.toggleClass("is-rest-day", isRestDay(key));
 			cell.addEventListener("contextmenu", (e) => {
 				e.preventDefault();
 				e.stopPropagation();
@@ -15337,6 +15340,7 @@ class PowerCalendarView extends ItemView {
 		for (const key of days) {
 			const cell = headCells.createDiv("nya-week-headcell");
 			cell.toggleClass("is-today", key === this.todayKey);
+			cell.toggleClass("is-rest-day", isRestDay(key));
 			cell.createSpan({ cls: "nya-week-headname", text: dowShort(dayOfWeek(key)) });
 			cell.createSpan({ cls: "nya-week-headnum", text: String(+key.slice(8, 10)) });
 			// a compact lunar line under the date: term or festival wins, else 十四
@@ -15423,6 +15427,7 @@ class PowerCalendarView extends ItemView {
 			const col = cols.createDiv("nya-week-col");
 			colEls.push(col);
 			col.toggleClass("is-today", key === this.todayKey);
+			col.toggleClass("is-rest-day", isRestDay(key));
 			this.attachSlotGesture(col, key);
 			col.addEventListener("contextmenu", (e) => {
 				if (e.target !== col) return; // blocks own their context menus

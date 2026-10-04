@@ -11,6 +11,7 @@
 		"deploy": "npm run build && node deploy.mjs"
 	},
 	"dependencies": {
+		"chinese-workday": "2.0.0",
 		"ical.js": "2.2.1",
 		"imapflow": "^2.0.5",
 		"mailparser": "^3.9.28",

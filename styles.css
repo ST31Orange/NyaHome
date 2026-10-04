@@ -781,6 +781,31 @@
 	overflow: hidden;
 }
 
+.nya-month-cell.is-rest-day,
+.nya-week-headcell.is-rest-day,
+.nya-sketch-cell.is-rest-day,
+.nya-week-col.is-rest-day {
+	position: relative;
+	isolation: isolate;
+}
+
+.nya-month-cell.is-rest-day::before,
+.nya-week-headcell.is-rest-day::before,
+.nya-sketch-cell.is-rest-day::before,
+.nya-week-col.is-rest-day::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	background-image: repeating-linear-gradient(
+		45deg,
+		var(--text-faint) 0 1px,
+		transparent 1px 9px
+	);
+	opacity: 0.15;
+}
+
 .nya-month-cell:last-child {
 	border-right: none;
 }

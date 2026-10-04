@@ -164,6 +164,7 @@ import { DEFAULT_TRANSLATION_CONFIG, ITranslationServiceV1 } from "../src/transl
 import { MTranServerTranslationService } from "../src/translation/mtran-service";
 import { TranslationManager } from "../src/translation/manager";
 import { htmlToPlainText, splitTranslationChunks } from "../src/translation/text";
+import { isRestDay } from "../src/workdays";
 
 let failures = 0;
 function eq(a: unknown, b: unknown, msg: string) {
@@ -214,6 +215,10 @@ eq(weekDays("2026-07-17", false)[0], "2026-07-12", "sunday-start week begins Sun
 eq(weekDays("2026-07-13", true)[0], "2026-07-13", "a Monday starts its own monday week");
 
 // --- monthGrid ---
+eq(isRestDay("2026-10-04"), true, "National Day holidays are rest days");
+eq(isRestDay("2026-10-10"), false, "Chinese weekend makeup days are workdays");
+eq(isRestDay("2026-10-11"), true, "ordinary weekend days are rest days");
+eq(isRestDay("2026-10-12"), false, "normal weekdays are workdays");
 void (async () => {
 	const july = monthGrid(2026, 6, true);
 	eq(july.length, 42, "month grid is always 42 cells");
