@@ -15082,8 +15082,10 @@ class PowerCalendarView extends ItemView {
 			const sketches = this.plugin.settings.sketchNotes?.filter((n) => n.date === cell.key).length ?? 0;
 			return Math.max(max, timed + sketches);
 		}, 0);
-		row.style.flex = "0 0 auto";
-		row.style.minHeight = `${Math.max(96, 30 + laneCount * 22 + maxStack * 25)}px`;
+		row.setCssStyles({
+			flex: "0 0 auto",
+			minHeight: `${Math.max(96, 30 + laneCount * 22 + maxStack * 25)}px`,
+		});
 		if (this.plugin.settings.showWeekNumbers) row.createDiv({ cls: "nya-weeknum", text: `W${isoWeekNum(rowKeys[0])}` });
 
 		const cellsEl = row.createDiv("nya-month-cells");

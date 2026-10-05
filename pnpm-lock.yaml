@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      chinese-workday:
+        specifier: 2.0.0
+        version: 2.0.0
       ical.js:
         specifier: 2.2.1
         version: 2.2.1
@@ -227,6 +230,9 @@ packages:
   atomic-sleep@1.0.0:
     resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
     engines: {node: '>=8.0.0'}
+
+  chinese-workday@2.0.0:
+    resolution: {integrity: sha512-K2i+1fmZrb7xdjjbQg6AUIlKuav2NwLWVWLvdTJqbbGBfkn63UuKqq//Z6vclqrmoy8wfhaAZ50sjGEFD9CRjg==}
 
   crelt@1.0.7:
     resolution: {integrity: sha512-aK6BbWfhf4U/wCcLHKPJl/xa6VkVstRaPywWtMKGwuOLc/wZTyQYuoxgvZnNsBvv7Kg3YTBQYYBCggcviQczuA==}
@@ -542,6 +548,8 @@ snapshots:
       libqp: 2.1.1
 
   atomic-sleep@1.0.0: {}
+
+  chinese-workday@2.0.0: {}
 
   crelt@1.0.7: {}
 
