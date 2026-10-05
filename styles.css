@@ -6043,12 +6043,38 @@ body.theme-light .notice:not(.pw-self-styled) a {
 
 .nya-imap-search {
 	display: flex;
-	padding: 8px 12px;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
 	border-bottom: 1px solid var(--background-modifier-border);
+	flex: 0 0 auto;
 }
 
 .nya-imap-search input {
 	width: 100%;
+	flex: 1;
+	min-width: 0;
+}
+
+.nya-imap-search-scope {
+	flex: 0 0 auto;
+	height: 28px;
+	padding: 0 6px;
+}
+
+.nya-imap-list-col {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+/* 列表列内：邮件列表占满搜索栏下方的剩余高度 */
+.nya-imap-list-col .nya-imap-list {
+	flex: 1 1 auto;
+	min-height: 0;
 }
 
 .nya-imap-mail .nya-mail-header {
@@ -6800,8 +6826,9 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	left: calc(100% + 12px);
 	top: 50%;
 	transform: translateY(-50%);
-	height: 1.5em;
-	width: 1.667em;
+	font-size: inherit;
+	height: 1.6em;
+	width: 1.78em;
 	display: grid;
 	place-items: center;
 	overflow: hidden;

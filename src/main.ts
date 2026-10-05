@@ -12282,6 +12282,8 @@ class ImapMailView extends ItemView {
 	private translationUnsubscribe: (() => void) | null = null;
 	private expanded = new Set<string>();
 	private query = "";
+	/** 搜索范围："all" = 全部邮箱（默认）；"current" = 当前邮箱。 */
+	private searchScope: "all" | "current" = "all";
 	private loadingFolders = false;
 	private checked = new Set<number>();
 	private loadId = 0;
@@ -12403,19 +12405,6 @@ class ImapMailView extends ItemView {
 		setIcon(draftBtn, "file-edit");
 		draftBtn.addEventListener("click", () => new ImapDraftListModal(this.app, this.plugin, (draft) => this.openDraft(draft)).open());
 
-		const searchRow = root.createDiv("nya-imap-search");
-		const search = searchRow.createEl("input", { type: "search", attr: { placeholder: "Search mail..." } });
-		search.addEventListener("change", () => {
-			this.query = search.value;
-			void this.loadMessages();
-		});
-		search.addEventListener("keydown", (e) => {
-			if (e.key === "Enter") {
-				this.query = search.value;
-				void this.loadMessages();
-			}
-		});
-
 		const body = root.createDiv("nya-imap-mail-body");
 		this.foldersEl = body.createDiv("nya-imap-folders");
 		const middle = body.createDiv("nya-imap-middle");
@@ -12427,7 +12416,30 @@ class ImapMailView extends ItemView {
 			handle.empty();
 			setIcon(handle, folded ? "panel-left-close" : "panel-left-open");
 		});
-		this.listEl = middle.createDiv("nya-imap-list");
+		// 列表列：搜索栏在列表上方，左侧是折叠手柄
+		const listCol = middle.createDiv("nya-imap-list-col");
+		// 搜索栏：位于中间邮件列表上方；可选择「全部邮箱 / 当前邮箱」范围
+		const searchRow = listCol.createDiv("nya-imap-search");
+		const scopeSel = searchRow.createEl("select", { cls: "nya-imap-search-scope", attr: { "aria-label": "搜索范围" } });
+		scopeSel.createEl("option", { value: "all", text: "全部邮箱" });
+		scopeSel.createEl("option", { value: "current", text: "当前邮箱" });
+		scopeSel.value = this.searchScope;
+		scopeSel.addEventListener("change", () => {
+			this.searchScope = scopeSel.value as "all" | "current";
+			void this.loadMessages();
+		});
+		const search = searchRow.createEl("input", { type: "search", attr: { placeholder: "搜索邮件…" } });
+		search.addEventListener("change", () => {
+			this.query = search.value;
+			void this.loadMessages();
+		});
+		search.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") {
+				this.query = search.value;
+				void this.loadMessages();
+			}
+		});
+		this.listEl = listCol.createDiv("nya-imap-list");
 		this.readEl = body.createDiv("nya-imap-read");
 		this.attachListScroll();
 		this.restoreSelection();
@@ -12610,9 +12622,9 @@ class ImapMailView extends ItemView {
 	}
 
 	private async loadMessages() {
-		const a = this.currentAccount();
 		const host = this.listEl;
 		if (!host) return;
+		const a = this.currentAccount();
 		if (!a || !this.selectedFolder) {
 			host.empty();
 			host.createDiv({ cls: "nya-empty", text: "Pick a folder to read." });
@@ -12620,7 +12632,7 @@ class ImapMailView extends ItemView {
 		}
 		try {
 			const loadId = ++this.loadId;
-			const all = await this.plugin.mailService.messages(a, this.selectedFolder);
+			const all = await this.collectSearchMessages(a);
 			if (loadId !== this.loadId) return;
 			const q = this.query.trim().toLowerCase();
 			this.messages = q ? all.filter((m) => `${m.subject}\n${m.from}\n${m.snippet ?? ""}`.toLowerCase().includes(q)) : all;
@@ -12631,18 +12643,35 @@ class ImapMailView extends ItemView {
 		}
 	}
 
+	/** 根据搜索范围收集要展示的邮件：空查询或「当前邮箱」只取当前文件夹；
+	 *  「全部邮箱」且有查询时遍历所有账号/文件夹的缓存邮件。 */
+	private async collectSearchMessages(current: ImapAccount): Promise<ImapMessage[]> {
+		const q = this.query.trim();
+		if (!q || this.searchScope === "current") {
+			return this.plugin.mailService.messages(current, this.selectedFolder);
+		}
+		const out: ImapMessage[] = [];
+		for (const acc of this.accounts()) {
+			const infos = this.folderCache.get(acc.id) ?? [];
+			for (const f of infos) {
+				try {
+					out.push(...(await this.plugin.mailService.messages(acc, f.path)));
+				} catch {
+					/* 单个文件夹读取失败不影响其余 */
+				}
+			}
+		}
+		return out;
+	}
+
 	private async refreshMessages() {
 		const a = this.currentAccount();
 		if (!a || !this.selectedFolder) return;
 		const renderId = ++this.renderId;
-		const started = performance.now();
 		try {
-			const raw = await this.plugin.mailService.syncFolder(a, this.selectedFolder);
+			await this.plugin.mailService.syncFolder(a, this.selectedFolder);
 			if (renderId !== this.renderId) return;
-			const q = this.query.trim().toLowerCase();
-			this.messages = q ? raw.filter((m) => `${m.subject}\n${m.from}\n${m.snippet ?? ""}`.toLowerCase().includes(q)) : raw;
-			this.renderList(this.listEl);
-			if (this.plugin.settings.mailDebugLog) console.debug(`NyaHome IMAP: render after sync took ${(performance.now() - started).toFixed(1)} ms.`);
+			await this.loadMessages();
 		} catch (e) {
 			const host = this.listEl;
 			if (host && !host.querySelector(".nya-imap-message"))
