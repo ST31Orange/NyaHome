@@ -21,6 +21,8 @@ export interface HomePlugin {
 	notify(): void;
 	openCalendarView(): Promise<unknown>;
 	openMailView(): Promise<unknown>;
+	/** 打开 NyaReader 书架主页（联动入口）。 */
+	openReaderBookshelf(): Promise<void>;
 	openOwnSettings(): void;
 	openShortcuts(): void;
 	manifest: { id: string };
@@ -52,6 +54,16 @@ export interface HomeCard {
 const CAT_ICON = catIcon;
 const CALENDAR_ICON = calendarIcon;
 const MAIL_ICON = mailIcon;
+/** 小猫翻开一本书：内联 SVG data URI（与 READER_ICON 一致的可缩放矢量图标）。 */
+const READER_ICON = "data:image/svg+xml," + encodeURIComponent(
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+	'<path d="M3 7c1.6 0 3.2.4 4.6 1.3C9 7.4 10.6 7 12 7c1.4 0 3 .4 4.4 1.3C17.8 7.4 19.4 7 21 7v11.2c-1.6 0-3.2.4-4.6 1.3-1.4-.9-3-1.3-4.4-1.3-1.4 0-3 .4-4.4 1.3C6.2 18.6 4.6 18.2 3 18.2Z"/>' +
+	'<path d="M12 7v11.2"/>' +
+	'<path d="M9.8 5.6 8.6 3.4M14.2 5.6l1.2-2.2"/>' +
+	'<circle cx="12" cy="5.4" r="2.2"/>' +
+	'<path d="M10.8 5.2h.01M13.2 5.2h.01"/>' +
+	'</svg>'
+);
 
 const HOME_GRID_COLS = 12;
 const HOME_GRID_ROWS = 24;
@@ -94,6 +106,11 @@ const ZH = {
 	delete: "删除",
 	removeNote: "移除",
 	openSettings: "设置",
+	openReader: "打开书架",
+	readerBookshelf: "我的书架",
+	readerNotInstalled: "未安装 NyaReader",
+	readerInstallGuide: "NyaHome 可以与 NyaReader 联动。是否安装 NyaReader 阅读器？",
+	readerEnableHint: "NyaReader 已安装但未启用，请先启用插件。",
 	notes: "笔记",
 	commands: "命令",
 	noResult: "没有匹配结果",
@@ -126,6 +143,11 @@ const EN = {
 	delete: "Delete",
 	removeNote: "Remove",
 	openSettings: "Settings",
+	openReader: "Open bookshelf",
+	readerBookshelf: "My bookshelf",
+	readerNotInstalled: "NyaReader not installed",
+	readerInstallGuide: "NyaHome can link with NyaReader. Install NyaReader now?",
+	readerEnableHint: "NyaReader is installed but disabled. Enable it first.",
 	notes: "Notes",
 	commands: "Commands",
 	noResult: "No matches",
@@ -203,6 +225,10 @@ export class NyaHomeView extends ItemView {
 			el.addEventListener("click", () => this.plugin.openOwnSettings());
 		});
 		cat.createEl("h1", { text: t.title });
+		cat.createEl("button", { cls: "nyahome-reader-trigger", attr: { "aria-label": t.openReader, title: t.openReader } }, (el) => {
+			el.createEl("img", { attr: { src: READER_ICON, alt: "" } });
+			el.addEventListener("click", () => void this.plugin.openReaderBookshelf());
+		});
 
 		const searchWrap = page.createDiv("nyahome-search-wrap");
 		const searchCol = searchWrap.createDiv("nyahome-search-col");

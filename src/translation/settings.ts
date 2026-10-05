@@ -51,6 +51,18 @@ export class TranslationSettingsTab extends PluginSettingTab {
 		];
 	}
 
+	/** Open the NyaLingo plugin's settings tab (public-ish internal API with a
+	 *  graceful fallback to a notice). */
+	private openNyaLingoSettings(): void {
+		try {
+			const setting = (this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } }).setting;
+			setting?.open?.();
+			window.setTimeout(() => setting?.openTabById?.("nyalingo"), 60);
+		} catch {
+			new Notice("NyaHome: open Settings → Community plugins → NyaLingo to configure the translation engine.", 6000);
+		}
+	}
+
 	/** Host tabs can embed the same rows without creating a second, ambiguously
 	 *  named sidebar entry. The build callback is normalized to return void. */
 	buildRows(): { name: string; desc?: string; aliases?: string[]; build: (setting: Setting) => void }[] {
@@ -66,7 +78,19 @@ export class TranslationSettingsTab extends PluginSettingTab {
 
 	private rows(): TranslationSettingRow[] {
 		const config = this.manager.getConfig();
+		const lingoActive = this.manager.usesNyaLingo();
 		return [
+			{
+				name: "Translation engine",
+				desc: lingoActive
+					? "Using the shared NyaLingo plugin (offline MTranServer / online OpenAI · DeepL). Engine settings live in NyaLingo."
+					: "NyaLingo is not available. Using the built-in MTranServer fallback below.",
+				aliases: ["nyalingo", "engine", "backend"],
+				build: (setting) =>
+					setting.addButton((button) =>
+						button.setButtonText("Open NyaLingo settings").setCta().onClick(() => this.openNyaLingoSettings())
+					),
+			},
 			{
 				name: "Enable translation",
 				desc: "Adds mail translation and enables the local MTranServer back end. Disabling it leaves mail behavior untouched.",
@@ -75,7 +99,7 @@ export class TranslationSettingsTab extends PluginSettingTab {
 			},
 			{
 				name: "MTranServer address",
-				desc: "Base URL, for example http://127.0.0.1:8989. /translate is added automatically.",
+				desc: "Fallback only when NyaLingo is not installed. Base URL, for example http://127.0.0.1:8989; /translate is added automatically.",
 				aliases: ["endpoint", "server", "url"],
 				build: (setting) =>
 					setting.addText((text) =>
@@ -84,7 +108,7 @@ export class TranslationSettingsTab extends PluginSettingTab {
 			},
 			{
 				name: "API token",
-				desc: "Optional bearer token. Leave empty if your local server does not require one.",
+				desc: "Fallback only. Optional bearer token; leave empty if your local server does not require one.",
 				aliases: ["token", "password", "auth"],
 				build: (setting) =>
 					setting.addText((text) => {

@@ -1438,6 +1438,15 @@ export default class NyaHomePlugin extends Plugin {
 	private async initializeTranslation(): Promise<void> {
 		const events = new SimpleTranslationEventBus();
 		this.translationManager = new TranslationManager({
+			// NyaLingo 优先：共享翻译插件未安装/未启用时回退到本地 MTranServer。
+			getLingo: () => {
+				try {
+					const p = (this.app as unknown as { plugins: { getPlugin(id: string): unknown } }).plugins.getPlugin("nyalingo");
+					return p && typeof (p as { translate?: unknown }).translate === "function" ? (p as unknown as import("./translation/nyalingo-service").NyaLingoApiLike) : null;
+				} catch {
+					return null;
+				}
+			},
 			settings: {
 				get: () => this.settings.translation,
 				save: async (config) => {
@@ -6125,6 +6134,31 @@ export default class NyaHomePlugin extends Plugin {
 		const leaf = this.app.workspace.getLeaf(true);
 		await leaf.setViewState({ type: VIEW_TYPE, active: true });
 		return leaf.view instanceof PowerCalendarView ? leaf.view : null;
+	}
+
+	/** Open the NyaReader bookshelf (Home ↔ Reader link). If NyaReader is
+	 *  not installed, guide the user through BRAT one-click install; if it is
+	 *  installed but disabled, prompt to enable it first. */
+	async openReaderBookshelf(): Promise<void> {
+		const reader = (this.app as unknown as { plugins: { getPlugin(id: string): unknown } }).plugins.getPlugin("nyareader") as { activateBookshelf?: () => Promise<void> } | null;
+		if (reader && typeof reader.activateBookshelf === "function") {
+			await reader.activateBookshelf();
+			return;
+		}
+		// 已安装但未启用：提示去启用
+		const manifests = ((this.app as unknown as { plugins: { manifests?: Record<string, unknown> } }).plugins.manifests ?? {});
+		if (manifests["nyareader"]) {
+			new Notice("NyaHome: NyaReader is installed but not enabled. Enable it in Settings → Community plugins → NyaReader.", 6000);
+			return;
+		}
+		// 未安装：检查 BRAT 是否就绪，若就绪则打开官方一键安装协议；否则引导安装 BRAT
+		const bratReady = !!manifests["obsidian42-brat"];
+		if (!bratReady) {
+			new Notice("NyaHome: NyaReader is not installed. Please install BRAT first (Settings → Community plugins → BRAT), then click the bookshelf icon again.", 8000);
+			return;
+		}
+		new Notice("NyaHome: opening BRAT to install NyaReader…", 4000);
+		window.open("obsidian://brat?plugin=https://github.com/ST31Orange/nyareader", "_blank");
 	}
 
 	openOwnSettings() {

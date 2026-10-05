@@ -6791,6 +6791,40 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	letter-spacing: 0;
 }
 
+
+/* 标题右侧：小猫翻开书 -> 打开 NyaReader 书架 */
+.nyahome-reader-trigger {
+	font-size: inherit;
+	width: 0.5em;
+	height: 0.5em;
+	display: grid;
+	place-items: center;
+	overflow: hidden;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	cursor: pointer;
+	color: var(--text-muted);
+	opacity: 0.85;
+	transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.nyahome-reader-trigger:hover {
+	opacity: 1;
+	transform: scale(1.08);
+	color: var(--text-normal);
+}
+.nyahome-reader-trigger img {
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+}
+.nyahome-reader-trigger:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 3px;
+	border-radius: 50%;
+}
+
 .nyahome-search-wrap {
 	position: relative;
 	width: 100%;

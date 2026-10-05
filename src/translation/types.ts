@@ -19,6 +19,11 @@ export interface ITranslationServiceV1 {
 	translateText(text: string, html: boolean, from: string, to: string): Promise<TranslationTextResult>;
 	/** Best-effort availability probe; it must never throw. */
 	healthCheck(): Promise<boolean>;
+	/** True when this back end needs a locally configured endpoint before it can
+	 *  work (MTranServer). NyaLingo reports false: its configuration lives in the
+	 *  NyaLingo plugin, so NyaHome must not require an endpoint. Defaults to
+	 *  true so existing custom services keep the historical guard. */
+	readonly needsEndpoint?: boolean;
 }
 
 /** Configuration lives under `data.json -> translation`, completely apart

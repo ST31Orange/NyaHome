@@ -1,5 +1,6 @@
 import { TranslationCache, translationCacheKey } from "./cache";
 import { MTranServerTranslationService } from "./mtran-service";
+import { NyaLingoApiLike, NyaLingoTranslationService } from "./nyalingo-service";
 import { SimpleTranslationEventBus } from "./event-bus";
 import { TRANSLATION_CHUNK_CHARS, htmlToPlainText, splitTranslationChunks } from "./text";
 import {
@@ -30,6 +31,9 @@ export interface TranslationManagerDeps {
 	cacheStore?: ITranslationCacheStore;
 	/** Injection point for tests and future back ends. */
 	service?: ITranslationServiceV1;
+	/** Resolves the shared NyaLingo plugin (null = not installed). When provided
+	 *  and available, NyaLingo is preferred over the MTranServer fallback. */
+	getLingo?: () => NyaLingoApiLike | null;
 }
 
 const MAIL_CACHE_LIMIT = 200;
@@ -48,7 +52,10 @@ export class TranslationManager {
 	constructor(private readonly deps: TranslationManagerDeps) {
 		this.config = normalizeTranslationConfig(deps.settings.get());
 		this.cache = new TranslationCache(deps.cacheStore ?? null, this.config.cacheMaxEntries);
-		this.service = deps.service ?? new MTranServerTranslationService(() => this.config, deps.transport ?? { async request() { throw new Error("No translation transport was configured."); } });
+		const lingo = deps.getLingo?.() ?? null;
+		this.service = deps.service ?? (lingo
+			? new NyaLingoTranslationService({ getLingo: () => deps.getLingo?.() ?? null })
+			: new MTranServerTranslationService(() => this.config, deps.transport ?? { async request() { throw new Error("No translation transport was configured."); } }));
 	}
 
 	/** Load normalized config and the optional persistent cache. */
@@ -60,6 +67,11 @@ export class TranslationManager {
 
 	getConfig(): TranslationConfig {
 		return { ...this.config };
+	}
+
+	/** Whether the active back end is the shared NyaLingo plugin. */
+	usesNyaLingo(): boolean {
+		return this.service instanceof NyaLingoTranslationService;
 	}
 
 	getServiceVersion(): TranslationServiceVersion {
@@ -106,7 +118,7 @@ export class TranslationManager {
 		const { silent = true } = options;
 		if (!mail.id) return null;
 		if (!this.config.enabled) throw new Error("Translation is disabled. Enable it in Settings -> Translation.");
-		if (!this.config.endpoint.trim()) throw new Error("MTranServer endpoint is not configured.");
+		if (this.service.needsEndpoint !== false && !this.config.endpoint.trim()) throw new Error("Translation back end is not configured (set a local MTranServer endpoint, or install/enable the NyaLingo plugin).");
 		const inFlightKey = `${mail.id}\u0000${this.config.sourceLanguage}\u0000${this.config.targetLanguage}`;
 		const pending = this.inFlight.get(inFlightKey);
 		if (pending) return pending;
@@ -123,7 +135,7 @@ export class TranslationManager {
 	async translatePlainText(text: string): Promise<string> {
 		if (!text.trim()) return text;
 		if (!this.config.enabled) throw new Error("Translation is disabled. Enable it in Settings -> Translation.");
-		if (!this.config.endpoint.trim()) throw new Error("MTranServer endpoint is not configured.");
+		if (this.service.needsEndpoint !== false && !this.config.endpoint.trim()) throw new Error("Translation back end is not configured (set a local MTranServer endpoint, or install/enable the NyaLingo plugin).");
 		const result = await this.translateCached(text, false, this.config.sourceLanguage, this.config.targetLanguage);
 		return result.value;
 	}
