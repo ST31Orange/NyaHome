@@ -219,16 +219,17 @@ export class NyaHomeView extends ItemView {
 		this.applyHomeBackground(background);
 
 		const header = page.createDiv("nyahome-header");
+		// 标题右上角：小猫翻开书 -> 打开 NyaReader 书架（绝对定位，不影响原布局）
+		header.createEl("button", { cls: "nyahome-reader-trigger", attr: { "aria-label": t.openReader, title: t.openReader } }, (el) => {
+			el.createEl("img", { attr: { src: READER_ICON, alt: "" } });
+			el.addEventListener("click", () => void this.plugin.openReaderBookshelf());
+		});
 		const cat = header.createDiv("nyahome-cat");
 		cat.createEl("button", { cls: "nyahome-cat-trigger", attr: { "aria-label": t.openSettings, title: t.openSettings } }, (el) => {
 			el.createEl("img", { attr: { src: CAT_ICON, alt: "" } });
 			el.addEventListener("click", () => this.plugin.openOwnSettings());
 		});
 		cat.createEl("h1", { text: t.title });
-		cat.createEl("button", { cls: "nyahome-reader-trigger", attr: { "aria-label": t.openReader, title: t.openReader } }, (el) => {
-			el.createEl("img", { attr: { src: READER_ICON, alt: "" } });
-			el.addEventListener("click", () => void this.plugin.openReaderBookshelf());
-		});
 
 		const searchWrap = page.createDiv("nyahome-search-wrap");
 		const searchCol = searchWrap.createDiv("nyahome-search-col");

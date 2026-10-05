@@ -6740,6 +6740,7 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	gap: 18px;
 	margin-top: max(0.6em, 16px);
 	margin-bottom: 18px;
+	position: relative;
 }
 
 .nyahome-cat-trigger {
@@ -6792,11 +6793,13 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 
-/* 标题右侧：小猫翻开书 -> 打开 NyaReader 书架 */
+/* 标题右上角：小猫翻开书 -> 打开 NyaReader 书架（绝对定位，不影响原布局） */
 .nyahome-reader-trigger {
-	font-size: inherit;
-	width: 0.5em;
-	height: 0.5em;
+	position: absolute;
+	top: 6px;
+	right: 14px;
+	width: 28px;
+	height: 28px;
 	display: grid;
 	place-items: center;
 	overflow: hidden;
