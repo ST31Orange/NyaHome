@@ -6,7 +6,7 @@ const prod = process.argv[2] === "production";
 const ctx = await esbuild.context({
 	entryPoints: ["src/main.ts"],
 	bundle: true,
-	loader: { ".jpg": "dataurl" },
+	loader: { ".jpg": "dataurl", ".png": "dataurl" },
 	external: [
 		"obsidian", "electron", "@codemirror/*", "@lezer/*", "node:*",
 		// Node builtins referenced by the IMAP stack; Obsidian's desktop

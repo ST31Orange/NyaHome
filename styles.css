@@ -6776,6 +6776,7 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	font-size: clamp(2.2rem, 5vw, 3.4rem);
 	font-weight: 700;
 	letter-spacing: -0.02em;
+	position: relative;
 }
 
 .nyahome-cat img {
@@ -6793,39 +6794,39 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 
 
-/* 标题右上角：小猫翻开书 -> 打开 NyaReader 书架（绝对定位，不影响原布局） */
+/* 标题行右端：小猫翻开书 -> 打开 NyaReader 书架（绝对定位到标题行右端，不影响标题居中） */
 .nyahome-reader-trigger {
 	position: absolute;
-	top: 6px;
-	right: 14px;
-	width: 28px;
-	height: 28px;
+	left: calc(100% + 12px);
+	top: 50%;
+	transform: translateY(-50%);
+	height: 1.5em;
+	width: 1.667em;
 	display: grid;
 	place-items: center;
 	overflow: hidden;
 	padding: 0;
 	border: 0;
-	border-radius: 50%;
 	background: transparent;
 	cursor: pointer;
 	color: var(--text-muted);
-	opacity: 0.85;
+	opacity: 0.95;
 	transition: opacity 0.15s ease, transform 0.15s ease;
 }
 .nyahome-reader-trigger:hover {
 	opacity: 1;
-	transform: scale(1.08);
+	transform: translateY(-50%) scale(1.06);
 	color: var(--text-normal);
 }
 .nyahome-reader-trigger img {
-	width: 100%;
 	height: 100%;
+	width: 100%;
 	object-fit: contain;
 }
 .nyahome-reader-trigger:focus-visible {
 	outline: 2px solid var(--interactive-accent);
 	outline-offset: 3px;
-	border-radius: 50%;
+	border-radius: 6px;
 }
 
 .nyahome-search-wrap {

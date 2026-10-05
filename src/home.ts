@@ -2,6 +2,7 @@ import { App, debounce, ItemView, Modal, Notice, TFile, TFolder, normalizePath, 
 import catIcon from "./assets/cat.jpg";
 import calendarIcon from "./assets/calendar.jpg";
 import mailIcon from "./assets/mail.jpg";
+import readerIcon from "./assets/reader.png";
 
 /** The plugin methods the home page needs. Declared structurally so the
  *  module can sit beside main.ts without creating an import cycle. */
@@ -54,16 +55,8 @@ export interface HomeCard {
 const CAT_ICON = catIcon;
 const CALENDAR_ICON = calendarIcon;
 const MAIL_ICON = mailIcon;
-/** 小猫翻开一本书：内联 SVG data URI（与 READER_ICON 一致的可缩放矢量图标）。 */
-const READER_ICON = "data:image/svg+xml," + encodeURIComponent(
-	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-	'<path d="M3 7c1.6 0 3.2.4 4.6 1.3C9 7.4 10.6 7 12 7c1.4 0 3 .4 4.4 1.3C17.8 7.4 19.4 7 21 7v11.2c-1.6 0-3.2.4-4.6 1.3-1.4-.9-3-1.3-4.4-1.3-1.4 0-3 .4-4.4 1.3C6.2 18.6 4.6 18.2 3 18.2Z"/>' +
-	'<path d="M12 7v11.2"/>' +
-	'<path d="M9.8 5.6 8.6 3.4M14.2 5.6l1.2-2.2"/>' +
-	'<circle cx="12" cy="5.4" r="2.2"/>' +
-	'<path d="M10.8 5.2h.01M13.2 5.2h.01"/>' +
-	'</svg>'
-);
+/** 小猫翻开一本书：NyaHome → NyaReader 书架联动按钮图片。 */
+const READER_ICON = readerIcon;
 
 const HOME_GRID_COLS = 12;
 const HOME_GRID_ROWS = 24;
@@ -219,17 +212,17 @@ export class NyaHomeView extends ItemView {
 		this.applyHomeBackground(background);
 
 		const header = page.createDiv("nyahome-header");
-		// 标题右上角：小猫翻开书 -> 打开 NyaReader 书架（绝对定位，不影响原布局）
-		header.createEl("button", { cls: "nyahome-reader-trigger", attr: { "aria-label": t.openReader, title: t.openReader } }, (el) => {
-			el.createEl("img", { attr: { src: READER_ICON, alt: "" } });
-			el.addEventListener("click", () => void this.plugin.openReaderBookshelf());
-		});
 		const cat = header.createDiv("nyahome-cat");
 		cat.createEl("button", { cls: "nyahome-cat-trigger", attr: { "aria-label": t.openSettings, title: t.openSettings } }, (el) => {
 			el.createEl("img", { attr: { src: CAT_ICON, alt: "" } });
 			el.addEventListener("click", () => this.plugin.openOwnSettings());
 		});
 		cat.createEl("h1", { text: t.title });
+		// 标题行右端：小猫翻开书 -> 打开 NyaReader 书架（绝对定位，不影响标题居中与 flex 布局）
+		cat.createEl("button", { cls: "nyahome-reader-trigger", attr: { "aria-label": t.openReader, title: t.openReader } }, (el) => {
+			el.createEl("img", { attr: { src: READER_ICON, alt: "" } });
+			el.addEventListener("click", () => void this.plugin.openReaderBookshelf());
+		});
 
 		const searchWrap = page.createDiv("nyahome-search-wrap");
 		const searchCol = searchWrap.createDiv("nyahome-search-col");
