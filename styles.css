@@ -6824,7 +6824,7 @@ body.theme-light .notice:not(.pw-self-styled) a {
 .nyahome-reader-trigger {
 	position: absolute;
 	left: calc(100% + 12px);
-	bottom: -0.05em;
+	bottom: 0.12em;
 	font-size: inherit;
 	height: 1.6em;
 	width: 1.82em;
@@ -6833,6 +6833,7 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	overflow: hidden;
 	padding: 0;
 	border: 0;
+	box-shadow: none;
 	background: transparent;
 	cursor: pointer;
 	color: var(--text-muted);
