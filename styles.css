@@ -6824,8 +6824,7 @@ body.theme-light .notice:not(.pw-self-styled) a {
 .nyahome-reader-trigger {
 	position: absolute;
 	left: calc(100% + 12px);
-	top: 50%;
-	transform: translateY(-50%);
+	bottom: 0;
 	font-size: inherit;
 	height: 1.6em;
 	width: 1.78em;
@@ -6842,7 +6841,7 @@ body.theme-light .notice:not(.pw-self-styled) a {
 }
 .nyahome-reader-trigger:hover {
 	opacity: 1;
-	transform: translateY(-50%) scale(1.06);
+	transform: scale(1.06);
 	color: var(--text-normal);
 }
 .nyahome-reader-trigger img {
