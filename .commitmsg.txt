@@ -1,0 +1,7 @@
+feat(home): 乌鸦看书按钮在未安装 NyaReader 时一键自动安装（失败回退 BRAT）(v5.1.8)
+
+- 新增 src/reader-installer.ts：从 GitHub 下载 NyaReader 到
+  .obsidian/plugins/nyareader/ 并登记 community-plugins.json，重载后自动启用
+- openReaderBookshelf：未安装时优先自动下载安装（提示重载）；
+  网络失败回退到 BRAT 一键安装 / 手动引导
+- 配套：nyareader 仓库提交 main.js 构建产物（供 raw 下载）

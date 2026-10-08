@@ -205,6 +205,7 @@ import {
 	obsidianHttpTransport,
 } from "./translation";
 import { NyaLingoInstaller } from "./translation/lingo-installer";
+import { NyaReaderInstaller } from "./reader-installer";
 import { newIcsUid, removeIcsEvent, removeIcsOccurrence, rruleOf, upsertIcsEvent, upsertIcsOverride } from "./localics";
 import {
 	DeviceCode,
@@ -977,6 +978,8 @@ export default class NyaHomePlugin extends Plugin {
 	translationManager!: TranslationManager;
 	/** NyaLingo 自动"捎带安装"器。 */
 	lingoInstaller!: NyaLingoInstaller;
+	/** NyaReader 自动"捎带安装"器（乌鸦按钮联动入口用）。 */
+	readerInstaller!: NyaReaderInstaller;
 	/** Per-source fetched events, keyed by SourceDef.key. */
 	private cache = new Map<string, SourceState>();
 	/** Open views re-render when a fetch lands. */
@@ -1059,6 +1062,7 @@ export default class NyaHomePlugin extends Plugin {
 		this.register(() => this.mailService.dispose());
 		await this.initializeTranslation();
 		this.lingoInstaller = new NyaLingoInstaller(this.app);
+		this.readerInstaller = new NyaReaderInstaller(this.app);
 		this.addCommand({ id: "install-lingo", name: "安装 / 修复 NyaLingo 翻译插件", callback: () => void this.installLingo() });
 		// 首次运行：NyaLingo 未加载时自动"捎带安装"（只试一次，失败后可用命令重试）
 		if (this.app.loadLocalStorage("nyahome-lingo-autofix") !== "1") {
@@ -6207,13 +6211,27 @@ export default class NyaHomePlugin extends Plugin {
 			new Notice("NyaHome: NyaReader is installed but not enabled. Enable it in Settings → Community plugins → NyaReader.", 6000);
 			return;
 		}
-		// 未安装：检查 BRAT 是否就绪，若就绪则打开官方一键安装协议；否则引导安装 BRAT
+		// 未安装：优先自动下载安装（需网络），失败再回退 BRAT 一键安装
+		new Notice("NyaHome: NyaReader 未安装，正在自动安装…", 4000);
+		const result = await this.readerInstaller.ensureInstalled(false);
+		switch (result.status) {
+			case "installed-needs-reload":
+				new Notice("NyaHome: 已自动安装 NyaReader，请重载 Obsidian（Ctrl+R）后即可阅读电子书。", 9000);
+				return;
+			case "enable-needed":
+				new Notice("NyaHome: 已检测到 NyaReader，请在「设置 → 第三方插件」中启用它，然后重载 Obsidian。", 8000);
+				return;
+			case "failed":
+				break; // 回退 BRAT
+			default:
+				return;
+		}
 		const bratReady = !!manifests["obsidian42-brat"];
 		if (!bratReady) {
-			new Notice("NyaHome: NyaReader is not installed. Please install BRAT first (Settings → Community plugins → BRAT), then click the bookshelf icon again.", 8000);
+			new Notice("NyaHome: NyaReader 自动安装失败，请先安装 BRAT（设置 → 第三方插件），再点击书架图标重试。", 8000);
 			return;
 		}
-		new Notice("NyaHome: opening BRAT to install NyaReader…", 4000);
+		new Notice("NyaHome: 打开 BRAT 一键安装 NyaReader…", 4000);
 		window.open("obsidian://brat?plugin=https://github.com/ST31Orange/nyareader", "_blank");
 	}
 
