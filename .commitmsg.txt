@@ -1,0 +1,5 @@
+docs(home): README 与 manifest 描述与现状对齐 (v5.1.7)
+
+- README 新增「翻译与 NyaReader 联动」章节：NyaLingo 自动安装、
+  NyaReader 书架按钮联动、邮件翻译回退
+- manifest 描述补充翻译（NyaLingo）

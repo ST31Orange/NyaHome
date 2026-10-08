@@ -40,6 +40,16 @@ The calendar is a plain `.ics` file in your vault — events are created, dragge
 
 Sign in with your IMAP / SMTP credentials and the mail view covers every account and folder: reading (including HTML bodies and attachments), reply and forward, composing with attachments, search and moving messages. Lists and bodies are cached locally, so the view opens instantly and reads offline. Authorization codes are stored AES-256-GCM encrypted; the key never leaves this machine and is not synced with the vault. Desktop only.
 
+## 翻译与 NyaReader 联动
+
+- **翻译**：邮件 / 笔记翻译委托共享翻译插件 **NyaLingo**（离线 MTranServer / 在线 OpenAI 兼容 / DeepL）；NyaLingo 未安装时回退到内置 MTranServer。首次运行 NyaHome 会自动下载安装 NyaLingo（需联网，装好后重载 Obsidian 一次）。
+- **NyaReader 书架联动**：主页标题栏右上角有进入 NyaReader 书架的按钮（未安装 NyaReader 时会提示安装）。
+
+## Translation & NyaReader link
+
+- **Translation**: mail and note translation use the shared **NyaLingo** plugin (offline MTranServer / online OpenAI-compatible / DeepL), falling back to the built-in MTranServer when it is missing. NyaHome auto-installs NyaLingo on first run (needs network, then one reload).
+- **NyaReader bookshelf**: a button in the home header opens the NyaReader bookshelf (prompts to install NyaReader if it is missing).
+
 ## 兼容说明
 
 本插件从早期内部版本整理而来；首次部署会自动迁移原设置和缓存，旧代码块继续可用。
