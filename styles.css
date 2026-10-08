@@ -6805,12 +6805,12 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	position: relative;
 	/*
 	 * 让 [设置按钮][NyaHome 标题][书架按钮] 作为一个整体居中：
-	 * 书架按钮绝对定位在标题行右端（高 1.6em、宽 1.82em、间距 12px - 1.82em/5），
+	 * 书架按钮绝对定位在标题行右端（高 1.6em、宽 1.82em、间距 12px - 1.82em×4/15），
 	 * 视觉重心会整体右移半个按钮足迹，这里左移同样距离抵消。
-	 * 按钮右缘相对标题右缘 = 12px - 1.82em/5 + 1.82em = 12px + 1.456em，
-	 * 一半即 6px + 0.728em。
+	 * 按钮右缘相对标题右缘 = 12px - 1.82em×4/15 + 1.82em = 12px + 1.82em×11/15，
+	 * 一半即 6px + 0.667em。
 	 */
-	transform: translateX(calc(-6px - 0.728em));
+	transform: translateX(calc(-6px - 0.667em));
 }
 
 .nyahome-cat img {
@@ -6831,8 +6831,8 @@ body.theme-light .notice:not(.pw-self-styled) a {
 /* 标题行右端：小猫翻开书 -> 打开 NyaReader 书架（绝对定位到标题行右端，不影响标题居中） */
 .nyahome-reader-trigger {
 	position: absolute;
-	/* 左移约按钮自身宽度的 1/5（1.82em / 5），更贴近标题行右端 */
-	left: calc(100% + 12px - (1.82em / 5));
+	/* 左移按钮自身宽度的 1/5 + 追加 1/15 = 4/15，更贴近标题行右端 */
+	left: calc(100% + 12px - (1.82em * 4 / 15));
 	bottom: 0.12em;
 	font-size: inherit;
 	height: 1.6em;
