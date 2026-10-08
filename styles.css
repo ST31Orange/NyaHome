@@ -6823,7 +6823,8 @@ body.theme-light .notice:not(.pw-self-styled) a {
 /* 标题行右端：小猫翻开书 -> 打开 NyaReader 书架（绝对定位到标题行右端，不影响标题居中） */
 .nyahome-reader-trigger {
 	position: absolute;
-	left: calc(100% + 12px);
+	/* 左移约按钮自身宽度的 1/5（1.82em / 5），更贴近标题行右端 */
+	left: calc(100% + 12px - (1.82em / 5));
 	bottom: 0.12em;
 	font-size: inherit;
 	height: 1.6em;
@@ -6834,7 +6835,10 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	padding: 0;
 	border: 0;
 	box-shadow: none;
-	background: transparent;
+	/* 高特异度 + !important，确保不被 Obsidian 基础 button 样式盖成白色 */
+	background: transparent !important;
+	background-color: transparent !important;
+	background-image: none !important;
 	cursor: pointer;
 	color: var(--text-muted);
 	opacity: 0.95;
@@ -6849,6 +6853,9 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	height: 100%;
 	width: 100%;
 	object-fit: contain;
+	/* 让图片里的白色/近白像素直接透出页面背景（multiply：白色×背景=背景），
+	   即使图片自身带白底也不会再显示成白色方块 */
+	mix-blend-mode: multiply;
 }
 .nyahome-reader-trigger:focus-visible {
 	outline: 2px solid var(--interactive-accent);
