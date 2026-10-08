@@ -1,9 +1,0 @@
-feat(lingo): NyaHome 自动"捎带安装"NyaLingo 翻译插件 (v5.1.6)
-
-- 新增 src/translation/lingo-installer.ts：从 GitHub 下载 NyaLingo 到
-  .obsidian/plugins/nyalingo/ 并登记 community-plugins.json，重载后自动启用
-- onload 初始化安装器 + 命令「安装 / 修复 NyaLingo 翻译插件」；
-  首次运行 NyaLingo 未加载时自动尝试安装（只试一次，失败可命令重试）
-- 翻译设置页：NyaLingo 未安装时按钮变为「安装 / 修复 NyaLingo」并触发安装；
-  已加载则打开 NyaLingo 设置
-- 构建 + 测试全部通过
