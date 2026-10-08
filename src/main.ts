@@ -204,6 +204,7 @@ import {
 	normalizeTranslationConfig,
 	obsidianHttpTransport,
 } from "./translation";
+import { NyaLingoInstaller } from "./translation/lingo-installer";
 import { newIcsUid, removeIcsEvent, removeIcsOccurrence, rruleOf, upsertIcsEvent, upsertIcsOverride } from "./localics";
 import {
 	DeviceCode,
@@ -974,6 +975,8 @@ export default class NyaHomePlugin extends Plugin {
 	settings: NyaHomeSettings = DEFAULT_SETTINGS;
 	refreshSettingsTab: (() => void) | null = null;
 	translationManager!: TranslationManager;
+	/** NyaLingo 自动"捎带安装"器。 */
+	lingoInstaller!: NyaLingoInstaller;
 	/** Per-source fetched events, keyed by SourceDef.key. */
 	private cache = new Map<string, SourceState>();
 	/** Open views re-render when a fetch lands. */
@@ -1055,6 +1058,13 @@ export default class NyaHomePlugin extends Plugin {
 		this.mailService = new ImapMailService(this);
 		this.register(() => this.mailService.dispose());
 		await this.initializeTranslation();
+		this.lingoInstaller = new NyaLingoInstaller(this.app);
+		this.addCommand({ id: "install-lingo", name: "安装 / 修复 NyaLingo 翻译插件", callback: () => void this.installLingo() });
+		// 首次运行：NyaLingo 未加载时自动"捎带安装"（只试一次，失败后可用命令重试）
+		if (this.app.loadLocalStorage("nyahome-lingo-autofix") !== "1") {
+			this.app.saveLocalStorage("nyahome-lingo-autofix", "1");
+			void this.installLingo(true);
+		}
 		const stale = this.settings.graphAccounts.filter((a) => a.refresh && a.grantedScope !== this.scopeFor(a));
 		if (stale.length) {
 			const message = `NyaHome: reconnect ${stale.map((a) => this.nameOf(a)).join(", ")} in settings to enable the newest permissions (event editing, mail, reply windows).`;
@@ -1486,6 +1496,52 @@ export default class NyaHomePlugin extends Plugin {
 				return view instanceof ImapMailView ? view : null;
 			}
 		);
+	}
+
+	/** NyaLingo 是否已加载并可用。 */
+	private lingoAvailable(): boolean {
+		try {
+			const p = (this.app as unknown as { plugins: { getPlugin(id: string): unknown } }).plugins.getPlugin("nyalingo");
+			return !!p && typeof (p as { translate?: unknown }).translate === "function";
+		} catch {
+			return false;
+		}
+	}
+
+	/** 打开 NyaLingo 设置页（公开-ish 内部 API，带降级提示）。 */
+	private openNyaLingoSettings(): void {
+		try {
+			const setting = (this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } }).setting;
+			setting?.open?.();
+			window.setTimeout(() => setting?.openTabById?.("nyalingo"), 60);
+		} catch {
+			new Notice("NyaHome: 请到 设置 → 第三方插件 → NyaLingo 配置翻译引擎。", 6000);
+		}
+	}
+
+	/**
+	 * 安装 / 修复 NyaLingo：已加载则打开设置；否则尝试从 GitHub 自动下载安装，
+	 * 并登记进 community-plugins.json，重载后自动启用。
+	 */
+	async installLingo(quiet = false): Promise<void> {
+		if (this.lingoAvailable()) {
+			if (!quiet) this.openNyaLingoSettings();
+			return;
+		}
+		const result = await this.lingoInstaller.ensureInstalled(false);
+		switch (result.status) {
+			case "installed-needs-reload":
+				new Notice("NyaHome: NyaLingo 已自动安装，请重载 Obsidian（Ctrl+R）后即可使用翻译。", 9000);
+				break;
+			case "enable-needed":
+				new Notice("NyaHome: 已检测到 NyaLingo，请在「设置 → 第三方插件」中启用它，然后重载 Obsidian。", 8000);
+				break;
+			case "failed":
+				new Notice(`NyaHome: NyaLingo 自动安装失败（${result.reason}）。可重试命令，或手动安装（GitHub: ST31Orange/nyalingo）。`, 9000);
+				break;
+			default:
+				break;
+		}
 	}
 
 	private translationCachePath(): string {
@@ -19998,7 +20054,7 @@ class NyaHomeSettingTab extends PluginSettingTab {
 
 		/* ---------------- Translation ---------------- */
 
-		const translationRows: Row[] = new TranslationSettingsTab(this.app, this.plugin.translationManager, this.plugin).buildRows();
+		const translationRows: Row[] = new TranslationSettingsTab(this.app, this.plugin.translationManager, this.plugin, () => void this.plugin.installLingo()).buildRows();
 
 		const mail: Row[] = [
 			{

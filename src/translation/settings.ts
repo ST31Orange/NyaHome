@@ -14,7 +14,9 @@ export class TranslationSettingsTab extends PluginSettingTab {
 	constructor(
 		app: App,
 		private readonly manager: TranslationManager,
-		private readonly host: { manifest: { id: string } }
+		private readonly host: { manifest: { id: string } },
+		/** 未安装 NyaLingo 时的自动安装回调（由宿主插件注入）。 */
+		private readonly onInstallLingo?: () => void
 	) {
 		super(app, host as unknown as Plugin);
 	}
@@ -84,11 +86,17 @@ export class TranslationSettingsTab extends PluginSettingTab {
 				name: "Translation engine",
 				desc: lingoActive
 					? "Using the shared NyaLingo plugin (offline MTranServer / online OpenAI · DeepL). Engine settings live in NyaLingo."
-					: "NyaLingo is not available. Using the built-in MTranServer fallback below.",
+					: "NyaLingo is not installed; using the built-in MTranServer fallback. Click the button to auto-install NyaLingo (needs network, then reload Obsidian).",
 				aliases: ["nyalingo", "engine", "backend"],
 				build: (setting) =>
 					setting.addButton((button) =>
-						button.setButtonText("Open NyaLingo settings").setCta().onClick(() => this.openNyaLingoSettings())
+						button
+							.setButtonText(lingoActive ? "Open NyaLingo settings" : "安装 / 修复 NyaLingo")
+							.setCta()
+							.onClick(() => {
+								if (lingoActive) this.openNyaLingoSettings();
+								else this.onInstallLingo?.();
+							})
 					),
 			},
 			{

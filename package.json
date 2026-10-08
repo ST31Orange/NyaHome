@@ -1,6 +1,6 @@
 {
 	"name": "nyahome",
-	"version": "5.1.5",
+	"version": "5.1.6",
 	"description": "Obsidian plugin: NyaHome unified workspace with local calendars and optional connected calendar/mail services",
 	"main": "main.js",
 	"type": "module",
