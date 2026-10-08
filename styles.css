@@ -6803,6 +6803,14 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	font-weight: 700;
 	letter-spacing: -0.02em;
 	position: relative;
+	/*
+	 * 让 [设置按钮][NyaHome 标题][书架按钮] 作为一个整体居中：
+	 * 书架按钮绝对定位在标题行右端（高 1.6em、宽 1.82em、间距 12px - 1.82em/5），
+	 * 视觉重心会整体右移半个按钮足迹，这里左移同样距离抵消。
+	 * 按钮右缘相对标题右缘 = 12px - 1.82em/5 + 1.82em = 12px + 1.456em，
+	 * 一半即 6px + 0.728em。
+	 */
+	transform: translateX(calc(-6px - 0.728em));
 }
 
 .nyahome-cat img {
@@ -6833,8 +6841,9 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	place-items: center;
 	overflow: hidden;
 	padding: 0;
-	border: 0;
-	box-shadow: none;
+	border: 0 !important;
+	border-radius: 0 !important;
+	box-shadow: none !important;
 	/* 高特异度 + !important，确保不被 Obsidian 基础 button 样式盖成白色 */
 	background: transparent !important;
 	background-color: transparent !important;
