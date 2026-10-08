@@ -164,9 +164,18 @@ export class NyaHomeView extends ItemView {
 	private clockDate: HTMLElement | null = null;
 	private clockTimer: number | null = null;
 	private searchFilter: string | null = null;
+	/** 搜索列（下拉结果宿主）：用于"点击外部自动收回"判断 */
+	private searchColEl: HTMLElement | null = null;
 	private layoutEditing = false;
 	private renderSignature = "";
 	private listener: () => void;
+	private onGlobalPointerDown = (e: PointerEvent | MouseEvent): void => {
+		const col = this.searchColEl;
+		if (!col) return;
+		if (col.contains(e.target as Node)) return;
+		const results = col.querySelector<HTMLElement>(".nyahome-search-results");
+		results?.hide();
+	};
 
 	constructor(leaf: import("obsidian").WorkspaceLeaf, private readonly plugin: HomePlugin) {
 		super(leaf);
@@ -192,13 +201,18 @@ export class NyaHomeView extends ItemView {
 		this.contentEl.empty();
 		this.contentEl.addClass("nyahome");
 		this.plugin.listeners.add(this.listener);
+		// 筛选/搜索下拉：点击页面其它位置自动收回（Obsidian 桌面容器自带菜单也会用
+		// 全局 pointerdown，这里用捕获阶段尽早判断）
+		document.addEventListener("pointerdown", this.onGlobalPointerDown, true);
 		this.render();
 	}
 
 	async onClose(): Promise<void> {
 		this.plugin.listeners.delete(this.listener);
+		document.removeEventListener("pointerdown", this.onGlobalPointerDown, true);
 		if (this.clockTimer != null) window.clearInterval(this.clockTimer);
 		this.clockTimer = null;
+		this.searchColEl = null;
 		this.contentEl.removeClass("nyahome");
 		this.contentEl.empty();
 	}
@@ -226,6 +240,7 @@ export class NyaHomeView extends ItemView {
 
 		const searchWrap = page.createDiv("nyahome-search-wrap");
 		const searchCol = searchWrap.createDiv("nyahome-search-col");
+		this.searchColEl = searchCol;
 		const search = searchCol.createDiv("nyahome-search");
 		const searchIcon = search.createDiv("nyahome-search-icon");
 		setIcon(searchIcon, "search");
