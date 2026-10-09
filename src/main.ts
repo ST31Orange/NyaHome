@@ -18610,6 +18610,15 @@ class NyaHomeSettingTab extends PluginSettingTab {
 			"Search and reminders: find events and mail fast, so nothing slips by.",
 		])
 			featsEn.createDiv({ cls: "nya-about-feat", text: f });
+		el.createDiv({ cls: "nya-about-heading", text: "反馈 Feedback" });
+		const feedbackCn = el.createDiv({ cls: "nya-about-block" });
+		feedbackCn.appendText("遇到问题或有建议？欢迎邮件至 ");
+		feedbackCn.createEl("a", { text: "nyaspace@163.com", href: "mailto:nyaspace@163.com" });
+		feedbackCn.appendText("。请尽量附上问题描述、复现步骤和截图，感谢反馈！");
+		const feedbackEn = el.createDiv({ cls: "nya-about-block is-en" });
+		feedbackEn.appendText("Questions or suggestions? Email ");
+		feedbackEn.createEl("a", { text: "nyaspace@163.com", href: "mailto:nyaspace@163.com" });
+		feedbackEn.appendText(". Please include a description, steps to reproduce, and screenshots when possible. Thanks for your feedback!");
 		el.createDiv({ cls: "nya-about-heading", text: "开发不易，感谢打赏" });
 		el.createDiv({
 			cls: "nya-about-block",
