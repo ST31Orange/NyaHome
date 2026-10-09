@@ -18,6 +18,37 @@ export interface ImapAccount {
 	smtpPort: number;
 }
 
+export interface ImapProviderPreset {
+	label: string;
+	imapHost: string;
+	imapPort: number;
+	imapSecure: boolean;
+	smtpHost: string;
+	smtpPort: number;
+}
+
+export const IMAP_PROVIDER_PRESETS: Record<string, ImapProviderPreset> = {
+	qq: { label: "QQ Mail", imapHost: "imap.qq.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.qq.com", smtpPort: 465 },
+	netease163: { label: "163 Mail", imapHost: "imap.163.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.163.com", smtpPort: 465 },
+	netease126: { label: "126 Mail", imapHost: "imap.126.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.126.com", smtpPort: 465 },
+	gmail: { label: "Gmail", imapHost: "imap.gmail.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.gmail.com", smtpPort: 465 },
+	outlook: { label: "Outlook / Microsoft 365", imapHost: "outlook.office365.com", imapPort: 993, imapSecure: true, smtpHost: "smtp-mail.outlook.com", smtpPort: 587 },
+	yahoo: { label: "Yahoo Mail", imapHost: "imap.mail.yahoo.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.mail.yahoo.com", smtpPort: 465 },
+	icloud: { label: "iCloud Mail", imapHost: "imap.mail.me.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.mail.me.com", smtpPort: 587 },
+	zoho: { label: "Zoho Mail", imapHost: "imap.zoho.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.zoho.com", smtpPort: 465 },
+	yandex: { label: "Yandex Mail", imapHost: "imap.yandex.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.yandex.com", smtpPort: 465 },
+	sina: { label: "Sina Mail", imapHost: "imap.sina.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.sina.com", smtpPort: 465 },
+	aliyun: { label: "Aliyun Mail", imapHost: "imap.aliyun.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.aliyun.com", smtpPort: 465 },
+	china139: { label: "139 Mail", imapHost: "imap.139.com", imapPort: 993, imapSecure: true, smtpHost: "smtp.139.com", smtpPort: 465 },
+};
+
+export function imapProviderForAccount(account: ImapAccount): string {
+	return Object.keys(IMAP_PROVIDER_PRESETS).find((id) => {
+		const preset = IMAP_PROVIDER_PRESETS[id];
+		return account.imapHost === preset.imapHost && account.smtpHost === preset.smtpHost;
+	}) ?? "";
+}
+
 export interface ImapFolderInfo {
 	path: string;
 	name: string;

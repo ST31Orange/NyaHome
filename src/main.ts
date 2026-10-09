@@ -1,4 +1,4 @@
-import { App, ButtonComponent, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice as ObsidianNotice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, SliderComponent, TFile, TFolder, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, htmlToMarkdown, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
+import { App, ButtonComponent, FuzzySuggestModal, ItemView, MarkdownRenderChild, Menu, Modal, Modifier, Notice as ObsidianNotice, Platform, Plugin, PluginSettingTab, Scope, Setting, SettingDefinitionItem, SettingDefinitionPage, SettingDefinitionRender, SliderComponent, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, arrayBufferToBase64, base64ToArrayBuffer, getIconIds, htmlToMarkdown, normalizePath, requestUrl, sanitizeHTMLToDom, setIcon } from "obsidian";
 
 let pluginNoticesEnabled = () => true;
 
@@ -190,7 +190,7 @@ import { lunarTag } from "./lunar";
 import { isRestDay } from "./workdays";
 import { setI18nLang, startI18n, stopI18n, t } from "./i18n";
 import { KanbanHost, parseKanbanBoard, serializeKanbanBoard, TasksBoard } from "./kanban";
-import { ImapAccount, ImapBody, ImapFolderInfo, ImapMessage, SmtpAttachment, SmtpMail, imapLabel, listImapFolderInfos, listImapFolders, markImapRead, moveImapMessages, permanentlyDeleteImapMessages, searchImapMessages, searchImapSubjects, sendImapMail, setImapFlagged, trashFolderFor, fetchImapBody, fetchImapMessages, testImapAccount } from "./imap";
+import { IMAP_PROVIDER_PRESETS, ImapAccount, ImapBody, ImapFolderInfo, ImapMessage, SmtpAttachment, SmtpMail, imapLabel, imapProviderForAccount, listImapFolderInfos, listImapFolders, markImapRead, moveImapMessages, permanentlyDeleteImapMessages, searchImapMessages, searchImapSubjects, sendImapMail, setImapFlagged, trashFolderFor, fetchImapBody, fetchImapMessages, testImapAccount } from "./imap";
 import { ImapMailService, SpamHit, TicketHit } from "./mail-service";
 import { MailCacheFolderMode, MailCacheFolderRef, MailCacheSettings, MailCacheStats, normalizeMailCache } from "./mail-cache";
 import { DEFAULT_SPAM_KEYWORDS, normalizeSpamKeywords } from "./spam";
@@ -17968,27 +17968,44 @@ class ImapAccountModal extends Modal {
 		const smtpHost = e?.smtpHost ?? "";
 		const smtpPort = String(e?.smtpPort ?? 465);
 		let account: ImapAccount = e ?? ({ id: freshId(), label: "", imapHost: "", imapPort: 993, secure: true, user: "", password: "", smtpHost: "", smtpPort: 465 } as ImapAccount);
-		const text = (name: string, value: string, onSet: (v: string) => void, placeholder = "") => new Setting(c).setName(name).addText((t) => t.setPlaceholder(placeholder).setValue(value).onChange(onSet));
+		let selectedProvider = e ? imapProviderForAccount(e) : "";
+		const fields: { imapHost?: TextComponent; imapPort?: TextComponent; secure?: ToggleComponent; smtpHost?: TextComponent; smtpPort?: TextComponent } = {};
+		const text = (name: string, value: string, onSet: (v: string) => void, placeholder = "", key?: "imapHost" | "imapPort" | "smtpHost" | "smtpPort") => new Setting(c).setName(name).addText((t) => {
+			t.setPlaceholder(placeholder).setValue(value).onChange(onSet);
+			if (key) fields[key] = t;
+		});
 		const preset = new Setting(c).setName("Provider preset");
+		preset.setDesc("Selecting a type fills the recommended IMAP/SMTP servers and ports below.");
 		preset.addDropdown((d) =>
-			d.addOptions({ "": "Choose a preset", qq: "QQ Mail", netease163: "163 Mail", school: "School / custom" }).onChange((v) => {
-				if (v === "qq") {
-					account.imapHost = "imap.qq.com";
-					account.smtpHost = "smtp.qq.com";
-				} else if (v === "netease163") {
-					account.imapHost = "imap.163.com";
-					account.smtpHost = "smtp.163.com";
-				}
+			d.addOptions({ "": "Choose a preset", ...Object.fromEntries(Object.entries(IMAP_PROVIDER_PRESETS).map(([id, item]) => [id, item.label])), custom: "School / custom" })
+			.setValue(selectedProvider)
+			.onChange((v) => {
+				selectedProvider = v;
+				if (!v || v === "custom") return;
+				const item = IMAP_PROVIDER_PRESETS[v];
+				account.imapHost = item.imapHost;
+				account.imapPort = item.imapPort;
+				account.secure = item.imapSecure;
+				account.smtpHost = item.smtpHost;
+				account.smtpPort = item.smtpPort;
+				fields.imapHost?.setValue(item.imapHost);
+				fields.imapPort?.setValue(String(item.imapPort));
+				fields.secure?.setValue(item.imapSecure);
+				fields.smtpHost?.setValue(item.smtpHost);
+				fields.smtpPort?.setValue(String(item.smtpPort));
 			})
 		);
 		text("Name", label, (v) => (account.label = v));
 		text("Email address", user, (v) => (account.user = v.trim()), "you@qq.com");
 		text("Authorization code", password, (v) => (account.password = encryptSecret(v)));
-		text("IMAP server", imapHost, (v) => (account.imapHost = v.trim()), "imap.qq.com");
-		text("IMAP port", imapPort, (v) => (account.imapPort = Number(v) || 993));
-		new Setting(c).setName("SSL (993)").addToggle((t) => t.setValue(secure).onChange((v) => (account.secure = v)));
-		text("SMTP server", smtpHost, (v) => (account.smtpHost = v.trim()), "smtp.qq.com");
-		text("SMTP port", smtpPort, (v) => (account.smtpPort = Number(v) || 465));
+		text("IMAP server", imapHost, (v) => (account.imapHost = v.trim()), "imap.qq.com", "imapHost");
+		text("IMAP port", imapPort, (v) => (account.imapPort = Number(v) || 993), "993", "imapPort");
+		new Setting(c).setName("IMAP SSL").addToggle((t) => {
+			t.setValue(secure).onChange((v) => (account.secure = v));
+			fields.secure = t;
+		});
+		text("SMTP server", smtpHost, (v) => (account.smtpHost = v.trim()), "smtp.qq.com", "smtpHost");
+		text("SMTP port", smtpPort, (v) => (account.smtpPort = Number(v) || 465), "465", "smtpPort");
 		const btns = c.createDiv({ cls: "nya-modal-btns" });
 		btns.createEl("button", { text: "Test" }).addEventListener("click", () => {
 			this.persist(account, btns);
