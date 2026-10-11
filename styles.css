@@ -3172,6 +3172,29 @@ button.nya-card-more .svg-icon {
 	white-space: nowrap;
 }
 
+/* group tags in the editor are toggle buttons, not free text */
+.nya-contact-form-grouplist .nya-cpanel-chip {
+	border: 1px solid transparent;
+	cursor: pointer;
+}
+
+.nya-contact-form-grouplist .nya-cpanel-chip.is-on {
+	background: color-mix(in srgb, var(--nya-mail-blue, #0f6cbd) 24%, transparent);
+	border-color: color-mix(in srgb, var(--nya-mail-blue, #0f6cbd) 55%, transparent);
+	color: var(--text-normal);
+}
+
+.nya-contact-form-newgroup {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.nya-contact-form-newgroup .nya-contact-form-groupinput {
+	flex: 1;
+	min-width: 0;
+}
+
 .nya-cpanel-empty,
 .nya-cpanel-hint {
 	padding: 12px;

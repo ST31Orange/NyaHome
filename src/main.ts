@@ -11501,43 +11501,44 @@ class ContactFormView {
 		};
 		drawPhones();
 
-		// groups: chips plus a box that turns Enter into a new tag
+		// groups: click existing tags to join or leave, with a small box to
+		// create a brand-new tag when none fit yet
 		const groupWrap = form.createDiv("nya-contact-form-row nya-contact-form-groupwrap");
 		groupWrap.createSpan({ cls: "nya-contact-form-label", text: t("Groups") });
 		const groupChips = groupWrap.createDiv("nya-contact-form-grouplist");
-		const groupInput = groupWrap.createEl("input", { cls: "nya-contact-form-groupinput", attr: { type: "text", placeholder: t("Type a group and press Enter") } });
-		const listId = `nya-cpanel-groups-${Math.random().toString(36).slice(2, 8)}`;
-		const datalist = groupWrap.createEl("datalist");
-		datalist.id = listId;
-		for (const g of this.plugin.contactGroups()) datalist.createEl("option", { value: g });
-		groupInput.setAttr("list", listId);
+		const allGroups: string[] = this.plugin.contactGroups();
 		const drawGroups = () => {
 			groupChips.empty();
-			groups.forEach((g, i) => {
-				const chip = groupChips.createDiv("nya-cpanel-chip");
-				chip.createSpan({ text: g });
-				const x = chip.createEl("button", { cls: "nya-icon-btn nya-contact-form-chipdel", attr: { "aria-label": t("Remove group") } });
-				setIcon(x, "x");
-				x.addEventListener("click", () => {
-					groups.splice(i, 1);
+			for (const g of allGroups) {
+				const on = groups.includes(g);
+				const chip = groupChips.createEl("button", { cls: "nya-cpanel-chip" + (on ? " is-on" : ""), attr: { type: "button", "aria-pressed": String(on) } });
+				chip.setText(g);
+				chip.addEventListener("click", () => {
+					const i = groups.indexOf(g);
+					if (i >= 0) groups.splice(i, 1);
+					else groups.push(g);
 					drawGroups();
 				});
-			});
+			}
 		};
 		drawGroups();
-		const commitGroup = () => {
-			const g = groupInput.value.trim();
+		const newRow = groupWrap.createDiv("nya-contact-form-newgroup");
+		const newGroupInput = newRow.createEl("input", { cls: "nya-contact-form-groupinput", attr: { type: "text", placeholder: t("New group...") } });
+		const addGroupBtn = newRow.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": t("Add group") } });
+		setIcon(addGroupBtn, "plus");
+		const commitNewGroup = () => {
+			const g = newGroupInput.value.trim();
 			if (g && !groups.includes(g)) groups.push(g);
-			groupInput.value = "";
+			if (g && !allGroups.includes(g)) allGroups.push(g);
+			newGroupInput.value = "";
 			drawGroups();
 		};
-		groupInput.addEventListener("keydown", (e) => {
+		newGroupInput.addEventListener("keydown", (e) => {
 			if (e.key !== "Enter") return;
 			e.preventDefault();
-			commitGroup();
+			commitNewGroup();
 		});
-		groupInput.addEventListener("change", commitGroup);
-
+		addGroupBtn.addEventListener("click", commitNewGroup);
 		// note
 		const noteWrap = form.createDiv("nya-contact-form-row nya-contact-form-notewrap");
 		noteWrap.createSpan({ cls: "nya-contact-form-label", text: t("Note") });
@@ -11767,7 +11768,7 @@ class PeopleModal extends Modal {
 		if (this.plugin.contactsNeedReconnect())
 			c.createDiv({
 				cls: "nya-mail-error",
-				text: "Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission.",
+				text: t("Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission."),
 			});
 		const host = c.createDiv("nya-people-host");
 		this.panel = new ContactPanelView(this.plugin, {
@@ -18277,6 +18278,8 @@ class ImapRichComposeModal extends Modal {
 	private contactsPanel: ContactPanelView | null = null;
 	private pickTarget: HTMLInputElement | null = null;
 	private composeWidthBefore = 0;
+	private composeLayoutEl: HTMLElement | null = null;
+	private composeMainEl: HTMLElement | null = null;
 
 	constructor(
 		app: App,
@@ -18305,6 +18308,8 @@ class ImapRichComposeModal extends Modal {
 		const main = layout.createDiv("nya-compose-main");
 		const rail = layout.createDiv("nya-contact-rail");
 		this.contactRailEl = rail;
+		this.composeLayoutEl = layout;
+		this.composeMainEl = main;
 
 		// The actual SMTP identity is the stored user; making it explicit
 		// prevents a friendly account label from reading as a different sender.
@@ -18399,7 +18404,12 @@ class ImapRichComposeModal extends Modal {
 		this.contactsOpen = true;
 		this.composeWidthBefore = this.modalEl.offsetWidth;
 		this.modalEl.addClass("nya-compose-contacts-open");
-		const w = Math.min(1400, Math.max(this.composeWidthBefore, window.innerWidth - 24));
+		// the mail-composing column keeps its width; only the contacts rail
+		// grows, so the window stretches to the right instead of widening
+		// the editor
+		const mainW = this.composeMainEl?.offsetWidth || 720;
+		this.composeLayoutEl?.setCssStyles({ gridTemplateColumns: `minmax(0, ${mainW}px) 400px` });
+		const w = Math.min(mainW + 12 + 400, window.innerWidth - 24);
 		this.modalEl.setCssStyles({ width: `${w}px` });
 		this.drawContactRail(this.contactRailEl!);
 		if (openNew) this.contactsPanel?.editContact(null);
@@ -18410,6 +18420,7 @@ class ImapRichComposeModal extends Modal {
 		this.pickTarget = null;
 		this.modalEl.removeClass("nya-compose-contacts-open");
 		this.contactsPanel = null;
+		this.composeLayoutEl?.setCssStyles({ gridTemplateColumns: "" });
 		if (this.composeWidthBefore) {
 			this.modalEl.setCssStyles({ width: `${this.composeWidthBefore}px` });
 			this.composeWidthBefore = 0;
