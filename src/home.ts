@@ -43,6 +43,11 @@ export interface HomeCard {
 	id: string;
 	title: string;
 	notes: string[];
+	/** "folder" is the original card; "booklist" renders an editable table. */
+	kind?: "folder" | "booklist";
+	tableCols?: number;
+	tableRows?: number;
+	booklistRows?: Array<{ done: boolean; cells: string[] }>;
 	/** Per-note grid placement inside the card body, keyed by vault path. */
 	noteLayouts?: Record<string, { x?: number; y?: number; w?: number; h?: number }>;
 	/** Explicit 12×12 grid placement. Older cards are migrated on first render. */
@@ -64,6 +69,8 @@ const HOME_CARD_COLS = 4;
 const HOME_CARD_ROWS = 2;
 const HOME_NOTE_COLS = 4;
 const HOME_NOTE_ROWS = 8;
+ const HOME_BOOKLIST_COLS = 4;
+ const HOME_BOOKLIST_ROWS = 6;
 
 const SEARCH_FILTERS: Array<{ id: string; icon: string; labelZh: string; labelEn: string; extensions: string[] }> = [
 	{ id: "folders", icon: "folder", labelZh: "文件夹", labelEn: "Folders", extensions: [] },
@@ -92,6 +99,10 @@ const ZH = {
 	openShortcuts: "管理快捷方式",
 	folders: "文件夹区域",
 	addFolder: "新建文件夹卡片",
+	addBooklist: "新建书单卡片",
+	booklistName: "书单名称",
+	addRow: "+ 行",
+	addColumn: "+ 列",
 	addNote: "添加笔记",
 	emptyGrid: "点击这里建立第一个文件夹卡片",
 	emptyCard: "把笔记拖到这里",
@@ -129,6 +140,10 @@ const EN = {
 	openShortcuts: "Manage shortcuts",
 	folders: "Folders",
 	addFolder: "New folder card",
+	addBooklist: "New booklist card",
+	booklistName: "Booklist name",
+	addRow: "+ Row",
+	addColumn: "+ Column",
 	addNote: "Add note",
 	emptyGrid: "Click here to make your first folder card",
 	emptyCard: "Drop notes here",
@@ -375,6 +390,12 @@ export class NyaHomeView extends ItemView {
 			el.createSpan({ text: t.addFolder });
 			el.addEventListener("click", () => this.addHomeCard(t));
 		});
+		sectionActions.createDiv("nyahome-section-button", (el) => {
+			const icon = el.createDiv("nyahome-section-icon");
+			setIcon(icon, "list");
+			el.createSpan({ text: t.addBooklist });
+			el.addEventListener("click", () => this.addBooklist(t));
+		});
 		sectionActions.createDiv("nyahome-section-button is-layout", (el) => {
 			const icon = el.createDiv("nyahome-section-icon");
 			setIcon(icon, this.layoutEditing ? "check" : "layout-grid");
@@ -481,10 +502,12 @@ export class NyaHomeView extends ItemView {
 	}
 
 	private renderHomeCard(parent: HTMLElement, card: HomeCard, t: ReturnType<typeof T>): void {
-		const el = parent.createDiv("nyahome-card is-folder");
+		const isBooklist = card.kind === "booklist";
+		const el = parent.createDiv(isBooklist ? "nyahome-card is-booklist" : "nyahome-card is-folder");
 		const layout = this.cardLayout(card);
 		el.style.gridColumn = `${layout.x + 1} / span ${layout.w}`;
 		el.style.gridRow = `${layout.y + 1} / span ${layout.h}`;
+		if (!isBooklist) {
 		el.addEventListener("dragover", (e) => {
 			el.addClass("is-droptarget");
 			e.dataTransfer!.dropEffect = "copy";
@@ -507,11 +530,28 @@ export class NyaHomeView extends ItemView {
 				this.render();
 			}
 		});
+		}
 
 		const head = el.createDiv("nyahome-card-head");
 		head.setAttribute("title", t.dragCard);
 		head.createDiv({ cls: "nyahome-card-label", text: card.title });
 		const controls = head.createDiv("nyahome-card-controls");
+		if (isBooklist) {
+			controls.createEl("button", { attr: { "aria-label": t.addRow }, text: t.addRow }).addEventListener("click", () => {
+				const data = this.booklistData(card);
+				card.tableRows = data.rows.length + 1;
+				card.booklistRows = [...data.rows, { done: false, cells: Array(data.cols - 1).fill("") }];
+				this.plugin.queueSave();
+				this.render();
+			});
+			controls.createEl("button", { attr: { "aria-label": t.addColumn }, text: t.addColumn }).addEventListener("click", () => {
+				const data = this.booklistData(card);
+				card.tableCols = data.cols + 1;
+				card.booklistRows = data.rows.map((r) => ({ done: r.done, cells: [...r.cells, ""] }));
+				this.plugin.queueSave();
+				this.render();
+			});
+		} else {
 		controls.createEl("button", { attr: { "aria-label": t.addNote }, text: "+" }).addEventListener("click", () =>
 			new HomeTextModal(this.app, t.addNote, t.notePath, "", (path) => {
 				const clean = normalizePath(path.trim());
@@ -522,6 +562,7 @@ export class NyaHomeView extends ItemView {
 				}
 			}).open()
 		);
+		}
 		controls.createEl("button", { attr: { "aria-label": t.rename }, text: "✎" }).addEventListener("click", () =>
 			new HomeTextModal(this.app, t.rename, t.cardName, card.title, (title) => {
 				card.title = title;
@@ -544,7 +585,9 @@ export class NyaHomeView extends ItemView {
 		}
 
 		const body = el.createDiv("nyahome-card-body");
-		if (!card.notes.length) body.createDiv({ cls: "nyahome-card-empty", text: t.emptyCard });
+		if (isBooklist) {
+			this.renderBooklistBody(body, card, t);
+		} else if (!card.notes.length) body.createDiv({ cls: "nyahome-card-empty", text: t.emptyCard });
 		else {
 			for (const path of card.notes) {
 				body.createDiv("nyahome-note", (noteEl) => {
@@ -631,6 +674,77 @@ export class NyaHomeView extends ItemView {
 		cardList.push({ id: crypto.randomUUID(), title, notes: [], ...layout });
 		this.plugin.queueSave();
 		this.render();
+	}
+	private addBooklist(t: ReturnType<typeof T>): void {
+		new HomeTextModal(this.app, t.addBooklist, t.booklistName, "", (title) => this.addNamedBooklist(title, t)).open();
+	}
+
+	private addNamedBooklist(title: string, t: ReturnType<typeof T>): void {
+		const cardList = this.plugin.settings.homeCards;
+		const layout = this.firstFreeLayout(cardList, HOME_CARD_COLS, HOME_CARD_ROWS);
+		if (!layout) {
+			new Notice(t.gridFull);
+			return;
+		}
+		const cols = HOME_BOOKLIST_COLS;
+		const rowCount = HOME_BOOKLIST_ROWS;
+		cardList.push({
+			id: crypto.randomUUID(),
+			title,
+			notes: [],
+			kind: "booklist",
+			tableCols: cols,
+			tableRows: rowCount,
+			booklistRows: Array.from({ length: rowCount }, () => ({ done: false, cells: Array(cols - 1).fill("") })),
+			...layout,
+		});
+		this.plugin.queueSave();
+		this.render();
+	}
+
+	private booklistData(card: HomeCard): { cols: number; rows: Array<{ done: boolean; cells: string[] }> } {
+		const cols = clampInteger(card.tableCols, 2, 12, HOME_BOOKLIST_COLS);
+		const rowCount = clampInteger(card.tableRows, 1, 40, HOME_BOOKLIST_ROWS);
+		const rows = (card.booklistRows ?? []).slice(0, rowCount);
+		let changed = card.tableCols !== cols || card.tableRows !== rowCount || !card.booklistRows || rows.length !== rowCount;
+		while (rows.length < rowCount) rows.push({ done: false, cells: Array(cols - 1).fill("") });
+		for (const row of rows) {
+			const cells = row.cells ?? [];
+			while (cells.length < cols - 1) cells.push("");
+			if (cells.length > cols - 1) cells.length = cols - 1;
+			row.cells = cells;
+		}
+		if (changed) {
+			card.tableCols = cols;
+			card.tableRows = rowCount;
+			card.booklistRows = rows;
+			this.plugin.queueSave();
+		}
+		return { cols, rows };
+	}
+
+	private renderBooklistBody(body: HTMLElement, card: HomeCard, t: ReturnType<typeof T>): void {
+		const data = this.booklistData(card);
+		const table = body.createEl("table", { cls: "nyahome-table" });
+		const tbody = table.createEl("tbody");
+		for (const row of data.rows) {
+			const tr = tbody.createEl("tr");
+			const checkTd = tr.createEl("td", { cls: "nyahome-table-done" });
+			const check = checkTd.createEl("input", { type: "checkbox", cls: "nyahome-table-check" });
+			check.checked = row.done;
+			check.addEventListener("change", () => {
+				row.done = check.checked;
+				this.plugin.queueSave();
+			});
+			for (let c = 0; c < data.cols - 1; c++) {
+				const input = tr.createEl("td", { cls: "nyahome-table-cell" }).createEl("input", { type: "text", cls: "nyahome-table-input" });
+				input.value = row.cells[c] ?? "";
+				input.addEventListener("input", () => {
+					row.cells[c] = input.value;
+					this.plugin.queueSave();
+				});
+			}
+		}
 	}
 
 	private ensureHomeLayouts(): void {

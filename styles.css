@@ -7404,6 +7404,47 @@ body.theme-light .notice:not(.pw-self-styled) a {
 	align-content: start;
 }
 
+.nyahome-card.is-booklist .nyahome-card-body {
+	display: block;
+	padding: 2px 5px 7px;
+}
+
+.nyahome-table {
+	width: 100%;
+	border-collapse: collapse;
+	table-layout: fixed;
+}
+
+.nyahome-table td {
+	border: 1px solid var(--background-modifier-border);
+	padding: 0;
+	vertical-align: middle;
+}
+
+.nyahome-table-done {
+	width: 32px;
+	text-align: center;
+}
+
+.nyahome-table-check {
+	margin: 0;
+}
+
+.nyahome-table-input {
+	width: 100%;
+	box-sizing: border-box;
+	border: 0;
+	background: transparent;
+	color: var(--text-normal);
+	font: inherit;
+	padding: 3px 5px;
+	outline: none;
+}
+
+.nyahome-table-input:focus {
+	background: var(--background-modifier-hover);
+}
+
 .nyahome-card.is-layout-card {
 	cursor: default;
 }
