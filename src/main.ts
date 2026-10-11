@@ -145,6 +145,8 @@ import { chunk, GRAPH_BATCH_MAX,
 	mergePeople,
 	SavedContact,
 	PersonCard,
+	ContactPhone,
+	normalizeSavedContact,
 	matchEvents,
 	eventQueryIsEmpty,
 	EventQuery,
@@ -3933,6 +3935,19 @@ export default class NyaHomePlugin extends Plugin {
 		return this.settings.imapContacts ?? [];
 	}
 
+	/** Distinct group tags across the local contact library, for the People
+	 *  window's filter and the contact form's autocomplete. */
+	contactGroups(): string[] {
+		const seen = new Set<string>();
+		for (const c of this.imapContacts()) {
+			for (const g of c.groups ?? []) {
+				const name = g.trim();
+				if (name) seen.add(name);
+			}
+		}
+		return [...seen].sort((a, b) => a.localeCompare(b));
+	}
+
 	/** Toggle the local .ics "done" marker for one event (or one recurring
 	 *  occurrence). The field is custom, so other calendar apps keep the event
 	 *  while NyaHome restores its strikethrough. */
@@ -3983,21 +3998,18 @@ export default class NyaHomePlugin extends Plugin {
 
 	saveContact(c: SavedContact): ContactRecord {
 		const now = Date.now();
+		const clean = normalizeSavedContact(c);
 		const list = [...this.imapContacts()];
-		const existing = list.find((x) => x.email.toLowerCase() === c.email.trim().toLowerCase());
+		const existing = list.find((x) => x.email.toLowerCase() === clean.email.toLowerCase());
 		if (existing) {
-			Object.assign(existing, { ...c, email: existing.email, lastMs: now, updatedAtMs: now });
+			Object.assign(existing, { ...clean, email: existing.email, lastMs: now, updatedAtMs: now });
 			this.queueSave();
 			this.notify();
 			return existing;
 		}
 		const next: ContactRecord = {
 			id: freshId(),
-			name: c.name?.trim() || c.email,
-			email: c.email.trim(),
-			company: c.company,
-			title: c.title,
-			phone: c.phone,
+			...clean,
 			createdAtMs: now,
 			updatedAtMs: now,
 			lastMs: now,
@@ -4014,7 +4026,8 @@ export default class NyaHomePlugin extends Plugin {
 		const list = [...this.imapContacts()];
 		const hit = list.find((c) => c.id === id);
 		if (!hit) return;
-		Object.assign(hit, next, { id: hit.id, createdAtMs: hit.createdAtMs, updatedAtMs: Date.now() });
+		const clean = normalizeSavedContact({ ...next, name: next.name || hit.name, email: next.email || hit.email });
+		Object.assign(hit, clean, { id: hit.id, createdAtMs: hit.createdAtMs, updatedAtMs: Date.now() });
 		this.settings.imapContacts = list;
 		this.queueSave();
 		this.notify();
@@ -11417,74 +11430,253 @@ class TasksModal extends Modal {
 	}
 }
 
-/** The people this vault already knows about, and what can be done with one.
- *
- *  Built from correspondence rather than from an address book: who you have
- *  written to, who has written to you, and who you have met. That is a
- *  different list from Outlook's Contacts and usually a more useful one,
- *  because it is ordered by how much you actually deal with someone rather
- *  than by whether anyone remembered to save them. The actions are the ones
- *  only this plugin can offer, which is the point of it living here: their
- *  mail, their meetings, and their page in the vault, all from one row. */
-class PeopleModal extends Modal {
+/** Inline contact editor shared by the compose rail, the People window and
+ *  the mail reading view. It holds the fields the old modal had plus
+ *  multiple phone numbers, group tags and a free-form note, and saves
+ *  through the plugin so the rest of the app sees the change immediately. */
+class ContactFormView {
+	constructor(
+		private plugin: NyaHomePlugin,
+		private host: HTMLElement,
+		private contact: ContactRecord | null,
+		private opts: { onSaved: () => void; onCancel?: () => void; allowDelete?: boolean }
+	) {}
+
+	render() {
+		const c = this.contact;
+		this.host.empty();
+		const form = this.host.createDiv("nya-contact-form");
+		form.createDiv({ cls: "nya-contact-form-title", text: c ? t("Edit contact") : t("New contact") });
+		let name = c?.name ?? "";
+		let email = c?.email ?? "";
+		let company = c?.company ?? "";
+		let title = c?.title ?? "";
+		let note = c?.note ?? "";
+		const phones: ContactPhone[] = (c?.phones ?? []).map((p) => ({ label: p.label, value: p.value }));
+		if (c?.phone && !phones.some((p) => p.value === c.phone)) phones.unshift({ label: "phone", value: c.phone });
+		if (!phones.length) phones.push({ label: "phone", value: "" });
+		const groups: string[] = [...(c?.groups ?? [])];
+
+		const field = (label: string, value: string, onChange: (v: string) => void, type = "text", placeholder?: string): HTMLInputElement => {
+			const r = form.createDiv("nya-contact-form-row");
+			r.createSpan({ cls: "nya-contact-form-label", text: label });
+			const input = r.createEl("input", { attr: { type, spellcheck: "false" } });
+			input.value = value;
+			if (placeholder) input.placeholder = placeholder;
+			input.addEventListener("input", () => onChange(input.value));
+			return input;
+		};
+		field(t("Name"), name, (v) => (name = v), "text", t("Display name"));
+		field(t("Email"), email, (v) => (email = v), "email", "name@example.com");
+		field(t("Company"), company, (v) => (company = v));
+		field(t("Title"), title, (v) => (title = v));
+
+		// phones: a primary row plus as many extra numbers as the user wants
+		const phoneWrap = form.createDiv("nya-contact-form-row nya-contact-form-phonewrap");
+		phoneWrap.createSpan({ cls: "nya-contact-form-label", text: t("Phones") });
+		const phoneList = phoneWrap.createDiv("nya-contact-form-phonelist");
+		const drawPhones = () => {
+			phoneList.empty();
+			phones.forEach((ph, i) => {
+				const pr = phoneList.createDiv("nya-contact-form-phone");
+				const labelIn = pr.createEl("input", { cls: "nya-contact-form-phonelabel", attr: { type: "text", placeholder: t("Label") } });
+				labelIn.value = ph.label;
+				labelIn.addEventListener("input", () => (phones[i].label = labelIn.value));
+				const valIn = pr.createEl("input", { cls: "nya-contact-form-phoneval", attr: { type: "tel", placeholder: t("Phone number") } });
+				valIn.value = ph.value;
+				valIn.addEventListener("input", () => (phones[i].value = valIn.value));
+				const del = pr.createEl("button", { cls: "nya-icon-btn nya-contact-form-phone-del", attr: { "aria-label": t("Remove phone") } });
+				setIcon(del, "x");
+				del.addEventListener("click", () => {
+					phones.splice(i, 1);
+					if (!phones.length) phones.push({ label: "phone", value: "" });
+					drawPhones();
+				});
+			});
+			const add = phoneList.createEl("button", { cls: "nya-contact-form-add", text: t("Add phone") });
+			add.addEventListener("click", () => {
+				phones.push({ label: "phone", value: "" });
+				drawPhones();
+			});
+		};
+		drawPhones();
+
+		// groups: chips plus a box that turns Enter into a new tag
+		const groupWrap = form.createDiv("nya-contact-form-row nya-contact-form-groupwrap");
+		groupWrap.createSpan({ cls: "nya-contact-form-label", text: t("Groups") });
+		const groupChips = groupWrap.createDiv("nya-contact-form-grouplist");
+		const groupInput = groupWrap.createEl("input", { cls: "nya-contact-form-groupinput", attr: { type: "text", placeholder: t("Type a group and press Enter") } });
+		const listId = `nya-cpanel-groups-${Math.random().toString(36).slice(2, 8)}`;
+		const datalist = groupWrap.createEl("datalist");
+		datalist.id = listId;
+		for (const g of this.plugin.contactGroups()) datalist.createEl("option", { value: g });
+		groupInput.setAttr("list", listId);
+		const drawGroups = () => {
+			groupChips.empty();
+			groups.forEach((g, i) => {
+				const chip = groupChips.createDiv("nya-cpanel-chip");
+				chip.createSpan({ text: g });
+				const x = chip.createEl("button", { cls: "nya-icon-btn nya-contact-form-chipdel", attr: { "aria-label": t("Remove group") } });
+				setIcon(x, "x");
+				x.addEventListener("click", () => {
+					groups.splice(i, 1);
+					drawGroups();
+				});
+			});
+		};
+		drawGroups();
+		const commitGroup = () => {
+			const g = groupInput.value.trim();
+			if (g && !groups.includes(g)) groups.push(g);
+			groupInput.value = "";
+			drawGroups();
+		};
+		groupInput.addEventListener("keydown", (e) => {
+			if (e.key !== "Enter") return;
+			e.preventDefault();
+			commitGroup();
+		});
+		groupInput.addEventListener("change", commitGroup);
+
+		// note
+		const noteWrap = form.createDiv("nya-contact-form-row nya-contact-form-notewrap");
+		noteWrap.createSpan({ cls: "nya-contact-form-label", text: t("Note") });
+		const noteInput = noteWrap.createEl("textarea", { cls: "nya-contact-form-noteinput" });
+		noteInput.value = note;
+
+		// actions
+		const actions = form.createDiv("nya-modal-btns nya-contact-form-actions");
+		actions.createEl("button", { text: t("Cancel") }).addEventListener("click", () => this.opts.onCancel?.());
+		if (this.opts.allowDelete && c) {
+			actions.createEl("button", { text: t("Delete"), cls: "mod-warning" }).addEventListener("click", () => {
+				new ConfirmModal(this.plugin.app, t("Delete contact"), t("Remove this contact from the local contact library?"), t("Delete"), () => {
+					this.plugin.deleteContact(c.id);
+					this.opts.onSaved();
+				}).open();
+			});
+		}
+		actions.createEl("button", { text: t("Save"), cls: "mod-cta" }).addEventListener("click", () => {
+			if (!email.trim().includes("@")) {
+				new Notice("NyaHome: enter an email address.");
+				return;
+			}
+			const primary = phones.find((p) => p.value.trim())?.value.trim() ?? "";
+			const data: SavedContact = {
+				name: name.trim() || email.trim(),
+				email: email.trim(),
+				company: company.trim() || undefined,
+				title: title.trim() || undefined,
+				phone: primary || undefined,
+				phones: phones.map((p) => ({ label: p.label.trim() || "phone", value: p.value.trim() })).filter((p) => p.value),
+				groups: [...groups],
+				note: noteInput.value.trim() || undefined,
+			};
+			if (c) this.plugin.updateContact(c.id, data);
+			else this.plugin.saveContact(data);
+			this.opts.onSaved();
+		});
+	}
+}
+
+/** A searchable, group-filterable contact list with an inline editor. The
+ *  compose window embeds it in "rail" layout (the editor replaces the list
+ *  while open); the People window embeds it in "wide" layout (list and
+ *  editor sit side by side). */
+class ContactPanelView {
 	private filter = "";
+	private group = "";
+	private editing: ContactRecord | null | "new" = null;
+	private host!: HTMLElement;
 	private listEl!: HTMLElement;
+	private formEl!: HTMLElement;
+	private bodyEl!: HTMLElement;
 
 	constructor(
-		app: App,
 		private plugin: NyaHomePlugin,
-		private onSearchMail: (q: string) => void,
-		private onSearchEvents: (name: string) => void
-	) {
-		super(app);
+		private opts: {
+			layout?: "rail" | "wide";
+			onPick?: (email: string) => void;
+			rowActions?: (acts: HTMLElement, person: PersonCard, panel: ContactPanelView) => void;
+			onClose?: () => void;
+			onChanged?: () => void;
+		}
+	) {}
+
+	attach(host: HTMLElement): void {
+		this.host = host;
+		host.addClass("nya-cpanel");
+		host.addClass(`nya-cpanel-${this.opts.layout ?? "rail"}`);
+		this.render();
 	}
 
-	onOpen() {
-		this.titleEl.setText("People");
-		makeMovable(this.app, this, "nyahome:people-window", { w: 640, h: 680 });
-		const c = this.contentEl;
-		c.addClass("nya-people");
-		void this.plugin.ensureSentContacts();
-		void this.plugin.ensureSavedContacts().then(() => this.draw());
-		if (this.plugin.contactsNeedReconnect())
-		c.createDiv({
-			cls: "nya-mail-error",
-			text: "Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission.",
-		});
+	/** Rebuild the header (group options) and the list, keeping the query. */
+	refresh(): void {
+		this.render();
+	}
 
-		const head = c.createDiv("nya-people-head");
-		head.createEl("button", { text: "Add contact", cls: "mod-cta" }).addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => this.draw()).open());
+	/** Open the editor for a saved contact, or a blank form when given null. */
+	editContact(contact: ContactRecord | null): void {
+		this.editing = contact ?? "new";
+		this.render();
+	}
 
-		const search = c.createEl("input", { cls: "nya-people-search", attr: { type: "search", placeholder: "Search people..." } });
+	private backToList(): void {
+		this.editing = null;
+		this.render();
+	}
+
+	private render(): void {
+		const host = this.host;
+		host.empty();
+		const head = host.createDiv("nya-cpanel-head");
+		const search = head.createEl("input", { cls: "nya-cpanel-search", attr: { type: "search", placeholder: t("Search contacts...") } });
+		search.value = this.filter;
+		const groupSel = head.createEl("select", { cls: "nya-cpanel-group", attr: { "aria-label": t("Group") } });
+		groupSel.createEl("option", { value: "", text: t("All groups") });
+		for (const g of this.plugin.contactGroups()) groupSel.createEl("option", { value: g, text: g });
+		groupSel.value = this.group;
+		const add = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": t("Add contact") } });
+		setIcon(add, "user-plus");
+		if (this.opts.onClose) {
+			const close = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": t("Collapse contacts") } });
+			setIcon(close, "panel-right-close");
+			close.addEventListener("click", () => this.opts.onClose?.());
+		}
+
+		this.bodyEl = host.createDiv("nya-cpanel-body");
+		this.listEl = this.bodyEl.createDiv("nya-cpanel-list");
+		this.formEl = this.bodyEl.createDiv("nya-cpanel-form");
+
 		search.addEventListener("input", () => {
 			this.filter = search.value;
-			this.draw();
+			this.renderList();
 		});
-		this.listEl = c.createDiv("nya-people-list");
-		this.draw();
+		groupSel.addEventListener("change", () => {
+			this.group = groupSel.value;
+			this.renderList();
+		});
+		add.addEventListener("click", () => this.editContact(null));
 
-		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
-		btns.createSpan("nya-compose-btns-gap");
-		btns.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
-		window.setTimeout(() => search.focus(), 20);
+		if (this.editing) this.bodyEl.addClass("is-editing");
+		else this.bodyEl.removeClass("is-editing");
+		this.renderList();
+		if (this.editing) this.renderForm();
+		else if (this.opts.layout === "wide") {
+			this.formEl.createDiv({ cls: "nya-cpanel-hint", text: t("Select a contact to view or edit it, or add a new one.") });
+		}
 	}
 
-	private draw() {
-		const host = this.listEl;
-		host.empty();
-		const index = this.plugin.people();
-		const hits = matchContacts(index, this.filter, 300) as PersonCard[];
-		if (!index.length) {
-			host.createDiv({ cls: "nya-when-note", text: "Nobody yet. Open the inbox once so there is some correspondence to read." });
-			return;
-		}
+	private renderList(): void {
+		this.listEl.empty();
+		const people = this.plugin.people() as PersonCard[];
+		let hits = matchContacts(people, this.filter, 500) as PersonCard[];
+		if (this.group) hits = hits.filter((p) => p.groups?.includes(this.group));
 		if (!hits.length) {
-			host.createDiv({ cls: "nya-when-note", text: "Nobody matches that." });
+			this.listEl.createDiv({ cls: "nya-cpanel-empty", text: people.length ? t("Nobody matches that.") : t("No contacts yet.") });
 			return;
 		}
-		host.createDiv({ cls: "nya-when-note", text: `${hits.length} of ${index.length}` });
 		for (const p of hits) {
-			const row = host.createDiv("nya-people-row");
+			const row = this.listEl.createDiv("nya-people-row nya-cpanel-row");
 			const av = row.createDiv("nya-mail-avatar");
 			const photo = this.plugin.settings.mailPhotos ? this.plugin.photoFor(p.email) : null;
 			if (photo) {
@@ -11497,13 +11689,16 @@ class PeopleModal extends Modal {
 			const mid = row.createDiv("nya-people-mid");
 			const nameRow = mid.createDiv("nya-people-name");
 			nameRow.createSpan({ text: p.name || p.email });
-			// a saved contact is marked, so it is clear which names came from
-			// the address book and which were inferred from correspondence
-			if (p.saved) nameRow.createSpan({ cls: "nya-people-saved", text: "contact" });
-			const bits = [p.email];
+			if (p.saved) nameRow.createSpan({ cls: "nya-people-saved", text: t("contact") });
+			if (p.groups?.length) {
+				const chips = mid.createDiv("nya-cpanel-chips");
+				for (const g of p.groups.slice(0, 3)) chips.createSpan({ cls: "nya-cpanel-chip", text: g });
+			}
+			const bits: string[] = [p.email];
 			if (p.title || p.company) bits.push([p.title, p.company].filter(Boolean).join(", "));
-			if (p.phone) bits.push(p.phone);
-			bits.push(p.count ? `${p.count} message${p.count === 1 ? "" : "s"}, last ${fmtDayShort(keyOfMs(p.lastMs), true)}` : "no mail either way");
+			const allPhones = [p.phone, ...(p.phones ?? []).map((ph) => ph.value)].filter(Boolean);
+			if (allPhones.length) bits.push(allPhones.join(" / "));
+			bits.push(p.count ? `${p.count} message${p.count === 1 ? "" : "s"}, last ${fmtDayShort(keyOfMs(p.lastMs), true)}` : t("no mail either way"));
 			mid.createDiv({ cls: "nya-people-sub", text: bits.join(" · ") });
 			const acts = row.createDiv("nya-people-acts");
 			const act = (icon: string, label: string, run: () => void) => {
@@ -11514,40 +11709,118 @@ class PeopleModal extends Modal {
 					run();
 				});
 			};
-			act("pencil", `New mail to ${p.name || p.email}`, () => this.plugin.openNewMailCompose(p.email));
-			if (this.plugin.isContactSaved(p.email)) {
-				act("settings-2", `Edit ${p.name || p.email}`, () => {
-					const hit = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === p.email.toLowerCase());
-					if (hit) new ContactEditModal(this.app, this.plugin, hit, () => this.draw()).open();
-				});
-				act("trash-2", `Delete ${p.name || p.email}`, () => {
-					const hit = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === p.email.toLowerCase());
-					if (!hit) return;
-					new ConfirmModal(this.app, "Delete contact", `Remove ${p.name || p.email} from the local contact library?`, "Delete", () => {
-						this.plugin.deleteContact(hit.id);
-						this.draw();
-					}).open();
-				});
+			const hit = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === p.email.toLowerCase());
+			act("settings-2", t("Edit contact"), () => this.editContact(hit ?? null));
+			if (this.opts.onPick) {
+				row.addEventListener("click", () => this.opts.onPick!(p.email));
+				act("user-check", t("Add to recipient"), () => this.opts.onPick!(p.email));
 			} else {
-				act("user-plus", `Save ${p.name || p.email}`, () => {
-					this.plugin.saveContact({ name: p.name, email: p.email, company: p.company, title: p.title, phone: p.phone });
-					this.draw();
-				});
+				row.addEventListener("click", () => this.editContact(hit ?? null));
 			}
-			act("inbox", "Their mail", () => {
-				this.onSearchMail(`from:${p.email}`);
-				this.close();
-			});
-			act("calendar-days", "Meetings with them", () => {
-				this.onSearchEvents(p.name || p.email);
-				this.close();
-			});
-			act("file-text", "Their page in the vault", () => {
-				void this.plugin.openPersonPage(p.name || p.email);
-				this.close();
-			});
-			row.addEventListener("click", () => void navigator.clipboard.writeText(p.email).then(() => new Notice(`NyaHome: copied ${p.email}.`)));
+			this.opts.rowActions?.(acts, p, this);
 		}
+	}
+
+	private renderForm(): void {
+		this.formEl.empty();
+		const back = this.formEl.createEl("button", { cls: "nya-cpanel-back", text: t("Back to list") });
+		back.addEventListener("click", () => this.backToList());
+		new ContactFormView(this.plugin, this.formEl, this.editing === "new" ? null : this.editing, {
+			onSaved: () => {
+				this.backToList();
+				this.opts.onChanged?.();
+			},
+			onCancel: () => this.backToList(),
+			allowDelete: this.editing !== "new" && !!this.editing,
+		}).render();
+	}
+}
+
+/** The people this vault already knows about, and what can be done with one.
+ *
+ *  Built from correspondence rather than from an address book: who you have
+ *  written to, who has written to you, and who you have met. That is a
+ *  different list from Outlook's Contacts and usually a more useful one,
+ *  because it is ordered by how much you actually deal with someone rather
+ *  than by whether anyone remembered to save them. The actions are the ones
+ *  only this plugin can offer, which is the point of it living here: their
+ *  mail, their meetings, and their page in the vault, all from one row. */
+class PeopleModal extends Modal {
+	private panel: ContactPanelView | null = null;
+
+	constructor(
+		app: App,
+		private plugin: NyaHomePlugin,
+		private onSearchMail: (q: string) => void,
+		private onSearchEvents: (name: string) => void
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText(t("People"));
+		makeMovable(this.app, this, "nyahome:people-window", { w: 980, h: 720 });
+		const c = this.contentEl;
+		c.addClass("nya-people");
+		void this.plugin.ensureSentContacts();
+		void this.plugin.ensureSavedContacts().then(() => this.panel?.refresh());
+		if (this.plugin.contactsNeedReconnect())
+			c.createDiv({
+				cls: "nya-mail-error",
+				text: "Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission.",
+			});
+		const host = c.createDiv("nya-people-host");
+		this.panel = new ContactPanelView(this.plugin, {
+			layout: "wide",
+			rowActions: (acts, p) => this.rowActions(acts, p),
+			onChanged: () => this.panel?.refresh(),
+		});
+		this.panel.attach(host);
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createSpan("nya-compose-btns-gap");
+		btns.createEl("button", { text: t("Close") }).addEventListener("click", () => this.close());
+		window.setTimeout(() => (this.contentEl.querySelector("input.nya-cpanel-search") as HTMLInputElement | null)?.focus(), 20);
+	}
+
+	/** Actions only this window can offer: their mail, their meetings, and
+	 *  their page in the vault, plus saving or deleting a local contact. */
+	private rowActions(acts: HTMLElement, p: PersonCard) {
+		const act = (icon: string, label: string, run: () => void) => {
+			const b = acts.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": label } });
+			setIcon(b, icon);
+			b.addEventListener("click", (e) => {
+				e.stopPropagation();
+				run();
+			});
+		};
+		act("pencil", `New mail to ${p.name || p.email}`, () => this.plugin.openNewMailCompose(p.email));
+		if (this.plugin.isContactSaved(p.email)) {
+			act("trash-2", `Delete ${p.name || p.email}`, () => {
+				const hit = this.plugin.imapContacts().find((c) => c.email.toLowerCase() === p.email.toLowerCase());
+				if (!hit) return;
+				new ConfirmModal(this.app, t("Delete contact"), `Remove ${p.name || p.email} from the local contact library?`, t("Delete"), () => {
+					this.plugin.deleteContact(hit.id);
+					this.panel?.refresh();
+				}).open();
+			});
+		} else {
+			act("user-plus", `Save ${p.name || p.email}`, () => {
+				this.plugin.saveContact({ name: p.name, email: p.email, company: p.company, title: p.title, phone: p.phone, phones: p.phones, groups: p.groups, note: p.note });
+				this.panel?.refresh();
+			});
+		}
+		act("inbox", t("Their mail"), () => {
+			this.onSearchMail(`from:${p.email}`);
+			this.close();
+		});
+		act("calendar-days", t("Meetings with them"), () => {
+			this.onSearchEvents(p.name || p.email);
+			this.close();
+		});
+		act("file-text", t("Their page in the vault"), () => {
+			void this.plugin.openPersonPage(p.name || p.email);
+			this.close();
+		});
 	}
 
 	onClose() {
@@ -13920,81 +14193,6 @@ class ImapTicketModal extends Modal {
 	}
 }
 
-class ContactPickerModal extends Modal {
-	private filter = "";
-	private selected = new Set<string>();
-	private listEl!: HTMLElement;
-
-	constructor(
-		app: App,
-		private plugin: NyaHomePlugin,
-		private onPick: (emails: string[]) => void,
-		private onChanged?: () => void
-	) {
-		super(app);
-	}
-
-	onOpen() {
-		this.titleEl.setText("Choose contacts");
-		makeMovable(this.app, this, "nyahome:contact-picker", { w: 520, h: 560 });
-		const c = this.contentEl;
-		c.addClass("nya-people");
-		void this.plugin.ensureSentContacts();
-		void this.plugin.ensureSavedContacts().then(() => this.draw());
-		const search = c.createEl("input", { cls: "nya-people-search", attr: { type: "search", placeholder: "Search contacts..." } });
-		search.addEventListener("input", () => {
-			this.filter = search.value;
-			this.draw();
-		});
-		this.listEl = c.createDiv("nya-people-list");
-		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
-		btns.createEl("button", { text: "Add contact" }).addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => {
-			this.draw();
-			this.onChanged?.();
-		}).open());
-		btns.createSpan("nya-compose-btns-gap");
-		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-		btns.createEl("button", { text: "Add selected", cls: "mod-cta nya-send-btn" }).addEventListener("click", () => {
-			if (!this.selected.size) return;
-			this.onPick([...this.selected]);
-			this.close();
-		});
-		window.setTimeout(() => search.focus(), 20);
-	}
-
-	private draw() {
-		const host = this.listEl;
-		host.empty();
-		const hits = matchContacts(this.plugin.people(), this.filter, 200) as PersonCard[];
-		if (!hits.length) {
-			host.createDiv({ cls: "nya-when-note", text: "No contacts yet." });
-			return;
-		}
-		for (const p of hits) {
-			const row = host.createDiv("nya-people-row");
-			const check = row.createEl("input", { type: "checkbox" });
-			check.checked = this.selected.has(p.email);
-			check.addEventListener("click", (e) => {
-				if (check.checked) this.selected.add(p.email);
-				else this.selected.delete(p.email);
-				e.stopPropagation();
-			});
-			const mid = row.createDiv("nya-people-mid");
-			mid.createDiv({ cls: "nya-people-name", text: p.name || p.email });
-			mid.createDiv({ cls: "nya-people-sub", text: p.email });
-			row.addEventListener("click", () => {
-				if (this.selected.has(p.email)) this.selected.delete(p.email);
-				else this.selected.add(p.email);
-				check.checked = this.selected.has(p.email);
-			});
-		}
-	}
-
-	onClose() {
-		this.contentEl.empty();
-	}
-}
-
 class ContactEditModal extends Modal {
 	constructor(
 		app: App,
@@ -14006,30 +14204,16 @@ class ContactEditModal extends Modal {
 	}
 
 	onOpen() {
-		this.titleEl.setText(this.contact ? "Edit contact" : "New contact");
-		const c = this.contentEl;
-		let name = this.contact?.name ?? "";
-		let email = this.contact?.email ?? "";
-		let company = this.contact?.company ?? "";
-		let title = this.contact?.title ?? "";
-		let phone = this.contact?.phone ?? "";
-		new Setting(c).setName("Name").addText((t) => t.setValue(name).onChange((v) => (name = v)));
-		new Setting(c).setName("Email").addText((t) => t.setValue(email).onChange((v) => (email = v)));
-		new Setting(c).setName("Company").addText((t) => t.setValue(company).onChange((v) => (company = v)));
-		new Setting(c).setName("Title").addText((t) => t.setValue(title).onChange((v) => (title = v)));
-		new Setting(c).setName("Phone").addText((t) => t.setValue(phone).onChange((v) => (phone = v)));
-		const btns = c.createDiv("nya-modal-btns");
-		btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-		btns.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
-			if (!email.trim().includes("@")) {
-				new Notice("NyaHome: enter an email address.");
-				return;
-			}
-			if (this.contact) this.plugin.updateContact(this.contact.id, { name, email, company, title, phone });
-			else this.plugin.saveContact({ name, email, company, title, phone });
-			this.onDone();
-			this.close();
-		});
+		this.titleEl.setText(this.contact ? t("Edit contact") : t("New contact"));
+		this.contentEl.addClass("nya-contact-edit-modal");
+		new ContactFormView(this.plugin, this.contentEl, this.contact, {
+			onSaved: () => {
+				this.onDone();
+				this.close();
+			},
+			onCancel: () => this.close(),
+			allowDelete: !!this.contact,
+		}).render();
 	}
 
 	onClose() {
@@ -18089,6 +18273,10 @@ class ImapRichComposeModal extends Modal {
 	private sent = false;
 	private lastField: HTMLInputElement | null = null;
 	private contactRailEl: HTMLElement | null = null;
+	private contactsOpen = false;
+	private contactsPanel: ContactPanelView | null = null;
+	private pickTarget: HTMLInputElement | null = null;
+	private composeWidthBefore = 0;
 
 	constructor(
 		app: App,
@@ -18157,7 +18345,7 @@ class ImapRichComposeModal extends Modal {
 			if (withPicker) {
 				const pick = r.createEl("button", { cls: "nya-icon-btn nya-contact-btn", attr: { "aria-label": `Choose contacts for ${label}` } });
 				setIcon(pick, "user-plus");
-				pick.addEventListener("click", () => this.openContactPicker(input));
+				pick.addEventListener("click", () => this.toggleContacts(input));
 			}
 			return input;
 		};
@@ -18193,13 +18381,40 @@ class ImapRichComposeModal extends Modal {
 		window.setTimeout(() => this.editorEl.focus(), 30);
 	}
 
-	private openContactPicker(target: HTMLInputElement) {
-		new ContactPickerModal(this.app, this.plugin, (emails) => {
-			const next = appendAddressChoices(target.value, emails);
-			target.value = next.value;
-			target.setSelectionRange(next.caret, next.caret);
-			target.focus();
-		}, () => this.drawContactRail(this.contactRailEl!)).open();
+	/** The compose window's contact picker is inline: opening it stretches
+	 *  the window to the right and replaces the quick rail with a searchable,
+	 *  group-filterable panel whose rows drop straight into the focused
+	 *  recipient box. */
+	private toggleContacts(target: HTMLInputElement) {
+		if (this.contactsOpen) {
+			if (this.pickTarget === target) this.closeContacts();
+			else this.pickTarget = target ?? this.lastField;
+			return;
+		}
+		this.pickTarget = target ?? this.lastField;
+		this.openContacts();
+	}
+
+	private openContacts(openNew = false) {
+		this.contactsOpen = true;
+		this.composeWidthBefore = this.modalEl.offsetWidth;
+		this.modalEl.addClass("nya-compose-contacts-open");
+		const w = Math.min(1400, Math.max(this.composeWidthBefore, window.innerWidth - 24));
+		this.modalEl.setCssStyles({ width: `${w}px` });
+		this.drawContactRail(this.contactRailEl!);
+		if (openNew) this.contactsPanel?.editContact(null);
+	}
+
+	private closeContacts() {
+		this.contactsOpen = false;
+		this.pickTarget = null;
+		this.modalEl.removeClass("nya-compose-contacts-open");
+		this.contactsPanel = null;
+		if (this.composeWidthBefore) {
+			this.modalEl.setCssStyles({ width: `${this.composeWidthBefore}px` });
+			this.composeWidthBefore = 0;
+		}
+		this.drawContactRail(this.contactRailEl!);
 	}
 
 	/** The modal title names the selected sender, so changing From also
@@ -18214,14 +18429,25 @@ class ImapRichComposeModal extends Modal {
 	private drawContactRail(host: HTMLElement) {
 		if (!host) return;
 		host.empty();
+		if (this.contactsOpen) {
+			this.contactsPanel = new ContactPanelView(this.plugin, {
+				layout: "rail",
+				onPick: (email) => this.appendContact(email),
+				onClose: () => this.closeContacts(),
+				onChanged: () => this.drawContactRail(this.contactRailEl!),
+			});
+			this.contactsPanel.attach(host);
+			return;
+		}
+		this.contactsPanel = null;
 		const head = host.createDiv("nya-contact-rail-head");
 		head.createSpan({ text: t("Recent contacts") });
-		const open = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Open People" } });
+		const open = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": t("Open contacts") } });
 		setIcon(open, "users");
-		open.addEventListener("click", () => this.plugin.openPeople());
-		const add = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": "Add contact" } });
+		open.addEventListener("click", () => this.openContacts());
+		const add = head.createEl("button", { cls: "nya-icon-btn", attr: { "aria-label": t("Add contact") } });
 		setIcon(add, "user-plus");
-		add.addEventListener("click", () => new ContactEditModal(this.app, this.plugin, null, () => this.drawContactRail(this.contactRailEl!)).open());
+		add.addEventListener("click", () => this.openContacts(true));
 		const search = host.createEl("input", { cls: "nya-contact-rail-search", attr: { type: "search", placeholder: t("Search contacts...") } });
 		const list = host.createDiv("nya-contact-rail-list");
 		const draw = () => {
@@ -18243,7 +18469,7 @@ class ImapRichComposeModal extends Modal {
 	}
 
 	private appendContact(email: string) {
-		const target = this.lastField;
+		const target = this.pickTarget ?? this.lastField;
 		if (!target) return;
 		const next = applyAddressChoice(target.value, target.selectionStart ?? target.value.length, email);
 		target.value = next.value;

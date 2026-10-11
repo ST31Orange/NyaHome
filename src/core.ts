@@ -1704,7 +1704,7 @@ export function rankContacts(seen: { name?: string; email: string; ms: number }[
 export function matchContacts(index: ContactHit[], query: string, limit = 8): ContactHit[] {
 	const q = query.trim().toLowerCase();
 	if (!q) return index.slice(0, limit);
-	const words = (c: ContactHit) => [c.email, c.email.split("@")[0], ...c.name.toLowerCase().split(/[\s,._-]+/)].filter(Boolean);
+	const words = (c: ContactHit & { groups?: string[]; phones?: ContactPhone[] }) => [c.email, c.email.split("@")[0], ...c.name.toLowerCase().split(/[\s,._-]+/), ...(c.groups ?? []).map((g) => g.toLowerCase()), ...(c.phones ?? []).map((ph) => ph.value.toLowerCase())].filter(Boolean);
 	const scored: { c: ContactHit; rank: number }[] = [];
 	for (const c of index) {
 		const w = words(c);
@@ -1717,12 +1717,55 @@ export function matchContacts(index: ContactHit[], query: string, limit = 8): Co
 		.map((s) => s.c);
 }
 
+export interface ContactPhone {
+	label: string;
+	value: string;
+}
+
 export interface SavedContact {
 	name: string;
 	email: string;
 	company?: string;
 	title?: string;
+	/** The primary phone number, kept as the legacy single-value field. */
 	phone?: string;
+	/** Additional phone numbers beyond the primary one, each with a label. */
+	phones?: ContactPhone[];
+	/** Local group tags used to filter the People list. */
+	groups?: string[];
+	/** Optional free-form note about the contact. */
+	note?: string;
+}
+
+/** Clean a contact into its stored shape: trim strings, fold the legacy
+ *  single `phone` into the `phones` list, and dedupe group tags. Keeps old
+ *  data readable by code that only knows about `email` and `phone`. */
+export function normalizeSavedContact(c: SavedContact): SavedContact {
+	const email = (c.email ?? "").trim();
+	const phones: ContactPhone[] = [];
+	const seen = new Set<string>();
+	for (const ph of c.phones ?? []) {
+		const value = (ph.value ?? "").trim();
+		if (!value || seen.has(value.toLowerCase())) continue;
+		seen.add(value.toLowerCase());
+		phones.push({ label: (ph.label ?? "").trim() || "phone", value });
+	}
+	const primary = (c.phone ?? "").trim() || (phones[0]?.value ?? "");
+	if (primary && !seen.has(primary.toLowerCase())) {
+		phones.unshift({ label: "phone", value: primary });
+		seen.add(primary.toLowerCase());
+	}
+	const groups = [...new Set((c.groups ?? []).map((g) => g.trim()).filter(Boolean))];
+	return {
+		name: (c.name ?? "").trim() || email,
+		email,
+		company: (c.company ?? "").trim() || undefined,
+		title: (c.title ?? "").trim() || undefined,
+		phone: primary || undefined,
+		phones: phones.length ? phones : undefined,
+		groups: groups.length ? groups : undefined,
+		note: (c.note ?? "").trim() || undefined,
+	};
 }
 
 export interface PersonCard extends ContactHit {
@@ -1731,6 +1774,9 @@ export interface PersonCard extends ContactHit {
 	company?: string;
 	title?: string;
 	phone?: string;
+	phones?: ContactPhone[];
+	groups?: string[];
+	note?: string;
 }
 
 /** The address book and the correspondence, as one list.
@@ -1757,9 +1803,12 @@ export function mergePeople(seen: readonly ContactHit[], contacts: readonly Save
 			hit.company = c.company || hit.company;
 			hit.title = c.title || hit.title;
 			hit.phone = c.phone || hit.phone;
+			hit.phones = c.phones || hit.phones;
+			hit.groups = c.groups || hit.groups;
+			hit.note = c.note || hit.note;
 		} else {
-			by.set(email, { name: c.name.trim() || email, email, count: 0, lastMs: 0, saved: true, company: c.company, title: c.title, phone: c.phone });
-		}
+			by.set(email, { name: c.name.trim() || email, email, count: 0, lastMs: 0, saved: true, company: c.company, title: c.title, phone: c.phone, phones: c.phones, groups: c.groups, note: c.note });
+	}
 	}
 	return [...by.values()].sort((a, b) => b.count - a.count || b.lastMs - a.lastMs || a.name.localeCompare(b.name));
 }

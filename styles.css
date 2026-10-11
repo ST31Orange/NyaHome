@@ -3083,6 +3083,204 @@ button.nya-card-more .svg-icon {
 	opacity: 1;
 }
 
+/* the compose window's expanded contacts panel: when open the window
+   stretches right and the rail grows into a real editor column */
+.nya-compose-window.nya-compose-contacts-open .nya-compose-layout {
+	grid-template-columns: minmax(0, 1fr) 400px;
+}
+
+/* the shared contact panel (compose rail + People window) */
+.nya-cpanel {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
+}
+
+.nya-cpanel-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 8px;
+}
+
+.nya-cpanel-search {
+	flex: 1;
+	min-width: 0;
+}
+
+.nya-cpanel-group {
+	max-width: 130px;
+}
+
+.nya-cpanel-body {
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	gap: 10px;
+}
+
+.nya-cpanel-rail .nya-cpanel-body {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.nya-cpanel-rail .nya-cpanel-body.is-editing .nya-cpanel-list {
+	display: none;
+}
+
+.nya-cpanel-wide .nya-cpanel-body {
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.nya-cpanel-list {
+	min-height: 0;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 4px;
+}
+
+.nya-cpanel-form {
+	min-height: 0;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 10px;
+	background: var(--background-secondary);
+}
+
+.nya-cpanel-row .nya-cpanel-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 3px;
+}
+
+.nya-cpanel-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	max-width: 120px;
+	padding: 0 6px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--nya-mail-blue, #0f6cbd) 12%, transparent);
+	color: var(--text-muted);
+	font-size: 10px;
+	line-height: 1.6;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.nya-cpanel-empty,
+.nya-cpanel-hint {
+	padding: 12px;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	text-align: center;
+}
+
+.nya-cpanel-back {
+	width: 100%;
+	margin-bottom: 8px;
+}
+
+.nya-cpanel-wide .nya-cpanel-form .nya-cpanel-back {
+	display: none;
+}
+
+/* the inline contact editor */
+.nya-contact-form {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.nya-contact-form-title {
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+}
+
+.nya-contact-form-row {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.nya-contact-form-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.nya-contact-form-phonewrap,
+.nya-contact-form-groupwrap,
+.nya-contact-form-notewrap {
+	gap: 6px;
+}
+
+.nya-contact-form-phonelist {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.nya-contact-form-phone {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.nya-contact-form-phonelabel {
+	width: 74px;
+	flex-shrink: 0;
+}
+
+.nya-contact-form-phoneval {
+	flex: 1;
+	min-width: 0;
+}
+
+.nya-contact-form-add {
+	align-self: flex-start;
+	font-size: var(--font-ui-smaller);
+}
+
+.nya-contact-form-grouplist {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.nya-contact-form-groupinput {
+	width: 100%;
+}
+
+.nya-contact-form-noteinput {
+	width: 100%;
+	min-height: 64px;
+	resize: vertical;
+}
+
+.nya-contact-form-actions {
+	justify-content: flex-end;
+	margin-top: 4px;
+}
+
+/* the People window fills the draggable modal so list and editor can
+   both scroll independently */
+.nya-people {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.nya-people-host {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+
 /* the calendar search's results, which live in the window rather than
    replacing the calendar behind it */
 .nya-eventsearch-results {
