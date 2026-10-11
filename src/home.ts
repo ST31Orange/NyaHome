@@ -47,7 +47,7 @@ export interface HomeCard {
 	kind?: "folder" | "booklist";
 	tableCols?: number;
 	tableRows?: number;
-	booklistRows?: Array<{ done: boolean; cells: string[] }>;
+	booklistRows?: Array<{ done: boolean; cells: string[]; cellDone?: boolean[] }>;
 	/** Per-note grid placement inside the card body, keyed by vault path. */
 	noteLayouts?: Record<string, { x?: number; y?: number; w?: number; h?: number }>;
 	/** Explicit 12×12 grid placement. Older cards are migrated on first render. */
@@ -67,10 +67,10 @@ const HOME_GRID_COLS = 12;
 const HOME_GRID_ROWS = 24;
 const HOME_CARD_COLS = 4;
 const HOME_CARD_ROWS = 2;
-const HOME_NOTE_COLS = 4;
-const HOME_NOTE_ROWS = 8;
- const HOME_BOOKLIST_COLS = 4;
- const HOME_BOOKLIST_ROWS = 6;
+	const HOME_NOTE_COLS = 4;
+	const HOME_NOTE_ROWS = 8;
+	const HOME_BOOKLIST_COLS = 3;
+	const HOME_BOOKLIST_ROWS = 3;
 
 const SEARCH_FILTERS: Array<{ id: string; icon: string; labelZh: string; labelEn: string; extensions: string[] }> = [
 	{ id: "folders", icon: "folder", labelZh: "文件夹", labelEn: "Folders", extensions: [] },
@@ -103,6 +103,8 @@ const ZH = {
 	booklistName: "书单名称",
 	addRow: "+ 行",
 	addColumn: "+ 列",
+	removeRow: "- 行",
+	removeColumn: "- 列",
 	addNote: "添加笔记",
 	emptyGrid: "点击这里建立第一个文件夹卡片",
 	emptyCard: "把笔记拖到这里",
@@ -144,6 +146,8 @@ const EN = {
 	booklistName: "Booklist name",
 	addRow: "+ Row",
 	addColumn: "+ Column",
+	removeRow: "- Row",
+	removeColumn: "- Column",
 	addNote: "Add note",
 	emptyGrid: "Click here to make your first folder card",
 	emptyCard: "Drop notes here",
@@ -230,6 +234,14 @@ export class NyaHomeView extends ItemView {
 		this.searchColEl = null;
 		this.contentEl.removeClass("nyahome");
 		this.contentEl.empty();
+	}
+
+	private rerenderKeepScroll(): void {
+		const scroll = this.contentEl.querySelector<HTMLElement>(".nyahome-scroll");
+		const top = scroll?.scrollTop ?? 0;
+		this.render();
+		const next = this.contentEl.querySelector<HTMLElement>(".nyahome-scroll");
+		if (next) next.scrollTop = top;
 	}
 
 	private render(): void {
@@ -540,16 +552,32 @@ export class NyaHomeView extends ItemView {
 			controls.createEl("button", { attr: { "aria-label": t.addRow }, text: t.addRow }).addEventListener("click", () => {
 				const data = this.booklistData(card);
 				card.tableRows = data.rows.length + 1;
-				card.booklistRows = [...data.rows, { done: false, cells: Array(data.cols - 1).fill("") }];
+				card.booklistRows = [...data.rows, this.emptyBooklistRow(data.cols)];
 				this.plugin.queueSave();
-				this.render();
+				this.rerenderKeepScroll();
+			});
+			controls.createEl("button", { attr: { "aria-label": t.removeRow }, text: t.removeRow }).addEventListener("click", () => {
+				const data = this.booklistData(card);
+				if (data.rows.length <= 1) return;
+				card.tableRows = data.rows.length - 1;
+				card.booklistRows = data.rows.slice(0, -1);
+				this.plugin.queueSave();
+				this.rerenderKeepScroll();
 			});
 			controls.createEl("button", { attr: { "aria-label": t.addColumn }, text: t.addColumn }).addEventListener("click", () => {
 				const data = this.booklistData(card);
 				card.tableCols = data.cols + 1;
-				card.booklistRows = data.rows.map((r) => ({ done: r.done, cells: [...r.cells, ""] }));
+				card.booklistRows = data.rows.map((r) => ({ ...r, cells: [...r.cells, ""], cellDone: [...(r.cellDone ?? []), false] }));
 				this.plugin.queueSave();
-				this.render();
+				this.rerenderKeepScroll();
+			});
+			controls.createEl("button", { attr: { "aria-label": t.removeColumn }, text: t.removeColumn }).addEventListener("click", () => {
+				const data = this.booklistData(card);
+				if (data.cols <= 1) return;
+				card.tableCols = data.cols - 1;
+				card.booklistRows = data.rows.map((r) => ({ ...r, cells: r.cells.slice(0, -1), cellDone: (r.cellDone ?? []).slice(0, -1) }));
+				this.plugin.queueSave();
+				this.rerenderKeepScroll();
 			});
 		} else {
 		controls.createEl("button", { attr: { "aria-label": t.addNote }, text: "+" }).addEventListener("click", () =>
@@ -586,7 +614,7 @@ export class NyaHomeView extends ItemView {
 
 		const body = el.createDiv("nyahome-card-body");
 		if (isBooklist) {
-			this.renderBooklistBody(body, card, t);
+			this.renderBooklistBody(body, card);
 		} else if (!card.notes.length) body.createDiv({ cls: "nyahome-card-empty", text: t.emptyCard });
 		else {
 			for (const path of card.notes) {
@@ -695,24 +723,32 @@ export class NyaHomeView extends ItemView {
 			kind: "booklist",
 			tableCols: cols,
 			tableRows: rowCount,
-			booklistRows: Array.from({ length: rowCount }, () => ({ done: false, cells: Array(cols - 1).fill("") })),
+			booklistRows: Array.from({ length: rowCount }, () => ({ done: false, cells: Array(cols).fill(""), cellDone: Array(cols).fill(false) })),
 			...layout,
 		});
 		this.plugin.queueSave();
 		this.render();
 	}
 
-	private booklistData(card: HomeCard): { cols: number; rows: Array<{ done: boolean; cells: string[] }> } {
-		const cols = clampInteger(card.tableCols, 2, 12, HOME_BOOKLIST_COLS);
+
+	private emptyBooklistRow(cols: number): { done: boolean; cells: string[]; cellDone?: boolean[] } {
+		return { done: false, cells: Array(cols).fill(""), cellDone: Array(cols).fill(false) };
+	}
+
+	private booklistData(card: HomeCard): { cols: number; rows: Array<{ done: boolean; cells: string[]; cellDone?: boolean[] }> } {
+		const cols = clampInteger(card.tableCols, 1, 12, HOME_BOOKLIST_COLS);
 		const rowCount = clampInteger(card.tableRows, 1, 40, HOME_BOOKLIST_ROWS);
 		const rows = (card.booklistRows ?? []).slice(0, rowCount);
 		let changed = card.tableCols !== cols || card.tableRows !== rowCount || !card.booklistRows || rows.length !== rowCount;
-		while (rows.length < rowCount) rows.push({ done: false, cells: Array(cols - 1).fill("") });
+		while (rows.length < rowCount) rows.push(this.emptyBooklistRow(cols));
 		for (const row of rows) {
-			const cells = row.cells ?? [];
-			while (cells.length < cols - 1) cells.push("");
-			if (cells.length > cols - 1) cells.length = cols - 1;
-			row.cells = cells;
+			row.cells ??= [];
+			while (row.cells.length < cols) row.cells.push("");
+			if (row.cells.length > cols) row.cells.length = cols;
+			if (!row.cellDone || row.cellDone.length !== cols) {
+				row.cellDone = Array.from({ length: cols }, (_, i) => row.cellDone?.[i] ?? row.done);
+				changed = true;
+			}
 		}
 		if (changed) {
 			card.tableCols = cols;
@@ -723,21 +759,24 @@ export class NyaHomeView extends ItemView {
 		return { cols, rows };
 	}
 
-	private renderBooklistBody(body: HTMLElement, card: HomeCard, t: ReturnType<typeof T>): void {
+
+	private renderBooklistBody(body: HTMLElement, card: HomeCard): void {
 		const data = this.booklistData(card);
 		const table = body.createEl("table", { cls: "nyahome-table" });
 		const tbody = table.createEl("tbody");
 		for (const row of data.rows) {
 			const tr = tbody.createEl("tr");
-			const checkTd = tr.createEl("td", { cls: "nyahome-table-done" });
-			const check = checkTd.createEl("input", { type: "checkbox", cls: "nyahome-table-check" });
-			check.checked = row.done;
-			check.addEventListener("change", () => {
-				row.done = check.checked;
-				this.plugin.queueSave();
-			});
-			for (let c = 0; c < data.cols - 1; c++) {
-				const input = tr.createEl("td", { cls: "nyahome-table-cell" }).createEl("input", { type: "text", cls: "nyahome-table-input" });
+			for (let c = 0; c < data.cols; c++) {
+				const td = tr.createEl("td");
+				const wrap = td.createDiv({ cls: "nyahome-table-cell" });
+				const check = wrap.createEl("input", { type: "checkbox", cls: "nyahome-table-check" });
+				check.checked = row.cellDone?.[c] ?? row.done;
+				check.addEventListener("change", () => {
+					if (!row.cellDone) row.cellDone = Array(data.cols).fill(false);
+					row.cellDone[c] = check.checked;
+					this.plugin.queueSave();
+				});
+				const input = wrap.createEl("input", { type: "text", cls: "nyahome-table-input" });
 				input.value = row.cells[c] ?? "";
 				input.addEventListener("input", () => {
 					row.cells[c] = input.value;
