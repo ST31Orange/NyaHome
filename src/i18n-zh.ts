@@ -623,4 +623,5 @@ export const zh: Record<string, string> = {
 	"Paste contact details; the fields below fill themselves.": "粘贴联系人信息，下方会自动识别并预览填入结果。",
 	"Name | Phone | Email | extra info...": "姓名 | 电话 | 邮箱 | 其他信息…",
 	"Fill the form": "填入表单",
+	"Recovered your unsaved new-event draft.": "已恢复上次未保存的新建日程草稿。",
 };

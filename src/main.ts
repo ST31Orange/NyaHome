@@ -683,6 +683,8 @@ interface NyaHomeSettings {
 	peopleFolder: string;
 	/** The local contact library shared by every mail account. */
 	imapContacts: ContactRecord[];
+	/** Unsaved new-event content, so a closed window does not lose a draft. */
+	eventDraft: NewEventDraft | null;
 	/** The view phones open with (agenda reads best on a narrow screen). */
 	phoneDefaultMode: ViewMode;
 	/** Open NyaHome as the workspace's first page when Obsidian starts. */
@@ -757,6 +759,21 @@ interface SketchNote {
 	updatedMs: number;
 }
 
+/** An unsaved "new event" in progress, kept so an accidental close (a
+ *  minimized window, an errant Escape) never loses what was typed. Cleared
+ *  on save or deliberate Cancel, restored the next time "New event" opens. */
+interface NewEventDraft {
+	title: string;
+	location: string;
+	description: string;
+	invites: string;
+	startMs: number;
+	endMs: number;
+	allDay: boolean;
+	repeat: RepeatKind;
+	showAs: "busy" | "free" | "tentative";
+	online: boolean;
+}
 const DEFAULT_SETTINGS: NyaHomeSettings = {
 	graphClientId: "",
 	graphTenant: "",
@@ -882,6 +899,7 @@ const DEFAULT_SETTINGS: NyaHomeSettings = {
 	mailSignatureUse: [],
 	peopleFolder: "",
 	imapContacts: [],
+	eventDraft: null,
 	phoneDefaultMode: "agenda",
 	openAtStartup: true,
 	startupView: "home",
@@ -16682,6 +16700,9 @@ class EventModal extends Modal {
 	private fieldsHooked = false;
 	private meetingEl: HTMLElement | null = null;
 	private descEl!: HTMLElement;
+	private restoredDraft = false;
+	private discardDraft = false;
+	private closed = false;
 
 	constructor(
 		app: App,
@@ -16707,6 +16728,65 @@ class EventModal extends Modal {
 		this.invitesInitial = this.invites;
 		this.showAs = ev ? (ev.transparent ? "free" : ev.tentative ? "tentative" : "busy") : "busy";
 		this.targetKey = this.plugin.defaultWriteTarget()?.key ?? null;
+		// an interrupted "new event" comes back: every change and every close
+		// saves a draft, so a minimized window or an errant Escape cannot eat
+		// what was typed. Deliberate Cancel and a successful save clear it.
+		if (!ev && !prefill) {
+			const draft = this.plugin.settings.eventDraft;
+			if (draft) {
+				this.etitle = draft.title;
+				this.location = draft.location;
+				this.description = draft.description;
+				this.invites = draft.invites;
+				this.invitesInitial = draft.invites;
+				this.draftStart = draft.startMs;
+				this.draftEnd = draft.endMs;
+				this.allDay = draft.allDay;
+				this.repeat = draft.repeat;
+				this.showAs = draft.showAs;
+				this.online = draft.online;
+				this.restoredDraft = true;
+			}
+		}
+	}
+
+	/** Persist the in-progress fields so an unexpected close loses nothing. */
+	private saveDraft(): void {
+		if (this.ev) return;
+		this.plugin.settings.eventDraft = {
+			title: this.etitle,
+			location: this.location,
+			description: this.description,
+			invites: this.invites,
+			startMs: this.draftStart,
+			endMs: this.draftEnd,
+			allDay: this.allDay,
+			repeat: this.repeat,
+			showAs: this.showAs,
+			online: this.online,
+		};
+		this.plugin.queueSave();
+	}
+
+	private clearDraft(): void {
+		if (this.plugin.settings.eventDraft) {
+			this.plugin.settings.eventDraft = null;
+			this.plugin.queueSave();
+		}
+	}
+
+	private hasDraftContent(): boolean {
+		return !!(this.etitle.trim() || this.location.trim() || this.invites.trim() || this.description || this.online);
+	}
+
+	/** Every close keeps the draft unless the user meant to throw it away, so
+	 *  an accidental close (a minimized window, an errant Escape) cannot cost
+	 *  what was typed. */
+	close() {
+		if (this.closed) return;
+		this.closed = true;
+		if (!this.ev && !this.discardDraft && this.hasDraftContent()) this.saveDraft();
+		super.close();
 	}
 
 	onOpen() {
@@ -16721,7 +16801,10 @@ class EventModal extends Modal {
 		new Setting(titleRow).setName(t("Title")).addText((field) => {
 			titleInput = field.inputEl;
 			field.inputEl.addClass("nya-event-title-input");
-			field.setPlaceholder(t("Event title")).setValue(this.etitle).onChange((v) => (this.etitle = v));
+			field.setPlaceholder(t("Event title")).setValue(this.etitle).onChange((v) => {
+					this.etitle = v;
+					this.saveDraft();
+				});
 			field.inputEl.addEventListener("keydown", (e) => {
 				if (e.key === "Enter") {
 					e.preventDefault();
@@ -16747,13 +16830,18 @@ class EventModal extends Modal {
 			const descBar = top.createDiv("nya-compose-bar");
 			this.descEl = top.createDiv({ cls: "nya-compose-editor nya-event-desc", attr: { contenteditable: "true" } });
 			richToolbar(this.app, descBar, () => this.descEl);
+			if (this.description) this.descEl.replaceChildren(...Array.from(sanitizeHTMLToDom(this.description).childNodes));
 			this.descEl.addEventListener("input", () => {
 				const hasWords = !!this.descEl.textContent?.trim();
 				const hasThings = !!this.descEl.querySelector("img, a, li, hr");
 				this.description = hasWords || hasThings ? this.descEl.innerHTML : "";
+				this.saveDraft();
 			});
 		}
-		new Setting(top).setName(t("Location")).addText((field) => field.setValue(this.location).onChange((v) => (this.location = v)));
+		new Setting(top).setName(t("Location")).addText((field) => field.setValue(this.location).onChange((v) => {
+			this.location = v;
+			this.saveDraft();
+		}));
 
 		const controls = c.createDiv("nya-event-section nya-event-controls");
 		const makeControlCell = (label: string) => {
@@ -16777,6 +16865,7 @@ class EventModal extends Modal {
 			}
 			this.allDay = allDayToggle.checked;
 			this.renderTimeFields();
+			this.saveDraft();
 		});
 		const showAsCtl = makeControlCell(t("Show as"));
 		const showAsSelect = showAsCtl.createEl("select");
@@ -16784,7 +16873,10 @@ class EventModal extends Modal {
 			showAsSelect.createEl("option", { value }).text = label;
 		}
 		showAsSelect.value = this.showAs;
-		showAsSelect.addEventListener("change", () => (this.showAs = showAsSelect.value as "busy" | "free" | "tentative"));
+		showAsSelect.addEventListener("change", () => {
+				this.showAs = showAsSelect.value as "busy" | "free" | "tentative";
+				this.saveDraft();
+			});
 		if (!this.ev) {
 			const repeatCtl = makeControlCell(t("Repeat"));
 			const repeatSelect = repeatCtl.createEl("select");
@@ -16799,7 +16891,10 @@ class EventModal extends Modal {
 				repeatSelect.createEl("option", { value }).text = label;
 			}
 			repeatSelect.value = this.repeat;
-			repeatSelect.addEventListener("change", () => (this.repeat = repeatSelect.value as RepeatKind));
+			repeatSelect.addEventListener("change", () => {
+				this.repeat = repeatSelect.value as RepeatKind;
+				this.saveDraft();
+			});
 		}
 		this.fieldsEl = c.createDiv("nya-event-section nya-event-times");
 		this.renderTimeFields();
@@ -16809,12 +16904,20 @@ class EventModal extends Modal {
 		new Setting(invite)
 			.setName(t("Invite"))
 			.setDesc(t("Email addresses, comma separated. Invitations go out when you save."))
-			.addText((field) => field.setPlaceholder("ana@x.com, Bob <bob@x.com>").setValue(this.invites).onChange((v) => (this.invites = v)));
+			.addText((field) => field.setPlaceholder("ana@x.com, Bob <bob@x.com>").setValue(this.invites).onChange((v) => {
+			this.invites = v;
+			this.saveDraft();
+		}));
 		const btns = c.createDiv({ cls: "nya-modal-btns nya-compose-btns" });
 		btns.createEl("button", { text: t(this.ev ? "Save" : "Create"), cls: "mod-cta nya-send-btn" }).addEventListener("click", () => void this.save());
 		btns.createSpan("nya-compose-btns-gap");
-		btns.createEl("button", { text: t("Cancel") }).addEventListener("click", () => this.close());
+		btns.createEl("button", { text: t("Cancel") }).addEventListener("click", () => {
+			this.discardDraft = true;
+			this.clearDraft();
+			this.close();
+		});
 		window.setTimeout(() => titleInput?.focus(), 20);
+		if (this.restoredDraft) new Notice(t("Recovered your unsaved new-event draft."), 5000);
 	}
 
 	/** The date/time rows, rebuilt when the all-day toggle flips. Start edits
@@ -16840,7 +16943,10 @@ class EventModal extends Modal {
 			const el = host.createEl("input", { attr: { type: "date" } });
 			el.value = value;
 			el.addEventListener("change", () => {
-				if (/^\d{4}-\d{2}-\d{2}$/.test(el.value)) onPick(el.value);
+				if (/^\d{4}-\d{2}-\d{2}$/.test(el.value)) {
+					onPick(el.value);
+					this.saveDraft();
+				}
 			});
 		};
 		const timeInput = (host: HTMLElement, value: number, onPick: (min: number) => void) => {
@@ -16848,7 +16954,10 @@ class EventModal extends Modal {
 			el.value = timeVal(value);
 			el.addEventListener("change", () => {
 				const m = el.value.match(/^(\d{2}):(\d{2})$/);
-				if (m) onPick(+m[1] * 60 + +m[2]);
+				if (m) {
+					onPick(+m[1] * 60 + +m[2]);
+					this.saveDraft();
+				}
 			});
 		};
 		const dur = this.draftEnd - this.draftStart;
@@ -16906,7 +17015,10 @@ class EventModal extends Modal {
 		}
 		const label = kind === "teams" ? "Teams meeting" : "Google Meet";
 		const desc = kind === "teams" ? "Host it on Microsoft Teams. The join link is created with the event." : "Add Google Meet video conferencing. The join link is created with the event.";
-		new Setting(host).setName(label).setDesc(desc).addToggle((t) => t.setValue(this.online).onChange((v) => (this.online = v)));
+		new Setting(host).setName(label).setDesc(desc).addToggle((t) => t.setValue(this.online).onChange((v) => {
+				this.online = v;
+				this.saveDraft();
+			}));
 	}
 
 	private async save() {
@@ -16931,7 +17043,11 @@ class EventModal extends Modal {
 			onlineMeeting: this.ev ? undefined : this.online || undefined,
 		};
 		const ok = this.ev ? await this.plugin.updateCalEvent(this.ev, draft) : await this.plugin.createEventAt(this.targetKey, draft);
-		if (ok) this.close();
+		if (ok) {
+			this.discardDraft = true;
+			this.clearDraft();
+			this.close();
+		}
 	}
 
 	onClose() {
