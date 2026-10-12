@@ -3290,6 +3290,57 @@ button.nya-card-more .svg-icon {
 	margin-top: 4px;
 }
 
+/* the smart-recognition entry point and its paste-to-fill window */
+.nya-contact-form-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.nya-contact-smart-btn {
+	color: var(--nya-mail-blue, #0f6cbd);
+}
+
+.nya-recognize-input {
+	width: 100%;
+	min-height: 90px;
+	resize: vertical;
+	margin-bottom: 10px;
+}
+
+.nya-recognize-preview {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 8px;
+	background: var(--background-secondary);
+	margin-bottom: 10px;
+}
+
+.nya-recognize-line {
+	display: flex;
+	gap: 8px;
+	font-size: var(--font-ui-smaller);
+}
+
+.nya-recognize-line-label {
+	flex-shrink: 0;
+	width: 56px;
+	color: var(--text-muted);
+}
+
+.nya-recognize-line-value {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-normal);
+}
+
 /* the People window fills the draggable modal so list and editor can
    both scroll independently */
 .nya-people {

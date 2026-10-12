@@ -1813,6 +1813,95 @@ export function mergePeople(seen: readonly ContactHit[], contacts: readonly Save
 	return [...by.values()].sort((a, b) => b.count - a.count || b.lastMs - a.lastMs || a.name.localeCompare(b.name));
 }
 
+/** The result of splitting pasted contact text into form fields. */
+export interface ContactRecognition {
+	name?: string;
+	email?: string;
+	phones?: ContactPhone[];
+	note?: string;
+}
+
+/** True when a pasted token is a phone number: 7-15 digits in a shape
+ *  users actually write (mobile, landline with area code, or a bare
+ *  number). Spaces and dashes are ignored for the test. */
+function isPhoneToken(seg: string): boolean {
+	const digits = seg.replace(/\D/g, "");
+	if (digits.length < 7 || digits.length > 15) return false;
+	return /^(?:86)?1[3-9]\d{9}$/.test(digits) || /^0\d{9,11}$/.test(digits) || /^\d{7,8}$/.test(digits);
+}
+
+/** A pure 2-4 character CJK token that is not obviously a job title or
+ *  department name (which almost always end in one of these characters). */
+const NAME_SUFFIX = new Set("长员师理记任士生工学教授院校系部处科室组团队社会局厅办主助书监总董编导管经".split(""));
+// common two-four character place or role words that are not personal
+// names; keeping them out of the candidate pool avoids misreading the
+// office or the title as the person
+const NAME_STOPWORDS = new Set(["北京","上海","广州","深圳","天津","重庆","杭州","南京","武汉","成都","西安","郑州","济南","青岛","大连","沈阳","长沙","昆明","福州","厦门","香港","澳门","台北","沙河","学院","校区","办公室","会议室","实验室","教研室","课题组","研究生","本科生","教授","副教授","讲师","工程师","主任","副主任","处长","副处长","部长","副部长","院长","副院长","书记","副书记","秘书","助理","主管","经理","总监","董事","组长","副组长","科长","副科长"]);
+function isNameToken(seg: string): boolean {
+	if (!/^[\u4e00-\u9fa5]{2,4}$/.test(seg)) return false;
+	if (NAME_STOPWORDS.has(seg)) return false;
+	return !NAME_SUFFIX.has(seg[seg.length - 1]);
+}
+
+/** Split pasted contact text (a table row, a card, a few lines) into the
+ *  fields the form can carry: the first email and phone land where they
+ *  belong, a short CJK token that is not a job title is taken as the name,
+ *  and everything else becomes the note. Conservative by design: when a
+ *  field is unclear it stays empty rather than guessing, and the form lets
+ *  the user correct the split before saving. */
+export function recognizeContactText(text: string): ContactRecognition {
+	const parts = (text ?? "")
+		.split(/[\s|,，;；]+/)
+		.map((s) => s.trim())
+		.filter((s) => s && !/^[\s_=\u2022\u00b7*\-\u2500-\u257f]+$/.test(s));
+	const emailRe = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+	let email = "";
+	const phones: ContactPhone[] = [];
+	const others: { text: string; idx: number }[] = [];
+	for (let i = 0; i < parts.length; i++) {
+		const part = parts[i];
+		if (!email) {
+			const m = emailRe.exec(part);
+			if (m) {
+				email = m[0];
+				continue;
+			}
+		}
+		if (isPhoneToken(part)) {
+			phones.push({ label: "phone", value: part.replace(/[^\d]/g, "") });
+			continue;
+		}
+		others.push({ text: part, idx: i });
+	}
+	let name = "";
+	const candidates = others.filter((o) => isNameToken(o.text));
+	if (candidates.length === 1) {
+		name = candidates[0].text;
+		others.splice(others.indexOf(candidates[0]), 1);
+	} else if (candidates.length > 1) {
+		// with several short CJK tokens the name is usually the one next to the
+		// phone or email, since address cards keep the person close to the digits
+		const anchors = parts.map((p, i) => (emailRe.test(p) || isPhoneToken(p) ? i : -1)).filter((i) => i >= 0);
+		let best = candidates[0];
+		let bestDist = Infinity;
+		for (const cand of candidates) {
+			const dist = Math.min(...anchors.map((a) => Math.abs(a - cand.idx)));
+			if (dist < bestDist || (dist === bestDist && cand.idx < anchors[0])) {
+				bestDist = dist;
+				best = cand;
+			}
+		}
+		name = best.text;
+		others.splice(others.indexOf(best), 1);
+	}
+	return {
+		name: name || undefined,
+		email: email || undefined,
+		phones: phones.length ? phones : undefined,
+		note: others.length ? others.map((o) => o.text).join(" | ") : undefined,
+	};
+}
+
 /** The fragment being typed in a comma-separated recipient box: where it
  *  starts and what it says. Everything before it is already-entered
  *  addresses and must survive untouched when a suggestion is taken. */

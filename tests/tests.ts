@@ -119,6 +119,7 @@ import {
 	rankContacts,
 	mergePeople,
 	matchContacts,
+	recognizeContactText,
 	currentAddressFragment,
 	applyAddressChoice,
 	appendAddressChoices,
@@ -1339,6 +1340,13 @@ eq(mimeForExtension(""), "application/octet-stream", "and so does no extension a
 	eq(matchContacts(idx, "ste")[0].email, "steve.palm@irely.com", "a prefix beats a match in the middle");
 	eq(matchContacts(idx, "ste").length, 2, "but the middle match is still offered");
 	eq(matchContacts(idx, "palm").map((c) => c.email).includes("deanna@irely.com"), true, "a surname finds the person");
+	eq(recognizeContactText("研究生教学副院长 | 王伟宗 | 沙河D606 | 15727365813 | wangweizong@buaa.edu.cn"), { name: "王伟宗", email: "wangweizong@buaa.edu.cn", phones: [{ label: "phone", value: "15727365813" }], note: "研究生教学副院长 | 沙河D606" }, "a table row splits into name, phone, email and note");
+	eq(recognizeContactText("张三 13800138000 zhangsan@example.com").name, "张三", "a bare line finds the name");
+	eq(recognizeContactText("张三 13800138000 zhangsan@example.com").note, undefined, "and nothing is left over for the note");
+	eq(recognizeContactText("李四 wang@x.com").phones, undefined, "no phone leaves the phone field empty");
+	const sep = recognizeContactText("| -------- | --- | 王五 13611112222 wang@x.com |");
+	eq(sep.name, "王五", "a pasted table with separator rows still finds the person");
+	eq(recognizeContactText("导师 赵六 010-12345678").phones?.[0].value, "01012345678", "a landline with a dash is cleaned to digits");
 	eq(matchContacts(idx, "deanna@")[0].email, "deanna@irely.com", "a partial address matches");
 	eq(matchContacts(idx, "zzz").length, 0, "nothing matching gives nothing");
 	eq(matchContacts(idx, "").length, 3, "an empty query offers the whole ranked list");

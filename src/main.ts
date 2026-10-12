@@ -146,7 +146,9 @@ import { chunk, GRAPH_BATCH_MAX,
 	SavedContact,
 	PersonCard,
 	ContactPhone,
+	ContactRecognition,
 	normalizeSavedContact,
+	recognizeContactText,
 	matchEvents,
 	eventQueryIsEmpty,
 	EventQuery,
@@ -11435,27 +11437,55 @@ class TasksModal extends Modal {
  *  multiple phone numbers, group tags and a free-form note, and saves
  *  through the plugin so the rest of the app sees the change immediately. */
 class ContactFormView {
+	private name = "";
+	private email = "";
+	private company = "";
+	private title = "";
+	private note = "";
+	private phones: ContactPhone[] = [];
+	private groups: string[] = [];
+
 	constructor(
 		private plugin: NyaHomePlugin,
 		private host: HTMLElement,
 		private contact: ContactRecord | null,
 		private opts: { onSaved: () => void; onCancel?: () => void; allowDelete?: boolean }
-	) {}
+	) {
+		const c = this.contact;
+		this.name = c?.name ?? "";
+		this.email = c?.email ?? "";
+		this.company = c?.company ?? "";
+		this.title = c?.title ?? "";
+		this.note = c?.note ?? "";
+		this.phones = (c?.phones ?? []).map((p) => ({ label: p.label, value: p.value }));
+		if (c?.phone && !this.phones.some((p) => p.value === c.phone)) this.phones.unshift({ label: "phone", value: c.phone });
+		if (!this.phones.length) this.phones.push({ label: "phone", value: "" });
+		this.groups = [...(c?.groups ?? [])];
+	}
+
+	/** Fold a smart-recognition result into the fields and redraw, so the
+	 *  user sees exactly what got picked before saving. Fields the recognizer
+	 *  could not determine are left untouched. */
+	applyRecognition(r: ContactRecognition): void {
+		if (r.name) this.name = r.name;
+		if (r.email) this.email = r.email;
+		if (r.phones?.length) {
+			this.phones = r.phones.map((p) => ({ label: p.label || "phone", value: p.value }));
+			if (!this.phones.length) this.phones.push({ label: "phone", value: "" });
+		}
+		if (r.note) this.note = r.note;
+		this.render();
+	}
 
 	render() {
 		const c = this.contact;
 		this.host.empty();
 		const form = this.host.createDiv("nya-contact-form");
-		form.createDiv({ cls: "nya-contact-form-title", text: c ? t("Edit contact") : t("New contact") });
-		let name = c?.name ?? "";
-		let email = c?.email ?? "";
-		let company = c?.company ?? "";
-		let title = c?.title ?? "";
-		let note = c?.note ?? "";
-		const phones: ContactPhone[] = (c?.phones ?? []).map((p) => ({ label: p.label, value: p.value }));
-		if (c?.phone && !phones.some((p) => p.value === c.phone)) phones.unshift({ label: "phone", value: c.phone });
-		if (!phones.length) phones.push({ label: "phone", value: "" });
-		const groups: string[] = [...(c?.groups ?? [])];
+		const head = form.createDiv("nya-contact-form-head");
+		head.createDiv({ cls: "nya-contact-form-title", text: c ? t("Edit contact") : t("New contact") });
+		const smart = head.createEl("button", { cls: "nya-icon-btn nya-contact-smart-btn", attr: { "aria-label": t("Smart recognition") } });
+		setIcon(smart, "sparkles");
+		smart.addEventListener("click", () => new ContactRecognizeModal(this.plugin.app, this.plugin, (r) => this.applyRecognition(r)).open());
 
 		const field = (label: string, value: string, onChange: (v: string) => void, type = "text", placeholder?: string): HTMLInputElement => {
 			const r = form.createDiv("nya-contact-form-row");
@@ -11466,10 +11496,10 @@ class ContactFormView {
 			input.addEventListener("input", () => onChange(input.value));
 			return input;
 		};
-		field(t("Name"), name, (v) => (name = v), "text", t("Display name"));
-		field(t("Email"), email, (v) => (email = v), "email", "name@example.com");
-		field(t("Company"), company, (v) => (company = v));
-		field(t("Title"), title, (v) => (title = v));
+		field(t("Name"), this.name, (v) => (this.name = v), "text", t("Display name"));
+		field(t("Email"), this.email, (v) => (this.email = v), "email", "name@example.com");
+		field(t("Company"), this.company, (v) => (this.company = v));
+		field(t("Title"), this.title, (v) => (this.title = v));
 
 		// phones: a primary row plus as many extra numbers as the user wants
 		const phoneWrap = form.createDiv("nya-contact-form-row nya-contact-form-phonewrap");
@@ -11477,25 +11507,25 @@ class ContactFormView {
 		const phoneList = phoneWrap.createDiv("nya-contact-form-phonelist");
 		const drawPhones = () => {
 			phoneList.empty();
-			phones.forEach((ph, i) => {
+			this.phones.forEach((ph, i) => {
 				const pr = phoneList.createDiv("nya-contact-form-phone");
 				const labelIn = pr.createEl("input", { cls: "nya-contact-form-phonelabel", attr: { type: "text", placeholder: t("Label") } });
 				labelIn.value = ph.label;
-				labelIn.addEventListener("input", () => (phones[i].label = labelIn.value));
+				labelIn.addEventListener("input", () => (this.phones[i].label = labelIn.value));
 				const valIn = pr.createEl("input", { cls: "nya-contact-form-phoneval", attr: { type: "tel", placeholder: t("Phone number") } });
 				valIn.value = ph.value;
-				valIn.addEventListener("input", () => (phones[i].value = valIn.value));
+				valIn.addEventListener("input", () => (this.phones[i].value = valIn.value));
 				const del = pr.createEl("button", { cls: "nya-icon-btn nya-contact-form-phone-del", attr: { "aria-label": t("Remove phone") } });
 				setIcon(del, "x");
 				del.addEventListener("click", () => {
-					phones.splice(i, 1);
-					if (!phones.length) phones.push({ label: "phone", value: "" });
+					this.phones.splice(i, 1);
+					if (!this.phones.length) this.phones.push({ label: "phone", value: "" });
 					drawPhones();
 				});
 			});
 			const add = phoneList.createEl("button", { cls: "nya-contact-form-add", text: t("Add phone") });
 			add.addEventListener("click", () => {
-				phones.push({ label: "phone", value: "" });
+				this.phones.push({ label: "phone", value: "" });
 				drawPhones();
 			});
 		};
@@ -11510,13 +11540,13 @@ class ContactFormView {
 		const drawGroups = () => {
 			groupChips.empty();
 			for (const g of allGroups) {
-				const on = groups.includes(g);
+				const on = this.groups.includes(g);
 				const chip = groupChips.createEl("button", { cls: "nya-cpanel-chip" + (on ? " is-on" : ""), attr: { type: "button", "aria-pressed": String(on) } });
 				chip.setText(g);
 				chip.addEventListener("click", () => {
-					const i = groups.indexOf(g);
-					if (i >= 0) groups.splice(i, 1);
-					else groups.push(g);
+					const i = this.groups.indexOf(g);
+					if (i >= 0) this.groups.splice(i, 1);
+					else this.groups.push(g);
 					drawGroups();
 				});
 			}
@@ -11528,7 +11558,7 @@ class ContactFormView {
 		setIcon(addGroupBtn, "plus");
 		const commitNewGroup = () => {
 			const g = newGroupInput.value.trim();
-			if (g && !groups.includes(g)) groups.push(g);
+			if (g && !this.groups.includes(g)) this.groups.push(g);
 			if (g && !allGroups.includes(g)) allGroups.push(g);
 			newGroupInput.value = "";
 			drawGroups();
@@ -11539,11 +11569,12 @@ class ContactFormView {
 			commitNewGroup();
 		});
 		addGroupBtn.addEventListener("click", commitNewGroup);
+
 		// note
 		const noteWrap = form.createDiv("nya-contact-form-row nya-contact-form-notewrap");
 		noteWrap.createSpan({ cls: "nya-contact-form-label", text: t("Note") });
 		const noteInput = noteWrap.createEl("textarea", { cls: "nya-contact-form-noteinput" });
-		noteInput.value = note;
+		noteInput.value = this.note;
 
 		// actions
 		const actions = form.createDiv("nya-modal-btns nya-contact-form-actions");
@@ -11557,19 +11588,19 @@ class ContactFormView {
 			});
 		}
 		actions.createEl("button", { text: t("Save"), cls: "mod-cta" }).addEventListener("click", () => {
-			if (!email.trim().includes("@")) {
+			if (!this.email.trim().includes("@")) {
 				new Notice("NyaHome: enter an email address.");
 				return;
 			}
-			const primary = phones.find((p) => p.value.trim())?.value.trim() ?? "";
+			const primary = this.phones.find((p) => p.value.trim())?.value.trim() ?? "";
 			const data: SavedContact = {
-				name: name.trim() || email.trim(),
-				email: email.trim(),
-				company: company.trim() || undefined,
-				title: title.trim() || undefined,
+				name: this.name.trim() || this.email.trim(),
+				email: this.email.trim(),
+				company: this.company.trim() || undefined,
+				title: this.title.trim() || undefined,
 				phone: primary || undefined,
-				phones: phones.map((p) => ({ label: p.label.trim() || "phone", value: p.value.trim() })).filter((p) => p.value),
-				groups: [...groups],
+				phones: this.phones.map((p) => ({ label: p.label.trim() || "phone", value: p.value.trim() })).filter((p) => p.value),
+				groups: [...this.groups],
 				note: noteInput.value.trim() || undefined,
 			};
 			if (c) this.plugin.updateContact(c.id, data);
@@ -11579,6 +11610,56 @@ class ContactFormView {
 	}
 }
 
+/** The smart-recognition window: paste a table row or a few lines and it
+ *  splits the text into the contact fields, putting whatever is left into
+ *  the note. The preview updates as you type so you can see the split
+ *  before it lands in the form. */
+class ContactRecognizeModal extends Modal {
+	constructor(
+		app: App,
+		private plugin: NyaHomePlugin,
+		private onApply: (r: ContactRecognition) => void
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		this.titleEl.setText(t("Smart recognition"));
+		makeMovable(this.app, this, "nyahome:contact-recognize", { w: 580, h: 460 });
+		const c = this.contentEl;
+		c.addClass("nya-contact-recognize");
+		c.createDiv({ cls: "nya-when-note", text: t("Paste contact details; the fields below fill themselves.") });
+		const input = c.createEl("textarea", { cls: "nya-recognize-input", attr: { placeholder: t("Name | Phone | Email | extra info...") } });
+		const preview = c.createDiv("nya-recognize-preview");
+		const redraw = () => {
+			preview.empty();
+			const r = recognizeContactText(input.value);
+			const row = (label: string, value: string | undefined) => {
+				const line = preview.createDiv("nya-recognize-line");
+				line.createSpan({ cls: "nya-recognize-line-label", text: label });
+				line.createSpan({ cls: "nya-recognize-line-value", text: value?.trim() || "" });
+			};
+			row(t("Name"), r.name);
+			row(t("Email"), r.email);
+			row(t("Phones"), r.phones?.map((p) => p.value).join(", "));
+			row(t("Note"), r.note);
+		};
+		input.addEventListener("input", redraw);
+		redraw();
+		const btns = c.createDiv("nya-modal-btns nya-compose-btns");
+		btns.createEl("button", { text: t("Cancel") }).addEventListener("click", () => this.close());
+		btns.createSpan("nya-compose-btns-gap");
+		btns.createEl("button", { text: t("Fill the form"), cls: "mod-cta" }).addEventListener("click", () => {
+			this.onApply(recognizeContactText(input.value));
+			this.close();
+		});
+		window.setTimeout(() => input.focus(), 20);
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
 /** A searchable, group-filterable contact list with an inline editor. The
  *  compose window embeds it in "rail" layout (the editor replaces the list
  *  while open); the People window embeds it in "wide" layout (list and

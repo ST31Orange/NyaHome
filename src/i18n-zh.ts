@@ -619,4 +619,8 @@ export const zh: Record<string, string> = {
 	"New group...": "新建分组…",
 	"Add group": "添加分组",
 	"Reconnect your accounts in settings to include the contacts saved in your mailbox. Until then this lists everyone you correspond with, which needs no permission.": "在设置中重新连接账号，才能包含邮箱里保存的联系人。在此之前这里只列出与你有过通信的人，无需额外权限。",
+	"Smart recognition": "智能识别",
+	"Paste contact details; the fields below fill themselves.": "粘贴联系人信息，下方会自动识别并预览填入结果。",
+	"Name | Phone | Email | extra info...": "姓名 | 电话 | 邮箱 | 其他信息…",
+	"Fill the form": "填入表单",
 };
