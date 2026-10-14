@@ -3,6 +3,7 @@ import catIcon from "./assets/cat.jpg";
 import calendarIcon from "./assets/calendar.jpg";
 import mailIcon from "./assets/mail.jpg";
 import readerIcon from "./assets/reader.png";
+import moneyIcon from "./assets/moneyraise.png";
 
 /** The plugin methods the home page needs. Declared structurally so the
  *  module can sit beside main.ts without creating an import cycle. */
@@ -15,6 +16,7 @@ export interface HomePlugin {
 		homeBackgroundPath: string;
 		homeBackgroundOpacity: number;
 		homeBackgroundBlur: number;
+		showMoneyEntry: boolean;
 	};
 	listeners: Set<() => void>;
 	queueSave(): void;
@@ -24,6 +26,8 @@ export interface HomePlugin {
 	openMailView(): Promise<unknown>;
 	/** 打开 NyaReader 书架主页（联动入口）。 */
 	openReaderBookshelf(): Promise<void>;
+	/** 打开 NyaMoney 行情中心。 */
+	openMoneyView(): Promise<unknown>;
 	openOwnSettings(): void;
 	openShortcuts(): void;
 	manifest: { id: string };
@@ -62,6 +66,7 @@ const CALENDAR_ICON = calendarIcon;
 const MAIL_ICON = mailIcon;
 /** 小猫翻开一本书：NyaHome → NyaReader 书架联动按钮图片。 */
 const READER_ICON = readerIcon;
+const MONEY_ICON = moneyIcon;
 
 const HOME_GRID_COLS = 12;
 const HOME_GRID_ROWS = 24;
@@ -251,6 +256,15 @@ export class NyaHomeView extends ItemView {
 		const background = this.contentEl.createDiv("nyahome-background");
 		const page = this.contentEl.createDiv("nyahome-scroll");
 		this.applyHomeBackground(background);
+
+		// NyaMoney 入口：紧压在整个页面左上角的透明大按钮（150px，无边框/背景/阴影）。
+		// 可在设置中关闭（showMoneyEntry=false 时隐藏入口按钮）。
+		if (this.plugin.settings.showMoneyEntry) {
+			this.contentEl.createEl("button", { cls: "nyahome-money-trigger", attr: { "aria-label": "NyaMoney", title: "NyaMoney" } }, (el) => {
+				el.createEl("img", { attr: { src: MONEY_ICON, alt: "" } });
+				el.addEventListener("click", () => void this.plugin.openMoneyView());
+			});
+		}
 
 		const header = page.createDiv("nyahome-header");
 		const cat = header.createDiv("nyahome-cat");

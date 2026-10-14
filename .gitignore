@@ -4,3 +4,6 @@ dist/
 snapshots/
 tests.cjs
 *.map
+_fix_us.py
+_patch_run.py
+perf-test/

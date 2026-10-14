@@ -11,6 +11,7 @@ NyaHome gathers your Obsidian entry point on one page: quick search, freely arra
 - **主页背景**：使用库内图片，透明度和模糊可调。
 - **连接服务**：Microsoft、Google、CalDAV、ICS、IMAP 统一收纳，全部可选。
 - **邮件与笔记联动**：一键把邮件转成笔记，或生成日历事件。
+- **书架阅读（NyaReader）**：主页一键打开书架，EPUB / PDF / MOBI / AZW3 / TXT 多格式电子书，书架分组与三种视图，分页/双页、即划即译与批注。
 - **提醒与搜索**：快速定位事件和邮件，不错过重要安排。
 - **本地优先**：数据保存在你自己的库里，隐私更可控。
 
@@ -21,6 +22,7 @@ NyaHome gathers your Obsidian entry point on one page: quick search, freely arra
 - **Home background**: use a vault image with adjustable opacity and blur.
 - **Connected services**: Microsoft, Google, CalDAV, ICS and IMAP in one optional tab.
 - **Mail meets notes**: turn a message into a note or a calendar event in one click.
+- **E-book bookshelf (NyaReader)**: one click from Home, EPUB / PDF / MOBI / AZW3 / TXT with grouped shelves, three view modes, paged/double-page reading, select-to-translate and annotations.
 - **Search and reminders**: find events and mail fast, so nothing slips by.
 - **Local-first**: your data stays in your own vault.
 
@@ -43,12 +45,12 @@ Sign in with your IMAP / SMTP credentials and the mail view covers every account
 ## 翻译与 NyaReader 联动
 
 - **翻译**：邮件 / 笔记翻译委托共享翻译插件 **NyaLingo**（离线 MTranServer / 在线 OpenAI 兼容 / DeepL）；NyaLingo 未安装时回退到内置 MTranServer。首次运行 NyaHome 会自动下载安装 NyaLingo（需联网，装好后重载 Obsidian 一次）。
-- **NyaReader 书架联动**：主页标题栏右上角有进入 NyaReader 书架的按钮（未安装 NyaReader 时会提示安装）。
+- **NyaReader 书架联动**：主页标题栏右上角有进入 NyaReader 书架的按钮（未安装 NyaReader 时会提示安装）。NyaReader 是配套的多格式电子书阅读器：书架支持新建区域/文件夹、拖拽导入、排序与三种显示模式（完整 / 紧凑 / 列表）；阅读支持分页与滚动、单页与真实对开双页、目录导航、进度记忆、字号行距调节与日/夜/护眼主题；划词即译（由 NyaLingo 提供），并可高亮、做笔记，PDF 批注直接写入文件（自动备份）。
 
 ## Translation & NyaReader link
 
 - **Translation**: mail and note translation use the shared **NyaLingo** plugin (offline MTranServer / online OpenAI-compatible / DeepL), falling back to the built-in MTranServer when it is missing. NyaHome auto-installs NyaLingo on first run (needs network, then one reload).
-- **NyaReader bookshelf**: a button in the home header opens the NyaReader bookshelf (prompts to install NyaReader if it is missing).
+- **NyaReader bookshelf**: a button in the home header opens the NyaReader bookshelf (prompts to install NyaReader if it is missing). NyaReader is the companion multi-format reader: shelves with folders, drag-in import, sorting and three view modes (full / compact / list); reading with paged & scroll modes, single and true double-page spreads, TOC, position memory, font/spacing/theme control; select-to-translate (via NyaLingo) plus highlights and notes, with PDF annotations written back to the file (auto-backed-up).
 
 ## 兼容说明
 

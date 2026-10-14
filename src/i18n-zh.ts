@@ -18,6 +18,8 @@ export const zh: Record<string, string> = {
 	"New event": "新建日程",
 	"New mail": "写邮件",
 	"Refresh": "刷新",
+	"Show NyaMoney entry": "显示行情（NyaMoney）入口",
+	"Show the floating NyaMoney (market) entry button at the top-left of NyaHome. Turn off to hide it.": "在 NyaHome 左上角显示 NyaMoney（行情）浮动入口按钮；关闭后隐藏。",
 	"Refreshing...": "刷新中…",
 	"Find event": "查找日程",
 	"Find an event...": "查找日程…",

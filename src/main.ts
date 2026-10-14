@@ -307,6 +307,7 @@ import { CaldavError, discoverCalendars, fetchCollectionIcs } from "./caldav";
 import { DavCollection } from "./caldavxml";
 import { NyaHomeView, type HomeCard } from "./home";
 import catIcon from "./assets/cat.jpg";
+import { NyaMoneyView, VIEW_TYPE_MONEY } from "./money";
 
 /** One calendar row in the sidebar rail, whatever source it came from. */
 interface SidebarCal {
@@ -706,6 +707,7 @@ interface NyaHomeSettings {
 	/** The interface language. "en" leaves source text untouched; "zh" turns
 	 *  on the swap layer and the localized calendar formatters. */
 	language: "zh" | "en";
+	showMoneyEntry: boolean;
 	/** A tiny local scratchpad: one note per tile, editable in place. */
 	sketchNotes: SketchNote[];
 	/** The event ids the user pinned for quick reference. */
@@ -831,6 +833,7 @@ const DEFAULT_SETTINGS: NyaHomeSettings = {
 	weatherPlace: "",
 	weatherUnit: "f",
 	language: "zh",
+	showMoneyEntry: true,
 	sketchNotes: [],
 	starredEvents: [],
 	filterMeetings: true,
@@ -1107,12 +1110,14 @@ export default class NyaHomePlugin extends Plugin {
 		this.registerView(VIEW_TYPE_MAIL, (leaf) => new MailView(leaf, this));
 		this.registerView(VIEW_TYPE_MAIL_IMAP, (leaf) => new ImapMailView(leaf, this));
 		this.registerView(VIEW_TYPE_HOME, (leaf) => new NyaHomeView(leaf, this));
+		this.registerView(VIEW_TYPE_MONEY, (leaf) => new NyaMoneyView(leaf, this));
 		this.i18nObserver = this.settings.language === "zh" ? startI18n() : null;
 		this.ribbonEl = this.addRibbonIcon("home", "Open NyaHome", () => void this.openDefaultView());
 		this.ribbonEl.empty();
 		this.ribbonEl.addClass("nyahome-cat-button");
 		this.ribbonEl.createEl("img", { attr: { src: catIcon, alt: "Open NyaHome" } });
 		this.addCommand({ id: "open-mail", icon: "inbox", name: "Open inbox", callback: () => void this.openMailView() });
+		this.addCommand({ id: "open-money", icon: "dollar-sign", name: "Open NyaMoney", callback: () => void this.openMoneyView() });
 		this.addCommand({ id: "new-mail", icon: "pencil", name: "New mail", callback: () => this.openNewMailCompose() });
 		// the palette and the shortcut card are worth having on the vault's
 		// own command list too, so they can be given a global hotkey rather
@@ -6217,6 +6222,16 @@ export default class NyaHomePlugin extends Plugin {
 	}
 
 	/* ---------------- view plumbing ---------------- */
+
+	async openMoneyView(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_MONEY)[0];
+		if (existing) {
+			await this.app.workspace.revealLeaf(existing);
+			return;
+		}
+		const leaf = this.app.workspace.getLeaf(true);
+		await leaf.setViewState({ type: VIEW_TYPE_MONEY, active: true });
+	}
 
 	async openCalendarView(): Promise<PowerCalendarView | null> {
 		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
@@ -19718,6 +19733,19 @@ class NyaHomeSettingTab extends PluginSettingTab {
 								s.startupView = v as NyaHomeSettings["startupView"];
 								save();
 							})
+					);
+				},
+			},
+			{
+				name: "Show NyaMoney entry",
+				desc: "Show the floating NyaMoney (market) entry button at the top-left of NyaHome. Turn off to hide it.",
+				build: (st) => {
+					st.addToggle((t) =>
+						t.setValue(s.showMoneyEntry).onChange((v) => {
+							s.showMoneyEntry = v;
+							save();
+							this.plugin.notify();
+						})
 					);
 				},
 			},

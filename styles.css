@@ -7998,3 +7998,47 @@ body.theme-light .notice:not(.pw-self-styled) a {
 		display: none;
 	}
 }
+
+/* ---------------- NyaMoney（行情中心） ---------------- */
+/* 入口按钮：紧压在整个页面左上角，透明、150px、无边框/背景/阴影 */
+.nyahome-money-trigger {
+	position: absolute;
+	top: 0;
+	left: 0;
+	z-index: 6;
+	width: 100px;
+	height: 100px;
+	padding: 0;
+	border: 0 !important;
+	border-radius: 0 !important;
+	box-shadow: none !important;
+	background: transparent !important;
+	background-color: transparent !important;
+	background-image: none !important;
+	cursor: pointer;
+	display: block;
+	transition: transform 0.12s ease;
+}
+.nyahome-money-trigger:hover {
+	transform: scale(1.03);
+}
+.nyahome-money-trigger img {
+	width: 100px;
+	height: 100px;
+	object-fit: contain;
+	pointer-events: none;
+}
+.nyahome-money-trigger:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 3px;
+}
+/* 页面容器高度：撑满 Obsidian 叶容器 */
+.nyahome-money {
+	height: 100%;
+	overflow: hidden;
+}
+.nyahome-money-root {
+	height: 100%;
+}
+
+.nyahome-money{background:#101216}
