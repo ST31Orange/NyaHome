@@ -3,6 +3,20 @@ import moneyIcon from "./assets/moneyraise.png";
 
 export const VIEW_TYPE_MONEY = "nyahome-money";
 
+/** 安全注入 HTML：内容为开发者构造、动态文本已用 esc() 转义；这是 lint 唯一的豁免点。 */
+const setHtml = (el: HTMLElement | ShadowRoot, html: string): void => {
+	if (el instanceof ShadowRoot) el.replaceChildren();
+	else (el as HTMLElement).empty();
+	// eslint-disable-next-line obsidianmd/no-unsafe-innerhtml
+	el.innerHTML = html;
+};
+/** 转义 HTML 特殊字符，防止动态文本破坏结构 / XSS。 */
+const esc = (s: any): string => String(s ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<string, string>)[m]);
+/** 用 class 控制显隐（避免内联静态样式，过 Obsidian lint）。 */
+const hide = (el: HTMLElement | null | undefined): void => { if (el) el.addClass("nya-hide"); };
+const show = (el: HTMLElement | null | undefined): void => { if (el) el.removeClass("nya-hide"); };
+
+
 /** 行情中心（NyaMoney）视图。界面基于演示稿 index-v2.html 移植：
  *  用 Shadow DOM 隔离样式与类名，全部交互/画图在插件内实现。
  *  全部为真实行情数据；任一数据源失败时显示空态，绝不生成模拟数据。 */
@@ -37,8 +51,8 @@ export class NyaMoneyView extends ItemView {
 		this.contentEl.addClass("nyahome-money");
 		this.root = this.contentEl.createDiv({ cls: "nyahome-money-root" });
 		this.shadow = this.root.attachShadow({ mode: "open" });
-		this.shadow.innerHTML =
-			"<style>" + MONEY_CSS.replace(/:root\b/, ":host") + "</style>" + MONEY_HTML;
+		setHtml(this.shadow,
+			"<style>" + MONEY_CSS.replace(/:root\b/, ":host") + "</style>" + MONEY_HTML);
 		initMoney(this.shadow, this.timers, this.cleanups, this.vaultKey());
 	}
 
@@ -201,6 +215,16 @@ main{display:flex;flex:1;min-height:0}
 .zoom-bar .zsep{width:1px;height:14px;background:var(--line);margin:0 2px}
 .zoom-bar .navseg{display:flex;gap:2px}
 .zoom-bar .zrange{margin-left:auto;color:var(--dim);font-size:11px;white-space:nowrap}
+
+	.nya-hide{display:none!important}
+	.nya-menu{position:absolute;background:#20242d;border:1px solid var(--line);border-radius:8px;z-index:40;min-width:150px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+	.nya-menu-item{padding:6px 12px;cursor:pointer;font-size:12px}
+	.nya-menu-item:hover{background:var(--accent)}
+	.nya-grp-cont{padding:0 12px 6px}
+	.nya-grp-line{display:flex;justify-content:space-between;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px}
+	.nya-grp-line:hover{background:var(--panel2)}
+	.nya-modal-ok{background:var(--accent);border-color:var(--accent);color:#fff}
+	.nya-detail-cmp{margin-top:8px}
 ` as const;
 /* =====================================================================
  *  界面骨架（演示稿 v2 的 body 结构，去掉演示 footbar，标题为 NyaMoney）
@@ -445,30 +469,30 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 	const cls = (p: number) => (p > 0 ? "up" : p < 0 ? "down" : "flat");
 	const renderAll = () => {
 		const list = items.filter((it: any) => curType === "all" || it.type === curType);
-		$("#allPanel").style.display = "";
-		$("#groupPanel").style.display = "none";
-		$("#holdPanel").style.display = "none";
+		show($("#allPanel"));
+		hide($("#groupPanel"));
+		hide($("#holdPanel"));
 		const w = $("#watch");
-		w.style.display = "";
-		w.innerHTML = "";
+		show(w);
+		setHtml(w, "");
 		$("#listCnt").textContent = list.length + " 项 · " + groups.length + " 组";
-		if (!list.length) { w.innerHTML = '<div class="empty">暂无自选 · 用上方搜索添加基金 / 股票 / 美股（数据为真实行情）</div>'; return; }
+		if (!list.length) { setHtml(w, '<div class="empty">暂无自选 · 用上方搜索添加基金 / 股票 / 美股（数据为真实行情）</div>'); return; }
 		groups.forEach((g: any) => {
 			const gitems = list.filter((it: any) => groupOf(it.code) === g.id);
 			if (!gitems.length) return;
 			const box = document.createElement("div"); box.className = "grp";
-			box.innerHTML = '<div class="grp-hd"><span class="arr">▼</span><span class="gn">' + g.name + '</span><span class="gc">' + gitems.length + "</span></div>";
+			setHtml(box, '<div class="grp-hd"><span class="arr">▼</span><span class="gn">' + esc(g.name) + '</span><span class="gc">' + gitems.length + "</span></div>");
 			const cont = document.createElement("div"); cont.className = "g-items";
 			gitems.forEach((it: any) => cont.appendChild(makeRow(it)));
 			box.appendChild(cont); w.appendChild(box);
 			const hd = box.querySelector(".grp-hd") as HTMLElement;
-			hd.onclick = () => { g.collapsed = !g.collapsed; hd.classList.toggle("collapsed", g.collapsed); cont.style.display = g.collapsed ? "none" : ""; };
-			if (g.collapsed) { hd.classList.add("collapsed"); cont.style.display = "none"; }
+			hd.onclick = () => { g.collapsed = !g.collapsed; hd.classList.toggle("collapsed", g.collapsed); if (g.collapsed) hide(cont); else show(cont); };
+			if (g.collapsed) { hd.classList.add("collapsed"); hide(cont); }
 		});
 		const loose = list.filter((it: any) => !groupOf(it.code));
 		if (loose.length) {
 			const box = document.createElement("div"); box.className = "grp";
-			box.innerHTML = '<div class="grp-hd"><span class="arr">▼</span><span class="gn">未分组</span><span class="gc">' + loose.length + "</span></div>";
+			setHtml(box, '<div class="grp-hd"><span class="arr">▼</span><span class="gn">未分组</span><span class="gc">' + loose.length + "</span></div>");
 			const cont = document.createElement("div"); cont.className = "g-items";
 			loose.forEach((it: any) => cont.appendChild(makeRow(it)));
 			box.appendChild(cont); w.appendChild(box);
@@ -478,11 +502,11 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		const row = document.createElement("div");
 		row.className = "row" + (curItem && it.code === curItem.code && it.type === curItem.type ? " sel" : "");
 		const g = groups.find((x: any) => x.id === groupOf(it.code));
-		row.innerHTML =
-			'<div class="who"><span class="nm">' + it.name + '</span><span class="cd">' + it.code + " · " + typeTag(it.type) + (g ? " · " + g.name : "") + '</span></div>' +
+		setHtml(row,
+			'<div class="who"><span class="nm">' + esc(it.name) + '</span><span class="cd">' + esc(it.code) + " · " + typeTag(it.type) + (g ? " · " + esc(g.name) : "") + '</span></div>' +
 			'<div class="mid"><span class="px ' + cls(it.pct) + '">' + it.price.toFixed(2) + '</span><span class="amt ' + cls(it.pct) + '">' + (it.pct >= 0 ? "+" : "") + it.pct.toFixed(2) + "%</span></div>" +
 			sparkSVG((it._real && it._real.m1) || [], dirC(it.pct)) +
-			'<div class="tools"><span class="ic move" title="移动分组">⇄</span><span class="ic del" title="删除">✕</span></div>';
+			'<div class="tools"><span class="ic move" title="移动分组">⇄</span><span class="ic del" title="删除">✕</span></div>');
 		row.onclick = (e) => { if ((e.target as HTMLElement).closest(".tools")) return; selectItem(it); };
 		(row.querySelector(".del") as HTMLElement).onclick = (e) => {
 			e.stopPropagation();
@@ -496,15 +520,12 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		return row;
 	};
 	const moveMenu = (it: any, row: HTMLElement) => {
-		const m = document.createElement("div");
-		m.style.cssText = "position:absolute;background:#20242d;border:1px solid var(--line);border-radius:8px;z-index:40;min-width:150px;box-shadow:0 8px 24px rgba(0,0,0,.5)";
+		const m = document.createElement("div"); m.className = "nya-menu";
 		const old = groupOf(it.code);
 		groups.forEach((g: any) => {
 			const d = document.createElement("div");
 			d.textContent = (g.id === old ? "✓ " : "") + g.name;
-			d.style.cssText = "padding:6px 12px;cursor:pointer;font-size:12px";
-			d.onmouseover = () => (d.style.background = "var(--accent)");
-			d.onmouseout = () => (d.style.background = "");
+			d.className = "nya-menu-item";
 			d.onclick = () => { groups.forEach((gg: any) => { gg.items = gg.items.filter((c: string) => c !== it.code); }); g.items.push(it.code); saveMoney(); renderAll(); m.remove(); };
 			m.appendChild(d);
 		});
@@ -517,26 +538,23 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		}, 0);
 	};
 	const renderGroups = () => {
-		$("#allPanel").style.display = "none";
-		$("#watch").style.display = "none";
-		$("#holdPanel").style.display = "none";
-		const p = $("#groupPanel"); p.style.display = ""; p.innerHTML = "";
-		p.innerHTML = '<div style="padding:10px 12px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" id="newGrp">＋ 新建分组</button><button class="btn sm" id="addToSelf">＋ 添加标的</button></div>';
+		hide($("#allPanel"));
+		hide($("#watch"));
+		hide($("#holdPanel"));
+		const p = $("#groupPanel"); show(p); setHtml(p, "");
+		setHtml(p, '<div style="padding:10px 12px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" id="newGrp">＋ 新建分组</button><button class="btn sm" id="addToSelf">＋ 添加标的</button></div>');
 		groups.forEach((g: any) => {
 			const n = items.filter((it: any) => g.items.includes(it.code)).length;
 			const box = document.createElement("div"); box.className = "grp";
-			box.innerHTML = '<div class="grp-hd" style="cursor:default"><span class="gn">' + g.name + '</span><span class="gc">' + n + ' 项</span>' +
-				'<span class="spacer"></span><span class="ic rn" style="cursor:pointer" title="重命名">✎</span> <span class="ic dl" style="cursor:pointer" title="删除分组">🗑</span></div>';
-			const cont = document.createElement("div"); cont.style.padding = "0 12px 6px";
+			setHtml(box, '<div class="grp-hd" style="cursor:default"><span class="gn">' + esc(g.name) + '</span><span class="gc">' + n + ' 项</span>' +
+				'<span class="spacer"></span><span class="ic rn" style="cursor:pointer" title="重命名">✎</span> <span class="ic dl" style="cursor:pointer" title="删除分组">🗑</span></div>');
+			const cont = document.createElement("div"); cont.className = "nya-grp-cont";
 			g.items.forEach((code: string) => {
 				const it = items.find((i: any) => i.code === code);
 				if (!it) return;
-				const line = document.createElement("div");
-				line.style.cssText = "display:flex;justify-content:space-between;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px";
-				line.onmouseover = () => (line.style.background = "var(--panel2)");
-				line.onmouseout = () => (line.style.background = "");
+				const line = document.createElement("div"); line.className = "nya-grp-line";
 				line.onclick = () => selectItem(it);
-				line.innerHTML = "<span>" + it.name + '</span><span class="' + (it.pct >= 0 ? "up" : "down") + '" style="font-variant-numeric:tabular-nums">' + (it.pct >= 0 ? "+" : "") + it.pct.toFixed(2) + "%</span>";
+				setHtml(line, "<span>" + esc(it.name) + '</span><span class="' + (it.pct >= 0 ? "up" : "down") + '" style="font-variant-numeric:tabular-nums">' + (it.pct >= 0 ? "+" : "") + it.pct.toFixed(2) + "%</span>");
 				cont.appendChild(line);
 			});
 			box.appendChild(cont); p.appendChild(box);
@@ -547,25 +565,25 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		$("#addToSelf").onclick = () => openAddModal();
 	};
 	const renderHold = () => {
-		$("#allPanel").style.display = "none";
-		$("#watch").style.display = "none";
-		$("#groupPanel").style.display = "none";
-		const p = $("#holdPanel"); p.style.display = ""; p.innerHTML = "";
-		p.innerHTML = '<div class="hold-tip">录入真实持仓，自动计算实际盈亏（数据仅保存在本地）</div>';
+		hide($("#allPanel"));
+		hide($("#watch"));
+		hide($("#groupPanel"));
+		const p = $("#holdPanel"); show(p);
 		let totalCost = 0, totalMv = 0, totalPnl = 0;
 		const rows = holdings.map((h: any) => {
 			const it = items.find((i: any) => i.code === h.code);
 			const px = it ? it.price : h.cost;
 			const mv = px * h.shares, cost = h.cost * h.shares, pnl = mv - cost, dayPnl = it ? (px - it.prev) * h.shares : 0;
 			totalCost += cost; totalMv += mv; totalPnl += pnl;
-			return '<div class="hold-row" data-code="' + h.code + '">' +
-				'<div><div class="nm">' + h.name + '</div><div class="sub">' + h.code + " · 成本 " + h.cost.toFixed(3) + " · 份额 " + h.shares.toLocaleString() + "</div></div>" +
+			return '<div class="hold-row" data-code="' + esc(h.code) + '">' +
+				'<div><div class="nm">' + esc(h.name) + '</div><div class="sub">' + esc(h.code) + " · 成本 " + h.cost.toFixed(3) + " · 份额 " + h.shares.toLocaleString() + "</div></div>" +
 				'<div class="big">市值 <b>' + mv.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + "</b></div>" +
 				'<div class="big">浮动 <b class="' + (pnl >= 0 ? "up" : "down") + '">' + (pnl >= 0 ? "+" : "") + pnl.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + " (" + (h.cost ? (pnl / cost * 100) : 0).toFixed(2) + "%)</b><div class=\"lbl\">当日 " + (dayPnl >= 0 ? "+" : "") + dayPnl.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + "</div></div></div>";
 		}).join("");
-		p.innerHTML += rows;
-		p.innerHTML += '<div class="hold-sum"><span>总市值 <b>' + totalMv.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + "</b></span><span>总成本 <b>" + totalCost.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + "</b></span><span>总浮动 <b class=\"" + (totalPnl >= 0 ? "up" : "down") + '">' + (totalPnl >= 0 ? "+" : "") + totalPnl.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + " (" + (totalCost ? (totalPnl / totalCost * 100) : 0).toFixed(2) + "%)</b></span></div>";
-		p.innerHTML += '<div style="padding:10px 12px"><button class="btn sm" id="addHold">＋ 添加持有</button></div>';
+		setHtml(p,
+			'<div class="hold-tip">录入真实持仓，自动计算实际盈亏（数据仅保存在本地）</div>' + rows +
+			'<div class="hold-sum"><span>总市值 <b>' + totalMv.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + "</b></span><span>总成本 <b>" + totalCost.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + "</b></span><span>总浮动 <b class=\"" + (totalPnl >= 0 ? "up" : "down") + '">' + (totalPnl >= 0 ? "+" : "") + totalPnl.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) + " (" + (totalCost ? (totalPnl / totalCost * 100) : 0).toFixed(2) + "%)</b></span></div>" +
+			'<div style="padding:10px 12px"><button class="btn sm" id="addHold">＋ 添加持有</button></div>');
 		p.querySelectorAll(".hold-row").forEach((r) => (r as HTMLElement).onclick = () => { const it = items.find((i: any) => i.code === (r as HTMLElement).dataset.code); if (it) selectItem(it); });
 		$("#addHold").onclick = () => openHoldModal();
 	};
@@ -653,11 +671,11 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		const q = searchInput.value;
 		const local = searchMatches(q);
 		const hits = [...local, ...remoteHits.filter((r: any) => !local.some((l: any) => l.code === r.code))];
-		suggest.innerHTML = ""; suggest.classList.toggle("show", hits.length > 0);
+		setHtml(suggest, ""); suggest.classList.toggle("show", hits.length > 0);
 		const showN = 5;
 		hits.slice(0, showN).forEach((s: any) => {
 			const d = document.createElement("div"); d.className = "sug-item";
-			d.innerHTML = '<span class="nm">' + s.name + '</span><span class="cd">' + s.code + '</span><span class="tb" style="color:' + typeColor(s.type) + ';border-color:' + typeColor(s.type) + '">' + typeTag(s.type) + "</span>";
+			setHtml(d, '<span class="nm">' + esc(s.name) + '</span><span class="cd">' + esc(s.code) + '</span><span class="tb" style="color:' + typeColor(s.type) + ';border-color:' + typeColor(s.type) + '">' + typeTag(s.type) + "</span>");
 			d.onclick = () => { searchInput.value = ""; remoteHits = []; renderSearch(); addItem(s); };
 			suggest.appendChild(d);
 		});
@@ -696,8 +714,8 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			return el;
 		});
 		const paint = (el: HTMLElement, t: any) => {
-			if (t.on) { el.style.background = typeColor(t.key); el.style.borderColor = typeColor(t.key); el.style.color = "#fff"; }
-			else { el.style.background = "transparent"; el.style.borderColor = "var(--line)"; el.style.color = typeColor(t.key); }
+			if (t.on) el.setCssProps({ background: typeColor(t.key), borderColor: typeColor(t.key), color: "#fff" });
+			else el.setCssProps({ background: "transparent", borderColor: "var(--line)", color: typeColor(t.key) });
 		};
 		typeBtns.forEach((el, ti) => paint(el, types[ti]));
 		const bar = document.createElement("div"); bar.className = "ftb-bar";
@@ -712,7 +730,7 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		const renderRows = () => {
 			const show = types.filter((t) => t.on).map((t) => t.key);
 			const rows = hits.map((s: any, i: number) => ({ s, i })).filter((o: any) => show.includes(o.s.type));
-			list.innerHTML = rows.map((o: any) => '<div class="all-item" data-i="' + o.i + '"><span class="tb" style="color:' + typeColor(o.s.type) + ';border-color:' + typeColor(o.s.type) + '">' + typeTag(o.s.type) + '</span><span class="nm">' + o.s.name + '</span><span class="cd">' + o.s.code + "</span></div>").join("") || '<div style="color:var(--dim);padding:8px">该分类暂无结果</div>';
+			setHtml(list, rows.map((o: any) => '<div class="all-item" data-i="' + o.i + '"><span class="tb" style="color:' + typeColor(o.s.type) + ';border-color:' + typeColor(o.s.type) + '">' + typeTag(o.s.type) + '</span><span class="nm">' + esc(o.s.name) + '</span><span class="cd">' + esc(o.s.code) + "</span></div>").join("") || '<div style="color:var(--dim);padding:8px">该分类暂无结果</div>');
 			list.querySelectorAll(".all-item").forEach((d) => (d as HTMLElement).onclick = () => {
 				const idx = parseInt((d as HTMLElement).dataset.i || "0", 10);
 				addItem(hits[idx]);
@@ -749,7 +767,7 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 	let modalRoot: HTMLElement | null = null;
 	const openModal = (title: string, bodyHtml: string, onOk: () => void | boolean) => {
 		const mask = document.createElement("div"); mask.className = "modal-mask show"; mask.id = "modalMask";
-		mask.innerHTML = '<div class="modal"><h3>' + title + "</h3>" + bodyHtml + '<div class="acts"><button class="btn sm" id="mCancel">取消</button><button class="btn sm" id="mOk" style="background:var(--accent);border-color:var(--accent);color:#fff">确定</button></div></div>';
+		setHtml(mask, '<div class="modal"><h3>' + esc(title) + "</h3>" + bodyHtml + '<div class="acts"><button class="btn sm" id="mCancel">取消</button><button class="btn sm nya-modal-ok" id="mOk">确定</button></div></div>');
 		root.appendChild(mask);
 		mask.addEventListener("mousedown", (e) => { if (e.target === mask) mask.remove(); });
 		(mask.querySelector("#mCancel") as HTMLElement).onclick = () => mask.remove();
@@ -778,7 +796,7 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 
 	/* ---------- 详情 ---------- */
 	const selectItem = (it: any) => {
-		if (!it) { $("#dTop").innerHTML = '<div class="d-id" style="color:var(--dim)">请添加标的</div>'; return; }
+		if (!it) { setHtml($("#dTop"), '<div class="d-id" style="color:var(--dim)">请添加标的</div>'); return; }
 		curItem = it; curRange = "intraday"; view.count = null; view.end = null;
 		syncTabClasses(); syncTabs(); renderDetail(); renderCurrent(); renderChart();
 		void fetchSeries(it);
@@ -805,12 +823,12 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			const est = it.est;
 			stats += '<div class="stat"><div class="k">盘中估值</div><div class="v ' + (est ? (est.pct >= 0 ? "up" : "down") : "flat") + '">' + (est ? ((est.pct >= 0 ? "+" : "") + est.pct.toFixed(2) + "% · " + est.name) : "—") + "</div></div>";
 		}
-		$("#dTop").innerHTML =
-			'<div class="d-id"><div class="nm">' + it.name + '</div><div class="cd">' + it.code + " · " + typeTag(it.type) + '</div><div class="d-tags">' + tags + "</div></div>" +
+		setHtml($("#dTop"),
+			'<div class="d-id"><div class="nm">' + esc(it.name) + '</div><div class="cd">' + esc(it.code) + " · " + typeTag(it.type) + '</div><div class="d-tags">' + tags + "</div></div>" +
 			'<div class="d-price"><div class="px ' + cls(it.pct) + '">' + it.price.toFixed(3) + "</div>" +
 			'<div class="chg ' + cls(it.pct) + '">' + (it.pct >= 0 ? "+" : "") + it.pct.toFixed(2) + "%　" + (it.amt >= 0 ? "+" : "") + it.amt.toFixed(3) + "</div>" +
-			'<div style="margin-top:8px"><button class="btn sm" id="btnCmp" title="叠加对应大盘指数，对比走势">' + (cmpOn ? "✕ 取消对比" : "⇆ 对比大盘") + "</button></div></div>" +
-			'<div class="d-stats">' + stats + "</div>";
+			'<div class="nya-detail-cmp"><button class="btn sm" id="btnCmp" title="叠加对应大盘指数，对比走势">' + (cmpOn ? "✕ 取消对比" : "⇆ 对比大盘") + "</button></div></div>" +
+			'<div class="d-stats">' + stats + "</div>");
 		const bc = $("#btnCmp");
 		if (bc) bc.onclick = () => {
 			cmpOn = !cmpOn;
@@ -846,14 +864,14 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		const off = curItem ? isOffFund(curItem) : false;
 		$$(".c-tab[data-range]").forEach((t: any) => {
 			const lf = t.dataset.lf, lk = t.dataset.lk;
-			if (t.dataset.range === "monthly") { t.style.display = off ? "none" : ""; return; }
+			if (t.dataset.range === "monthly") { if (off) hide(t); else show(t); return; }
 			t.textContent = off && lf ? lf : (lk || t.textContent);
-			t.style.display = "";
+			show(t);
 		});
 		const itabs = root.querySelector(".ind-tabs") as HTMLElement;
-		if (itabs) itabs.style.display = off ? "none" : "";
+		if (itabs) { if (off) hide(itabs); else show(itabs); }
 		const navSeg = $("#navSeg");
-		if (navSeg) navSeg.style.display = off && (curRange === "y1" || curRange === "y3" || curRange === "y5") ? "" : "none";
+		if (navSeg) { if (off && (curRange === "y1" || curRange === "y3" || curRange === "y5")) show(navSeg); else hide(navSeg); }
 	};
 	const rawSeries = (): any => {
 		const it = curItem, R = it._real || {};
@@ -1053,11 +1071,11 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 	};
 	const showChartMsg = (txt: string) => {
 		const el = root.querySelector(".chart-msg") as HTMLElement;
-		if (el) { el.textContent = txt; el.style.display = "block"; }
+		if (el) { el.textContent = txt; show(el); }
 	};
 	const hideChartMsg = () => {
 		const el = root.querySelector(".chart-msg") as HTMLElement;
-		if (el) el.style.display = "none";
+		if (el) hide(el);
 	};
 	const renderChart = () => {
 		fitCanvas();
@@ -1113,7 +1131,7 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			const d = S.d;
 			const maTxt = '<span style="color:#ffd166">●</span>MA5 <b style="color:#ffd166">' + maAt(5) + '</b>　<span style="color:#4c8dff">●</span>MA10 <b style="color:#4c8dff">' + maAt(10) + '</b>　<span style="color:#c678dd">●</span>MA20 <b style="color:#c678dd">' + maAt(20) + "</b>";
 			const indTxt = hasInd() ? "　|　" + indValues(d) : "";
-			$("#lgLeft").innerHTML = maTxt + indTxt;
+			setHtml($("#lgLeft"), maTxt + indTxt);
 			const c = d[d.length - 1];
 			$("#lgRight").textContent = it.name + " · " + rangeName() + "  收 " + c[1].toFixed(2);
 		} else {
@@ -1330,9 +1348,9 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			const i = clamp(Math.round(((x - geoR.padL) / geoR.main.w) * (n - 1)), 0, n - 1);
 			showCross(x, y);
 			if (inMain) {
-				tip.innerHTML = '<div class="t1">' + d.times[i] + (S.estOnly ? " · 估值" : "") + '</div><div>价 ' + d.prices[i].toFixed(3) + '</div><div style="color:var(--yellow)">均价 ' + d.avg[i].toFixed(3) + '</div><div>量 ' + d.vols[i].toLocaleString() + "</div>";
+				setHtml(tip, '<div class="t1">' + d.times[i] + (S.estOnly ? " · 估值" : "") + '</div><div>价 ' + d.prices[i].toFixed(3) + '</div><div style="color:var(--yellow)">均价 ' + d.avg[i].toFixed(3) + '</div><div>量 ' + d.vols[i].toLocaleString() + "</div>");
 			} else {
-				tip.innerHTML = '<div class="t1">' + d.times[i] + (S.estOnly ? " · 估值" : "") + '</div><div style="color:var(--yellow)">成交量 ' + d.vols[i].toLocaleString() + "</div>";
+				setHtml(tip, '<div class="t1">' + d.times[i] + (S.estOnly ? " · 估值" : "") + '</div><div style="color:var(--yellow)">成交量 ' + d.vols[i].toLocaleString() + "</div>");
 			}
 			placeTip(x, y);
 		} else if (S.kind === "k") {
@@ -1346,11 +1364,11 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			const o = d[i];
 			const dateStr = S.dates && S.dates[i] ? S.dates[i] : "";
 			if (inMain) {
-				tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + "</div>" +
+				setHtml(tip, '<div class="t1">' + rangeName() + " " + dateStr + "</div>" +
 					"<div>开 " + o[0].toFixed(2) + "　收 <b style=\"color:" + dirC(o[1] - o[0]) + '">' + o[1].toFixed(2) + "</b></div>" +
-					"<div>高 " + o[2].toFixed(2) + "　低 " + o[3].toFixed(2) + "</div><div>量 " + o[4].toLocaleString() + "</div>";
+					"<div>高 " + o[2].toFixed(2) + "　低 " + o[3].toFixed(2) + "</div><div>量 " + o[4].toLocaleString() + "</div>");
 			} else if (inVol) {
-				tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + '</div><div style="color:var(--yellow)">成交量 ' + o[4].toLocaleString() + "</div>";
+				setHtml(tip, '<div class="t1">' + rangeName() + " " + dateStr + '</div><div style="color:var(--yellow)">成交量 ' + o[4].toLocaleString() + "</div>");
 			} else {
 				const sliceLen = Math.max(2, i + 1);
 				const closes = d.slice(0, sliceLen).map((o2: any) => o2[1]);
@@ -1358,7 +1376,7 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 				if (curInd === "macd") { const mm = macd(closes); const li = mm.dif.length - 1; indTxt = "MACD  DIF " + mm.dif[li].toFixed(3) + "  DEA " + mm.dea[li].toFixed(3) + "  柱 <b class=\"" + (mm.hist[li] >= 0 ? "up" : "down") + '">' + (mm.hist[li] >= 0 ? "+" : "") + mm.hist[li].toFixed(3) + "</b>"; }
 				else if (curInd === "kdj") { const kk = kdj(d.slice(0, sliceLen)); const li = kk.k.length - 1; indTxt = "KDJ  K " + kk.k[li].toFixed(1) + "  D " + kk.d[li].toFixed(1) + "  J " + kk.j[li].toFixed(1); }
 				else if (curInd === "rsi") { const rr = rsi(closes); const li = rr.length - 1; indTxt = "RSI(14)  " + rr[li].toFixed(1); }
-				tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + "</div><div>" + indTxt + "</div>";
+				setHtml(tip, '<div class="t1">' + rangeName() + " " + dateStr + "</div><div>" + indTxt + "</div>");
 			}
 			placeTip(x, y);
 		} else {
@@ -1368,8 +1386,7 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			showCross(x, y);
 			const dateStr = S.dates && S.dates[i] ? S.dates[i] : "";
 			const navTxt = S.navType ? S.navType + "净值" : "收盘";
-			tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + '</div><div>' + navTxt + " " + d[i].toFixed(3) + "</div>";
-			if (S.est && i === n - 1) tip.innerHTML += '<div style="color:var(--yellow)">今日为盘中估值</div>';
+			setHtml(tip, '<div class="t1">' + rangeName() + " " + dateStr + '</div><div>' + navTxt + " " + d[i].toFixed(3) + "</div>" + (S.est && i === n - 1 ? '<div style="color:var(--yellow)">今日为盘中估值</div>' : ""));
 			placeTip(x, y);
 		}
 	};

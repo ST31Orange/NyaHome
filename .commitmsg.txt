@@ -1,4 +1,7 @@
-fix(manifest): shorten description to 224 chars (Obsidian 250 limit)
+fix(lint): pass Obsidian community checks (innerHTML + static styles)
 
-Community plugin check rejected 5.2.11: manifest description was 347 chars.
-Now 224 chars, keeping NyaLingo/NyaReader/NyaMoney keywords. Bump to 5.2.12.
+- Add setHtml/esc/show/hide helpers; replace all unsafe innerHTML assignments
+  (lists, tooltips, detail card, modals, legend, panels) with setHtml + escaped text
+- Replace static inline styles with CSS classes (.nya-menu/.nya-grp-line/.nya-hide etc.)
+  or Obsidian setCssProps; hover states moved to CSS :hover
+- Bump to 5.2.13
