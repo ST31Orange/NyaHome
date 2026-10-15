@@ -19045,6 +19045,8 @@ class NyaHomeSettingTab extends PluginSettingTab {
 			"任务看板：多看板管理长期任务，数据就是普通 Markdown。",
 			"连接服务：Microsoft、Google、CalDAV、ICS、IMAP 统一收纳，全部可选。",
 			"邮件与笔记联动：一键把邮件转成笔记，或生成日历事件。",
+			"书架阅读（NyaReader）：主页一键打开书架，EPUB / PDF / MOBI / AZW3 / TXT 多格式电子书，书架分组与三种视图、分页/双页、即划即译与批注。",
+			"行情（NyaMoney）：基金 / 股票 / 美股实时行情与 K 线（分时、日/周/月、近1/3/5年），自选分组与持仓盈亏，主动基金含盘中估算。",
 			"提醒与搜索：快速定位事件和邮件，不错过重要安排。",
 		])
 			featsCn.createDiv({ cls: "nya-about-feat", text: f });
@@ -19056,6 +19058,8 @@ class NyaHomeSettingTab extends PluginSettingTab {
 			"Task boards: manage long-term work across boards backed by Markdown.",
 			"Connected services: Microsoft, Google, CalDAV, ICS and IMAP in one optional tab.",
 			"Mail meets notes: turn a message into a note or a calendar event in one click.",
+			"E-book bookshelf (NyaReader): one click from Home, EPUB / PDF / MOBI / AZW3 / TXT, grouped shelves and three view modes, paged/double-page reading, select-to-translate and annotations.",
+			"Market quotes (NyaMoney): real-time fund / stock / US quotes with intraday, daily/weekly/monthly and 1/3/5-year K-lines, grouped watchlist and holding P&L, intraday estimates for active funds.",
 			"Search and reminders: find events and mail fast, so nothing slips by.",
 		])
 			featsEn.createDiv({ cls: "nya-about-feat", text: f });

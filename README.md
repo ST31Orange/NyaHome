@@ -12,6 +12,7 @@ NyaHome gathers your Obsidian entry point on one page: quick search, freely arra
 - **连接服务**：Microsoft、Google、CalDAV、ICS、IMAP 统一收纳，全部可选。
 - **邮件与笔记联动**：一键把邮件转成笔记，或生成日历事件。
 - **书架阅读（NyaReader）**：主页一键打开书架，EPUB / PDF / MOBI / AZW3 / TXT 多格式电子书，书架分组与三种视图，分页/双页、即划即译与批注。
+- **行情（NyaMoney）**：基金 / 股票 / 美股实时行情与 K 线（分时、日/周/月、近1/3/5年），自选分组与持仓盈亏；真实多源数据（东财/腾讯/新浪），主动基金含盘中估算。
 - **提醒与搜索**：快速定位事件和邮件，不错过重要安排。
 - **本地优先**：数据保存在你自己的库里，隐私更可控。
 
@@ -23,6 +24,7 @@ NyaHome gathers your Obsidian entry point on one page: quick search, freely arra
 - **Connected services**: Microsoft, Google, CalDAV, ICS and IMAP in one optional tab.
 - **Mail meets notes**: turn a message into a note or a calendar event in one click.
 - **E-book bookshelf (NyaReader)**: one click from Home, EPUB / PDF / MOBI / AZW3 / TXT with grouped shelves, three view modes, paged/double-page reading, select-to-translate and annotations.
+- **Market quotes (NyaMoney)**: real-time fund / stock / US quotes with intraday, daily/weekly/monthly and 1/3/5-year charts, grouped watchlist and holding P&L; real multi-source data (Eastmoney/Tencent/Sina) and intraday estimates for active funds.
 - **Search and reminders**: find events and mail fast, so nothing slips by.
 - **Local-first**: your data stays in your own vault.
 

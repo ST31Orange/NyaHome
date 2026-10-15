@@ -1,9 +1,9 @@
 {
 	"id": "nyahome",
 	"name": "NyaHome",
-	"version": "5.2.5",
+	"version": "5.2.11",
 	"minAppVersion": "1.8.7",
-	"description": "统一主页与本地优先的工作台：日历、邮箱、搜索、任务、翻译（NyaLingo）、书架阅读（NyaReader：EPUB·PDF·MOBI·TXT）；可选接入在线日历和邮箱 | A unified local-first home: calendar, mail, search, tasks, translation (NyaLingo) and an e-book bookshelf (EPUB/PDF/MOBI via NyaReader); optional online calendar & mail.",
+	"description": "统一主页与本地优先的工作台：日历、邮箱、搜索、任务、翻译（NyaLingo）、书架阅读（NyaReader：EPUB·PDF·MOBI·TXT）、行情（NyaMoney：基金/股票/美股实时行情与K线）；可选接入在线日历和邮箱 | A unified local-first home: calendar, mail, search, tasks, translation (NyaLingo), e-book bookshelf (NyaReader: EPUB/PDF/MOBI/TXT) and market quotes (NyaMoney: funds/stocks/US, real-time & K-lines); optional online calendar & mail.",
 	"author": "AmberNya",
 	"isDesktopOnly": true
 }

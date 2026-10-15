@@ -1159,9 +1159,17 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			ctx.fillRect(px(i) - (geo.vol.w / n) * 0.35, geo.vol.y + geo.vol.h - bh, (geo.vol.w / n) * 0.7, bh);
 		}
 		drawYLabels(geo.vol, 0, maxV, 0, { count: 3, color: "#4a5260", fmt: fmtVol });
-		ctx.fillStyle = "#5c6470"; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+		// 副图标注：成交量
+		ctx.textAlign = "left"; ctx.fillStyle = "#8b93a1"; ctx.font = "10px sans-serif";
+		ctx.fillText("成交量", geo.vol.x + 4, geo.vol.y + 10);
+		// 横坐标：用实际分时时间（适配 A股/港股/美股/指数估算），取 首 / 1/4 / 中 / 3/4 / 尾
+		ctx.textAlign = "center"; ctx.fillStyle = "#5c6470";
 		const tY = geo.vol.y + geo.vol.h + 15;
-		["09:30", "11:30", "13:00", "15:00"].forEach((t, i) => { const x = geo.main.x + (geo.main.w * i) / 3; ctx.fillText(t, x, tY); });
+		[0, 0.25, 0.5, 0.75, 1].forEach((f) => {
+			const idx = Math.round((n - 1) * f);
+			const label = d.times && d.times[idx] ? d.times[idx] : "";
+			ctx.fillText(label, geo.main.x + geo.main.w * f, tY);
+		});
 		ctx.textAlign = "left";
 	};
 	/* ---------- K线 ---------- */
@@ -1206,6 +1214,8 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			ctx.fillRect(px(i) - bw / 2, geo.vol.y + geo.vol.h - bh, bw, bh);
 		}
 		drawYLabels(geo.vol, 0, maxV, 0, { count: 3, color: "#4a5260", fmt: fmtVol });
+		ctx.textAlign = "left"; ctx.fillStyle = "#8b93a1"; ctx.font = "10px sans-serif";
+		ctx.fillText("成交量", geo.vol.x + 4, geo.vol.y + 10);
 		if (hasInd()) {
 			const ind = geo.ind;
 			ctx.fillStyle = "#262b34"; ctx.fillRect(ind.x, ind.y, ind.w, ind.h);
@@ -1314,21 +1324,42 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		if (S.kind === "empty" || !S.d) { tip.classList.remove("show"); clearCross(); return; }
 		if (S.kind === "intraday") {
 			const d = S.d, n = d.prices.length;
-			if (!n || x < geoR.padL || x > geoR.padL + geoR.main.w || y < geoR.main.y || y > geoR.main.y + geoR.main.h + geoR.vol.h) { tip.classList.remove("show"); clearCross(); return; }
+			const inMain = x >= geoR.padL && x <= geoR.padL + geoR.main.w && y >= geoR.main.y && y <= geoR.main.y + geoR.main.h;
+			const inVol = x >= geoR.padL && x <= geoR.padL + geoR.main.w && y >= geoR.vol.y && y <= geoR.vol.y + geoR.vol.h;
+			if (!n || (!inMain && !inVol)) { tip.classList.remove("show"); clearCross(); return; }
 			const i = clamp(Math.round(((x - geoR.padL) / geoR.main.w) * (n - 1)), 0, n - 1);
 			showCross(x, y);
-			tip.innerHTML = '<div class="t1">' + d.times[i] + (S.estOnly ? " · 估值" : "") + '</div><div>价 ' + d.prices[i].toFixed(3) + '</div><div style="color:var(--yellow)">均价 ' + d.avg[i].toFixed(3) + '</div><div>量 ' + d.vols[i].toLocaleString() + "</div>";
+			if (inMain) {
+				tip.innerHTML = '<div class="t1">' + d.times[i] + (S.estOnly ? " · 估值" : "") + '</div><div>价 ' + d.prices[i].toFixed(3) + '</div><div style="color:var(--yellow)">均价 ' + d.avg[i].toFixed(3) + '</div><div>量 ' + d.vols[i].toLocaleString() + "</div>";
+			} else {
+				tip.innerHTML = '<div class="t1">' + d.times[i] + (S.estOnly ? " · 估值" : "") + '</div><div style="color:var(--yellow)">成交量 ' + d.vols[i].toLocaleString() + "</div>";
+			}
 			placeTip(x, y);
 		} else if (S.kind === "k") {
 			const d = S.d, n = d.length;
-			if (x < geoR.padL || x > geoR.padL + geoR.main.w || y < geoR.main.y || y > geoR.ind.y + geoR.ind.h) { tip.classList.remove("show"); clearCross(); return; }
+			const inMain = x >= geoR.padL && x <= geoR.padL + geoR.main.w && y >= geoR.main.y && y <= geoR.main.y + geoR.main.h;
+			const inVol = x >= geoR.padL && x <= geoR.padL + geoR.main.w && y >= geoR.vol.y && y <= geoR.vol.y + geoR.vol.h;
+			const inInd = x >= geoR.padL && x <= geoR.padL + geoR.main.w && y >= geoR.ind.y && y <= geoR.ind.y + geoR.ind.h;
+			if (!n || (!inMain && !inVol && !inInd)) { tip.classList.remove("show"); clearCross(); return; }
 			const i = clamp(Math.round(((x - geoR.padL) / geoR.main.w) * (n - 1)), 0, n - 1);
 			showCross(x, y);
 			const o = d[i];
 			const dateStr = S.dates && S.dates[i] ? S.dates[i] : "";
-			tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + "</div>" +
-				"<div>开 " + o[0].toFixed(2) + "　收 <b style=\"color:" + dirC(o[1] - o[0]) + '">' + o[1].toFixed(2) + "</b></div>" +
-				"<div>高 " + o[2].toFixed(2) + "　低 " + o[3].toFixed(2) + "</div><div>量 " + o[4].toLocaleString() + "</div>";
+			if (inMain) {
+				tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + "</div>" +
+					"<div>开 " + o[0].toFixed(2) + "　收 <b style=\"color:" + dirC(o[1] - o[0]) + '">' + o[1].toFixed(2) + "</b></div>" +
+					"<div>高 " + o[2].toFixed(2) + "　低 " + o[3].toFixed(2) + "</div><div>量 " + o[4].toLocaleString() + "</div>";
+			} else if (inVol) {
+				tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + '</div><div style="color:var(--yellow)">成交量 ' + o[4].toLocaleString() + "</div>";
+			} else {
+				const sliceLen = Math.max(2, i + 1);
+				const closes = d.slice(0, sliceLen).map((o2: any) => o2[1]);
+				let indTxt = "";
+				if (curInd === "macd") { const mm = macd(closes); const li = mm.dif.length - 1; indTxt = "MACD  DIF " + mm.dif[li].toFixed(3) + "  DEA " + mm.dea[li].toFixed(3) + "  柱 <b class=\"" + (mm.hist[li] >= 0 ? "up" : "down") + '">' + (mm.hist[li] >= 0 ? "+" : "") + mm.hist[li].toFixed(3) + "</b>"; }
+				else if (curInd === "kdj") { const kk = kdj(d.slice(0, sliceLen)); const li = kk.k.length - 1; indTxt = "KDJ  K " + kk.k[li].toFixed(1) + "  D " + kk.d[li].toFixed(1) + "  J " + kk.j[li].toFixed(1); }
+				else if (curInd === "rsi") { const rr = rsi(closes); const li = rr.length - 1; indTxt = "RSI(14)  " + rr[li].toFixed(1); }
+				tip.innerHTML = '<div class="t1">' + rangeName() + " " + dateStr + "</div><div>" + indTxt + "</div>";
+			}
 			placeTip(x, y);
 		} else {
 			const d = S.d, n = d.length;
@@ -1601,6 +1632,12 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 				it.amt = +(it.price - it.prev).toFixed(4);
 				if (d.SHORTNAME) it.name = d.SHORTNAME;
 				it.stats = Object.assign({}, it.stats, { 昨收: it.prev, 更新: "净值" });
+				// 官方盘中估值（天天基金移动端 GSZ/GSZZL，交易时段有值；最优先）
+				if (d.GSZZL != null && isFinite(+d.GSZZL) && +d.GSZZL !== 0) {
+					const gszzl = +d.GSZZL;
+					const gsz = d.GSZ != null && isFinite(+d.GSZ) && +d.GSZ > 0 ? +d.GSZ : +(it.price * (1 + gszzl / 100)).toFixed(4);
+					it.est = { pct: +gszzl.toFixed(2), price: gsz, name: "官方估值" };
+				}
 			});
 			// 盘中估值代理：指数基金 → 对应 ETF 实时价（官方估值已下线；走主/备/次备份链）
 			const proxies = funds.filter((x: any) => x.proxy).map((x: any) => {
@@ -1861,30 +1898,100 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 		if (curItem === it) renderChart();
 	};
 	/* ---------- 主动基金自算盘中估值：官方季报前十大重仓 × 重仓股实时行情加权（真实数据，非模拟） ---------- */
-	const fetchFundHoldings = async (it: any): Promise<any[]> => {
-		// 主源：天天基金移动端持仓接口（含占净值比例）
+	/* ---------- 指数基金盘中估值：用跟踪指数的实时分时（不依赖持仓接口） ---------- */
+	// 常见公募基金跟踪指数 → 腾讯指数代码（指数基金盘中估值用；名称来自基金页"跟踪标的"，代码用于腾讯分时）
+	const INDEX_TX_MAP: Record<string, string> = {
+		"沪深300": "sh000300", "中证500": "sh000905", "中证1000": "sh000852", "中证800": "sh000906",
+		"上证50": "sh000016", "上证180": "sh000010", "中证红利": "sh000922", "中证环保": "sh000827",
+		"创业板指": "sz399006", "创业板50": "sz399673", "中证酒": "sz399987", "中证白酒": "sz399997",
+		"中证食品饮料": "sz399396", "中证医疗": "sz399989", "中证医药": "sh000933", "中证创新药": "sz399813",
+		"中证新能源": "sz399808", "中证军工": "sz399967", "中证证券": "sz399975", "中证银行": "sz399986",
+		"中证煤炭": "sz399998", "中证钢铁": "sz399984", "中证有色": "sh000819", "中证房地产": "sz399962",
+		"中证传媒": "sz399971", "中证半导体": "sz399995", "中证芯片": "sh000698", "中证人工智能": "sh930713",
+		"中证智能汽车": "sh930721", "中证5G通信": "sh931079", "中证云计算": "sh930851", "中证新能源车": "sz399976",
+		"中证光伏": "sh931151", "中证电池": "sh931719", "中证主要消费": "sh000932", "中证可选消费": "sh000989",
+		"恒生指数": "hkHSI", "恒生科技": "hkHSTECH", "恒生中国企业": "hkHSCEI",
+		"纳斯达克100": "usNDX", "标普500": "usINX", "道琼斯": "usDJI", "纳斯达克": "usIXIC",
+	};
+	const fetchFundIndex = async (it: any): Promise<string | null> => {
+		if (it._indexTx !== undefined) return it._indexTx;
+		let tx: string | null = null;
+		let name: string | null = null;
+		// 1) 主源：基金档案接口（INDEXCODE，数字）
 		try {
-			const j = await httpJson("https://fundmobapi.eastmoney.com/FundMNewApi/FundMNInverstPosition?FCODE=" + it.code + "&pageIndex=1&pageSize=10&plat=Android&appType=ttjj&product=EFund&Version=1&deviceid=Wap", "https://mpservice.eastmoney.com/");
-			const arr: any[] = (j && j.Datas && j.Datas.fundStocks) || [];
-			const hs = arr.map((s: any) => {
-				const tex = String(s.TEXCH);
-				if (tex !== "1" && tex !== "2") return null; // 仅沪深股票可实时取价
-				return { code: s.GPDM, name: s.GPJC, ratio: +s.JZBL || 0, mkt: tex === "1" ? "sh" : "sz", secid: (tex === "1" ? "1." : "0.") + s.GPDM };
-			}).filter((h: any) => h && h.code && h.ratio > 0);
-			if (hs.length) return hs.slice(0, 10);
-		} catch { /* 尝试备用源 */ }
-		// 备用源：天天基金 F10（fundf10.eastmoney.com，季报前十大，含占比）；从最近季度往前试 3 次
+			const j = await httpJson("https://fundmobapi.eastmoney.com/FundMNewApi/FundMNDetailInformation?FCODE=" + it.code + "&deviceid=Wap&plat=Wap&product=EFund&version=6.2.8", "https://mpservice.eastmoney.com/");
+			const c = j && j.Datas && j.Datas.INDEXCODE;
+			if (c && c !== "--" && c !== "-" && /^\d{6}$/.test(String(c))) {
+				const code = String(c);
+				tx = (code.startsWith("399") ? "sz" : "sh") + code;
+				name = (j.Datas && j.Datas.INDEXNAME) || "";
+			}
+		} catch { /* 尝试下一源 */ }
+		// 2) 备用：基金页"跟踪标的"名称 → 内置指数映射（不依赖档案接口）
+		if (!tx) {
+			try {
+				const html = await httpTextH("https://fund.eastmoney.com/" + it.code + ".html", { "Referer": "https://fund.eastmoney.com/" });
+				if (html) {
+					const m = html.match(/跟踪标的[：:]\s*(?:<[^>]*>)?([^<\s]{2,24})/);
+					if (m) {
+						const nm = m[1].trim();
+						const key = Object.keys(INDEX_TX_MAP).find((k) => nm.includes(k) || k.includes(nm));
+						if (key) { tx = INDEX_TX_MAP[key]; name = nm; }
+					}
+				}
+			} catch { /* 无指数信息 */ }
+		}
+		it._indexTx = tx;
+		it._indexName = name || "跟踪指数";
+		return tx;
+	};
+	const fetchIndexIntraday = async (txCode: string): Promise<{ times: string[]; prices: number[]; vols: number[]; avg: number[]; prev: number } | null> => {
+		// 指数昨收（腾讯行情 a[4]）
+		let prev = 0;
+		const q = await httpGBK("https://qt.gtimg.cn/q=" + txCode);
+		if (q) {
+			const m = q.match(new RegExp("v_" + txCode + '="([^"]*)"'));
+			if (m) { const a = m[1].split("~"); prev = +a[4] || 0; }
+		}
+		// 指数当日分时（腾讯 minute/query）
+		const tk = await httpJson("https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=" + txCode, "https://gu.qq.com/");
+		const inner: string[] = (tk && tk.data && tk.data[txCode] && tk.data[txCode].data && tk.data[txCode].data.data) || [];
+		if (inner.length >= 10) {
+			const times: string[] = [], prices: number[] = [], vols: number[] = [], amts: number[] = [];
+			for (const s of inner) {
+				const a = String(s).trim().split(/\s+/);
+				const price = +a[1];
+				if (a.length < 3 || isNaN(price)) continue;
+				const hm = a[0];
+				times.push(hm.length === 4 ? hm.slice(0, 2) + ":" + hm.slice(2) : hm);
+				prices.push(price);
+				vols.push(Math.round(+a[2] || 0));
+				amts.push(+a[3] || 0);
+			}
+			if (prices.length >= 10) {
+				const avg: number[] = [];
+				let cA = 0, cV = 0;
+				for (let i = 0; i < prices.length; i++) { cA += amts[i]; cV += vols[i]; avg.push(cV ? +(cA / cV).toFixed(3) : prices[i]); }
+				return { times, prices, vols, avg, prev };
+			}
+		}
+		return null;
+	};
+	const fetchFundHoldings = async (it: any): Promise<any[]> => {
+		// 主源：天天基金 F10 季报股票明细（akshare 同款接口；取最新季度、按占净值比例取前十大）
 		const now = new Date();
 		const q0 = Math.floor(now.getMonth() / 3);
 		for (let k = 0; k < 3; k++) {
 			let q = q0 - k, yr = now.getFullYear();
 			if (q < 0) { q += 4; yr -= 1; }
 			const mo = q * 3 + 1;
-			const txt = await httpTextH("https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=" + it.code + "&topline=10&year=" + yr + "&month=" + mo, { "Referer": "https://fundf10.eastmoney.com/" });
+			const txt = await httpTextH("https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=" + it.code + "&topline=100&year=" + yr + "&month=" + mo, { "Referer": "https://fundf10.eastmoney.com/" });
 			if (!txt) continue;
 			const cm = txt.match(/content:"([\s\S]*?)",\s*arryear/);
 			if (!cm) continue;
-			const rows = cm[1].match(/<tr>[\s\S]*?<\/tr>/g) || [];
+			const boxes = cm[1].split("<div class='box'>").slice(1);
+			if (!boxes.length) continue;
+			const rows = boxes[0].match(/<tr>[\s\S]*?<\/tr>/g) || []; // 最新季度 section
 			const hs: any[] = [];
 			for (const row of rows.slice(1)) {
 				const cells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/g);
@@ -1893,11 +2000,22 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 				const name = cells[2].replace(/<[^>]+>/g, "").trim();
 				const ratio = parseFloat(cells[6].replace(/<[^>]+>/g, "").replace(/%/g, "").trim());
 				if (!linkM || !name || !isFinite(ratio) || ratio <= 0) continue;
-				const tex = linkM[1];
-				hs.push({ code: linkM[2], name, ratio, mkt: tex === "1" ? "sh" : "sz", secid: (tex === "1" ? "1." : "0.") + linkM[2] });
+				hs.push({ code: linkM[2], name, ratio, mkt: linkM[1] === "1" ? "sh" : "sz", secid: (linkM[1] === "1" ? "1." : "0.") + linkM[2] });
 			}
+			hs.sort((a: any, b: any) => b.ratio - a.ratio);
 			if (hs.length) return hs.slice(0, 10);
 		}
+		// 备源：天天基金移动端持仓接口（含占净值比例）
+		try {
+			const j = await httpJson("https://fundmobapi.eastmoney.com/FundMNewApi/FundMNInverstPosition?FCODE=" + it.code + "&pageIndex=1&pageSize=10&plat=Android&appType=ttjj&product=EFund&Version=1&deviceid=Wap", "https://mpservice.eastmoney.com/");
+			const arr: any[] = (j && j.Datas && j.Datas.fundStocks) || [];
+			const hs = arr.map((s: any) => {
+				const tex = String(s.TEXCH);
+				if (tex !== "1" && tex !== "2") return null;
+				return { code: s.GPDM, name: s.GPJC, ratio: +s.JZBL || 0, mkt: tex === "1" ? "sh" : "sz", secid: (tex === "1" ? "1." : "0.") + s.GPDM };
+			}).filter((h: any) => h && h.code && h.ratio > 0);
+			if (hs.length) return hs.slice(0, 10);
+		} catch { /* 两个源都失败 */ }
 		return [];
 	};
 	const estPctFromStocks = (holds: any[], stocks: any[]): number | null => {
@@ -1930,7 +2048,7 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 			} else {
 				it._estErr = "重仓股实时行情获取失败";
 			}
-			// 2) 重仓股分时（并发）→ 合成“当日估算净值曲线”（真实分时×真实权重）
+			// 2) 重仓股分时（并发）→ 合成"当日估算净值曲线"（真实分时×真实权重）
 			const results = await Promise.all(holds.map(async (h: any) => {
 				const s = stocks[holds.indexOf(h)];
 				const intra = await fetchIntraday(h.secid).catch(() => null);
@@ -1965,19 +2083,39 @@ function initMoney(root: ShadowRoot, timers: number[], cleanups: Array<() => voi
 	};
 	const loadEstCurve = async (it: any, navUnit: number[]): Promise<void> => {
 		const lastNav = navUnit.length ? navUnit[navUnit.length - 1] : (it.prev || it.price || 1);
-		// 无代理的主动基金：用官方季报前十大重仓 × 实时行情自算盘中估值（真实数据）
-		if (!it.proxy) { await calcOwnEstimate(it, lastNav); return; }
-		// 有代理（指数基金/ETF联接）：用对应 ETF 的实时分时缩放
 		it._estErr = "";
-		const intra = await fetchIntraday(it.proxy.secid);
-		if (!intra || !intra.prices.length) { it._estErr = "代理ETF分时获取失败"; return; }
-		const est = it.est;
-		const proxyPrev = est && est.price ? +(est.price / (1 + (est.pct || 0) / 100)).toFixed(4) : (intra.prices[0] || lastNav);
-		const ratio = proxyPrev ? lastNav / proxyPrev : 1;
-		const prices = intra.prices.map((p: number) => +(p * ratio).toFixed(4));
-		let c1 = 0, c2 = 0;
-		const avg = prices.map((p: number, i: number) => { c1 += p * intra.vols[i]; c2 += intra.vols[i]; return +(c1 / c2).toFixed(4); });
-		it._real!.estCurve = { times: intra.times, prices, vols: intra.vols, avg };
+		// 1) 指数基金（有跟踪指数）：直接用指数实时分时估算（比持仓自算更准，且不依赖持仓接口）
+		const idxCode = await fetchFundIndex(it);
+		if (idxCode) {
+			const ix = await fetchIndexIntraday(idxCode);
+			if (ix && ix.prices.length >= 2 && ix.prev) {
+				const prices = ix.prices.map((v: number) => +(lastNav * (v / ix.prev)).toFixed(4));
+				let c1 = 0, c2 = 0;
+				const avg = prices.map((p: number, i: number) => { c1 += p * (ix.vols[i] || 1); c2 += (ix.vols[i] || 1); return +(c1 / c2).toFixed(4); });
+				it._real!.estCurve = { times: ix.times, prices, vols: ix.vols, avg };
+				// 同步当前估值（详情卡）
+				const last = prices[prices.length - 1];
+				it.est = { pct: +((last / lastNav - 1) * 100).toFixed(2), price: last, name: "指数估算·" + (it._indexName || "跟踪指数") };
+				return;
+			}
+			it._estErr = "跟踪指数分时获取失败";
+			return;
+		}
+		// 2) 有代理（指数基金/ETF联接）：用对应 ETF 的实时分时缩放
+		if (it.proxy) {
+			const intra = await fetchIntraday(it.proxy.secid);
+			if (!intra || !intra.prices.length) { it._estErr = "代理ETF分时获取失败"; return; }
+			const est = it.est;
+			const proxyPrev = est && est.price ? +(est.price / (1 + (est.pct || 0) / 100)).toFixed(4) : (intra.prices[0] || lastNav);
+			const ratio = proxyPrev ? lastNav / proxyPrev : 1;
+			const prices = intra.prices.map((p: number) => +(p * ratio).toFixed(4));
+			let c1 = 0, c2 = 0;
+			const avg = prices.map((p: number, i: number) => { c1 += p * intra.vols[i]; c2 += intra.vols[i]; return +(c1 / c2).toFixed(4); });
+			it._real!.estCurve = { times: intra.times, prices, vols: intra.vols, avg };
+			return;
+		}
+		// 3) 主动基金（无指数、无代理）：用官方季报前十大重仓 × 实时行情自算
+		await calcOwnEstimate(it, lastNav);
 	};
 
 	/* ---------- 启动 ---------- */
