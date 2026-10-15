@@ -1,14 +1,12 @@
-import { App, ItemView, WorkspaceLeaf, requestUrl } from "obsidian";
+import { App, ItemView, WorkspaceLeaf, requestUrl, sanitizeHTMLToDom } from "obsidian";
 import moneyIcon from "./assets/moneyraise.png";
 
 export const VIEW_TYPE_MONEY = "nyahome-money";
 
-/** 安全注入 HTML：内容为开发者构造、动态文本已用 esc() 转义；这是 lint 唯一的豁免点。 */
+/** 安全注入 HTML：用 Obsidian 官方 sanitizeHTMLToDom 清理后挂载（不直接赋 innerHTML）。 */
 const setHtml = (el: HTMLElement | ShadowRoot, html: string): void => {
-	if (el instanceof ShadowRoot) el.replaceChildren();
-	else (el as HTMLElement).empty();
-	// eslint-disable-next-line obsidianmd/no-unsafe-innerhtml
-	el.innerHTML = html;
+	try { el.replaceChildren(sanitizeHTMLToDom(html)); }
+	catch { if (el instanceof ShadowRoot) el.replaceChildren(); else (el as HTMLElement).empty(); }
 };
 /** 转义 HTML 特殊字符，防止动态文本破坏结构 / XSS。 */
 const esc = (s: any): string => String(s ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<string, string>)[m]);
