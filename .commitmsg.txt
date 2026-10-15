@@ -1,10 +1,4 @@
-feat(NyaMoney): index-fund estimates, US intraday, and community release prep
+fix(manifest): shorten description to 224 chars (Obsidian 250 limit)
 
-- Active/index fund intraday estimates: track-index realtime intraday via
-  fund-page 跟踪标的 name + built-in index map + Tencent index feed
-  (falls back to ETF proxy, then top-10 holdings self-computed, then official GSZ)
-- US stock intraday restored (revert 63.push2his polling; single push2his path)
-- UI fixes: real intraday timestamps on x-axis, volume subplot label, region-aware
-  crosshair tooltips (volume / MACD-KDJ-RSI in subplots)
-- Settings "Core features" + manifest description + README now list NyaReader
-  bookshelf and NyaMoney market quotes
+Community plugin check rejected 5.2.11: manifest description was 347 chars.
+Now 224 chars, keeping NyaLingo/NyaReader/NyaMoney keywords. Bump to 5.2.12.
