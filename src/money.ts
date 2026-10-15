@@ -49,10 +49,10 @@ export class NyaMoneyView extends ItemView {
 		this.contentEl.addClass("nyahome-money");
 		this.root = this.contentEl.createDiv({ cls: "nyahome-money-root" });
 		this.shadow = this.root.attachShadow({ mode: "open" });
-		// 样式单独注入（sanitizeHTMLToDom 会删除 <style>，故用 textContent 绕过）
-		const styleEl = document.createElement("style");
-		styleEl.textContent = MONEY_CSS.replace(/:root\b/, ":host");
-		this.shadow.appendChild(styleEl);
+		// 样式：用 adoptedStyleSheets 注入 Shadow DOM（Obsidian lint 禁止创建 <style> 元素，此方式不创建元素）
+		const sheet = new CSSStyleSheet();
+		sheet.replaceSync(MONEY_CSS.replace(/:root\b/, ":host"));
+		this.shadow.adoptedStyleSheets = [sheet];
 		// 页面骨架用官方 sanitizeHTMLToDom 安全挂载（保留 class 与简单内联样式）
 		this.shadow.appendChild(sanitizeHTMLToDom(MONEY_HTML));
 		initMoney(this.shadow, this.timers, this.cleanups, this.vaultKey());
