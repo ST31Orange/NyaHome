@@ -15393,7 +15393,18 @@ class PowerCalendarView extends ItemView {
 		this.renderQueued = true;
 		window.requestAnimationFrame(() => {
 			this.renderQueued = false;
+			// a data-driven redraw must not yank the view back to the top: the
+			// month/week/agenda panes scroll inside their own container and a
+			// rebuilt body would zero it. Remember where we were and put it back
+			// once the fresh DOM is in place. Navigation (refresh) still starts
+			// at the top, which is what a changed range wants.
+			const scroller = this.bodyEl?.querySelector<HTMLElement>(".nya-month-grid, .nya-week-scroll, .nya-agenda");
+			const scrollTop = scroller?.scrollTop ?? 0;
 			this.render();
+			if (scrollTop > 0) {
+				const next = this.bodyEl?.querySelector<HTMLElement>(".nya-month-grid, .nya-week-scroll, .nya-agenda");
+				if (next) next.scrollTop = scrollTop;
+			}
 		});
 	}
 
