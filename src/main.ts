@@ -14480,15 +14480,34 @@ class SketchNoteModal extends Modal {
 				i
 					.setTitle("删除线")
 					.setIcon("strikethrough")
-					.onClick(() => {
-						text.focus();
-						document.execCommand("strikeThrough", false);
-						save();
-					})
+					.onClick(() => this.applyStrikethrough(text, selectedRange, save))
 			);
 			menu.showAtMouseEvent(e);
 		});
 		window.setTimeout(() => text.focus(), 20);
+	}
+
+	/** Menu focus replaces the browser selection, so restore the range captured
+	 *  on contextmenu before formatting it. */
+	private applyStrikethrough(text: HTMLElement, range: Range, save: () => void) {
+		if (!range.startContainer.isConnected || !range.endContainer.isConnected) return;
+		if (!text.contains(range.startContainer) || !text.contains(range.endContainer)) return;
+		const selection = window.getSelection();
+		if (!selection) return;
+
+		text.focus();
+		selection.removeAllRanges();
+		selection.addRange(range);
+
+		if (!document.execCommand("strikeThrough", false)) {
+			const strike = document.createElement("s");
+			strike.appendChild(range.extractContents());
+			range.insertNode(strike);
+			range.selectNodeContents(strike);
+			selection.removeAllRanges();
+			selection.addRange(range);
+		}
+		save();
 	}
 
 	private async translateSelection(text: HTMLElement, range: Range, source: string, save: () => void) {
