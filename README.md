@@ -15,6 +15,7 @@ NyaHome gathers your Obsidian entry point on one page: quick search, freely arra
 - **行情（NyaMoney）**：基金 / 股票 / 美股实时行情与 K 线（分时、日/周/月、近1/3/5年），自选分组与持仓盈亏；真实多源数据（东财/腾讯/新浪），主动基金含盘中估算。
 - **提醒与搜索**：快速定位事件和邮件，不错过重要安排。
 - **本地优先**：数据保存在你自己的库里，隐私更可控。
+- **手机端配套**：安装独立的 **NyaHome Mobile** 后，本地日历、随笔、星标和任务看板通过 vault 文件与桌面版互通。
 
 ## Core features
 
@@ -27,6 +28,7 @@ NyaHome gathers your Obsidian entry point on one page: quick search, freely arra
 - **Market quotes (NyaMoney)**: real-time fund / stock / US quotes with intraday, daily/weekly/monthly and 1/3/5-year charts, grouped watchlist and holding P&L; real multi-source data (Eastmoney/Tencent/Sina) and intraday estimates for active funds.
 - **Search and reminders**: find events and mail fast, so nothing slips by.
 - **Local-first**: your data stays in your own vault.
+- **Mobile companion**: install the separate **NyaHome Mobile** plugin to share local calendars, sketches, stars and task boards through vault files.
 
 ## 本地日历与任务看板
 

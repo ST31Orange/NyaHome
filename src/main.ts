@@ -761,6 +761,15 @@ interface SketchNote {
 	updatedMs: number;
 }
 
+/** The public planning slice shared with NyaHome Mobile. Desktop secrets,
+ *  accounts, mail caches and UI preferences never belong in this file. */
+interface SharedPlanningWorkspace {
+	version: 1;
+	sketches: SketchNote[];
+	starredEvents: string[];
+	updatedMs: number;
+}
+
 /** An unsaved "new event" in progress, kept so an accidental close (a
  *  minimized window, an errant Escape) never loses what was typed. Cleared
  *  on save or deliberate Cancel, restored the next time "New event" opens. */
@@ -1025,6 +1034,11 @@ export default class NyaHomePlugin extends Plugin {
 	 *  tell a file someone else wrote from one nobody touched, without reading
 	 *  it; see watchDataFile(). */
 	private dataStamp: string | null = null;
+	/** Last timestamp we read or wrote in the mobile-shared planning file. */
+	private sharedPlanningUpdatedMs = 0;
+	private sharedPlanningSaveStamp = 0;
+	private sharedPlanningTimer: number | null = null;
+	private sharedPlanningSaving = false;
 	private autoTimer: number | null = null;
 	private notifyTimer: number | null = null;
 	/** Keep one home page as the landing surface when the workspace empties. */
@@ -1037,6 +1051,7 @@ export default class NyaHomePlugin extends Plugin {
 		this.settings.translation = normalizeTranslationConfig(this.settings.translation);
 		setI18nLang(this.settings.language);
 		setUiLang(this.settings.language);
+		await this.loadSharedPlanningWorkspace();
 		pluginNoticesEnabled = () => this.settings.showNotifications;
 		// baseline is the DISK state, cloned before any migration, so the
 		// migrated keys read as our change and actually persist
@@ -1211,6 +1226,9 @@ export default class NyaHomePlugin extends Plugin {
 
 		this.addSettingTab(new NyaHomeSettingTab(this.app, this));
 		this.watchDataFile();
+		this.registerEvent(this.app.vault.on("modify", (file) => {
+			if (normalizePath(file.path) === this.sharedPlanningPath()) void this.adoptSharedPlanningFile();
+		}));
 		this.scheduleAutoRefresh();
 		this.register(() => {
 			if (this.autoTimer != null) window.clearInterval(this.autoTimer);
@@ -1471,6 +1489,10 @@ export default class NyaHomePlugin extends Plugin {
 			window.clearTimeout(this.cachePersistTimer);
 			void this.persistCacheFile();
 		}
+		if (this.sharedPlanningTimer != null) {
+			window.clearTimeout(this.sharedPlanningTimer);
+			void this.persistSharedPlanningWorkspace(true);
+		}
 		if (this.notifyTimer != null) window.clearTimeout(this.notifyTimer);
 	}
 
@@ -1694,6 +1716,82 @@ export default class NyaHomePlugin extends Plugin {
 		this.scheduleAutoRefresh();
 		this.refreshSettingsTab?.();
 		this.notify();
+	}
+
+	/* ---------------- shared planning file (desktop <-> mobile) ---------------- */
+
+	private sharedPlanningPath(): string {
+		return normalizePath("NyaHomeData/workspace.json");
+	}
+
+	/** Mobile and desktop are separate plugins, so the planning slice cannot
+	 *  live in either plugin's data.json. This one vault file is authoritative. */
+	private async loadSharedPlanningWorkspace(): Promise<void> {
+		const path = this.sharedPlanningPath();
+		try {
+			if (await this.app.vault.adapter.exists(path)) {
+				const shared = JSON.parse(await this.app.vault.adapter.read(path)) as Partial<SharedPlanningWorkspace>;
+				if (Array.isArray(shared.sketches)) this.settings.sketchNotes = shared.sketches.map((note) => ({ ...note }));
+				if (Array.isArray(shared.starredEvents)) this.settings.starredEvents = [...shared.starredEvents];
+				this.sharedPlanningUpdatedMs = Number(shared.updatedMs) || 0;
+				return;
+			}
+			await this.persistSharedPlanningWorkspace(true);
+		} catch (error) {
+			console.warn("NyaHome: could not load the shared planning file", error);
+		}
+	}
+
+	private sharedPlanningSnapshot(): SharedPlanningWorkspace {
+		return {
+			version: 1,
+			sketches: (this.settings.sketchNotes ?? []).map((note) => ({ ...note })),
+			starredEvents: [...(this.settings.starredEvents ?? [])],
+			updatedMs: Date.now(),
+		};
+	}
+
+	queueSharedPlanningSave(): void {
+		if (this.sharedPlanningTimer != null) window.clearTimeout(this.sharedPlanningTimer);
+		this.sharedPlanningTimer = window.setTimeout(() => {
+			this.sharedPlanningTimer = null;
+			void this.persistSharedPlanningWorkspace();
+		}, 350);
+	}
+
+	private async persistSharedPlanningWorkspace(force = false): Promise<void> {
+		if (this.sharedPlanningSaving && !force) return;
+		this.sharedPlanningSaving = true;
+		this.sharedPlanningSaveStamp = Date.now();
+		try {
+			const path = this.sharedPlanningPath();
+			const folder = path.split("/").slice(0, -1).join("/");
+			if (folder) await this.ensureFolder(folder);
+			const snapshot = this.sharedPlanningSnapshot();
+			this.sharedPlanningUpdatedMs = snapshot.updatedMs;
+			await this.app.vault.adapter.write(path, JSON.stringify(snapshot, null, 2));
+		} catch (error) {
+			console.warn("NyaHome: could not write the shared planning file", error);
+		} finally {
+			this.sharedPlanningSaving = false;
+		}
+	}
+
+	private async adoptSharedPlanningFile(): Promise<void> {
+		if (this.sharedPlanningSaving || Date.now() - this.sharedPlanningSaveStamp < 900) return;
+		try {
+			const raw = await this.app.vault.adapter.read(this.sharedPlanningPath());
+			const shared = JSON.parse(raw) as Partial<SharedPlanningWorkspace>;
+			const updatedMs = Number(shared.updatedMs) || 0;
+			if (updatedMs <= this.sharedPlanningUpdatedMs) return;
+			if (Array.isArray(shared.sketches)) this.settings.sketchNotes = shared.sketches.map((note) => ({ ...note }));
+			if (Array.isArray(shared.starredEvents)) this.settings.starredEvents = [...shared.starredEvents];
+			this.sharedPlanningUpdatedMs = updatedMs;
+			this.queueSave();
+			this.notify();
+		} catch {
+			/* A folder-sync write can be caught mid-flight; the next modify event retries. */
+		}
 	}
 
 	/* ---------------- the disk cache: instant paint, refresh behind ---------------- */
@@ -6098,6 +6196,7 @@ export default class NyaHomePlugin extends Plugin {
 		};
 		this.settings.sketchNotes = [...(this.settings.sketchNotes ?? []), note];
 		this.queueSave();
+		this.queueSharedPlanningSave();
 		this.notify();
 		return note;
 	}
@@ -6116,6 +6215,7 @@ export default class NyaHomePlugin extends Plugin {
 		if (patch.date !== undefined) note.date = patch.date;
 		note.updatedMs = Date.now();
 		this.queueSave();
+		this.queueSharedPlanningSave();
 		const preview = stripHtml(note.html ?? note.text).trim().split(/\r?\n/)[0] ?? "";
 		if (note.title !== before.title || note.date !== before.date || preview !== before.preview) this.notify();
 	}
@@ -6127,6 +6227,7 @@ export default class NyaHomePlugin extends Plugin {
 	deleteSketchNote(id: string) {
 		this.settings.sketchNotes = (this.settings.sketchNotes ?? []).filter((n) => n.id !== id);
 		this.queueSave();
+		this.queueSharedPlanningSave();
 		this.notify();
 	}
 
@@ -6157,6 +6258,7 @@ export default class NyaHomePlugin extends Plugin {
 		}
 		this.settings.starredEvents = [...list];
 		this.queueSave();
+		this.queueSharedPlanningSave();
 		this.notify();
 		return starred;
 	}
