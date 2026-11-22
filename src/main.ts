@@ -14525,6 +14525,98 @@ class PromptModal extends Modal {
 	}
 }
 
+/** Return the live selection only when it lies wholly inside one rich editor. */
+function selectedRangeWithin(editor: HTMLElement): Range | null {
+	const selection = window.getSelection();
+	const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+	if (!selection || !range || selection.isCollapsed) return null;
+	if (!editor.contains(range.commonAncestorContainer) || !editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+	return range.cloneRange();
+}
+
+/** Reinstall a range after Obsidian's menu steals the browser selection. */
+function restoreEditorRange(editor: HTMLElement, range: Range): boolean {
+	if (!range.startContainer.isConnected || !range.endContainer.isConnected) return false;
+	if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return false;
+	editor.focus();
+	const selection = window.getSelection();
+	if (!selection) return false;
+	selection.removeAllRanges();
+	selection.addRange(range);
+	return true;
+}
+
+function strikeEditorRange(editor: HTMLElement, range: Range, save: () => void): void {
+	if (!restoreEditorRange(editor, range)) return;
+	const selection = window.getSelection();
+	if (!selection) return;
+	if (!document.execCommand("strikeThrough", false)) {
+		const strike = document.createElement("s");
+		strike.appendChild(range.extractContents());
+		range.insertNode(strike);
+		range.selectNodeContents(strike);
+		selection.removeAllRanges();
+		selection.addRange(range);
+	}
+	save();
+}
+
+async function translateEditorRange(plugin: NyaHomePlugin, editor: HTMLElement, range: Range, source: string, save: () => void): Promise<void> {
+	try {
+		new Notice("NyaHome: translating...");
+		const translated = await plugin.translationManager.translatePlainText(source);
+		if (!restoreEditorRange(editor, range)) return;
+		const selection = window.getSelection();
+		range.deleteContents();
+		const node = document.createTextNode(translated);
+		range.insertNode(node);
+		range.setStartAfter(node);
+		range.collapse(true);
+		selection?.removeAllRanges();
+		selection?.addRange(range);
+		save();
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		new Notice(`NyaHome: translation failed (${message}).`);
+	}
+}
+
+/** Shared by sketch notes and calendar descriptions so their selected-text
+ *  actions cannot drift apart. */
+function installRichTextContextMenu(plugin: NyaHomePlugin, editor: HTMLElement, save: () => void): void {
+	editor.addEventListener("contextmenu", (event) => {
+		const range = selectedRangeWithin(editor);
+		if (!range) return;
+		const source = range.toString().trim();
+		if (!source) return;
+		event.preventDefault();
+		event.stopPropagation();
+		const menu = new Menu();
+		menu.addItem((item) =>
+			item
+				.setTitle("翻译")
+				.setIcon("languages")
+				.onClick(() => void translateEditorRange(plugin, editor, range, source, save))
+		);
+		menu.addSeparator();
+		menu.addItem((item) =>
+			item
+				.setTitle("删除线")
+				.setIcon("strikethrough")
+				.onClick(() => strikeEditorRange(editor, range, save))
+		);
+		menu.showAtMouseEvent(event);
+	});
+}
+
+/** The event API accepts a small HTML body. Empty editors and editors that
+ *  only contain browser residue should still clear the description. */
+function richEditorHtml(editor: HTMLElement): string {
+	const hasWords = !!editor.textContent?.trim();
+	const hasThings = !!editor.querySelector("img, a, li, hr");
+	return hasWords || hasThings ? editor.innerHTML : "";
+}
+
 /** A lightweight scratchpad: title, a big empty canvas, and one destructive
  *  exit button. Kept deliberately bare so it feels like a pocket, not a form. */
 class SketchNoteModal extends Modal {
@@ -14561,79 +14653,8 @@ class SketchNoteModal extends Modal {
 		else text.setText(this.note.text);
 		const save = () => this.plugin.updateSketchNote(this.note.id, { text: text.innerText, html: text.innerHTML });
 		text.addEventListener("input", save);
-		text.addEventListener("contextmenu", (e) => {
-			const sel = window.getSelection();
-			const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
-			if (!sel || !range || sel.isCollapsed || !text.contains(range.commonAncestorContainer)) return;
-			e.preventDefault();
-			e.stopPropagation();
-			const selectedRange = range.cloneRange();
-			const source = selectedRange.toString().trim();
-			if (!source) return;
-			const menu = new Menu();
-			menu.addItem((i) =>
-				i
-					.setTitle("翻译")
-					.setIcon("languages")
-					.onClick(() => void this.translateSelection(text, selectedRange, source, save))
-			);
-			menu.addSeparator();
-			menu.addItem((i) =>
-				i
-					.setTitle("删除线")
-					.setIcon("strikethrough")
-					.onClick(() => this.applyStrikethrough(text, selectedRange, save))
-			);
-			menu.showAtMouseEvent(e);
-		});
+		installRichTextContextMenu(this.plugin, text, save);
 		window.setTimeout(() => text.focus(), 20);
-	}
-
-	/** Menu focus replaces the browser selection, so restore the range captured
-	 *  on contextmenu before formatting it. */
-	private applyStrikethrough(text: HTMLElement, range: Range, save: () => void) {
-		if (!range.startContainer.isConnected || !range.endContainer.isConnected) return;
-		if (!text.contains(range.startContainer) || !text.contains(range.endContainer)) return;
-		const selection = window.getSelection();
-		if (!selection) return;
-
-		text.focus();
-		selection.removeAllRanges();
-		selection.addRange(range);
-
-		if (!document.execCommand("strikeThrough", false)) {
-			const strike = document.createElement("s");
-			strike.appendChild(range.extractContents());
-			range.insertNode(strike);
-			range.selectNodeContents(strike);
-			selection.removeAllRanges();
-			selection.addRange(range);
-		}
-		save();
-	}
-
-	private async translateSelection(text: HTMLElement, range: Range, source: string, save: () => void) {
-		try {
-			new Notice("NyaHome: translating...");
-			const translated = await this.plugin.translationManager.translatePlainText(source);
-			if (!range.startContainer.isConnected || !range.endContainer.isConnected) return;
-			if (!text.contains(range.startContainer) || !text.contains(range.endContainer)) return;
-			text.focus();
-			const selection = window.getSelection();
-			selection?.removeAllRanges();
-			selection?.addRange(range);
-			range.deleteContents();
-			const node = document.createTextNode(translated);
-			range.insertNode(node);
-			range.setStartAfter(node);
-			range.collapse(true);
-			selection?.removeAllRanges();
-			selection?.addRange(range);
-			save();
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			new Notice(`NyaHome: translation failed (${message}).`);
-		}
 	}
 
 	onClose() {
@@ -16717,12 +16738,21 @@ class PowerCalendarView extends ItemView {
 		}
 
 		if (ev.canEdit) {
-			const descInput = card.createEl("textarea", { cls: "nya-card-desc nya-card-desc-input", attr: { placeholder: "详细内容" } });
-			descInput.value = stripMeetingBoilerplate(ev.description ?? "");
-			descInput.addEventListener("blur", () => {
-				const next = descInput.value.trim() || "";
-				if (next !== (ev.description ?? "").trim()) void this.plugin.updateCalEvent(ev, inlineDraft({ description: next }));
+			const descInput = card.createDiv({
+				cls: "nya-card-desc nya-card-desc-input",
+				attr: { contenteditable: "true", "data-placeholder": "详细内容" },
 			});
+			const current = stripMeetingBoilerplate(ev.description ?? "");
+			if (/<[a-z][^>]*>/i.test(current)) descInput.replaceChildren(...Array.from(sanitizeHTMLToDom(current).childNodes));
+			else descInput.setText(current);
+			const saveDescription = () => {
+				const next = richEditorHtml(descInput);
+				if (next === (ev.description ?? "")) return;
+				ev.description = next || undefined;
+				void this.plugin.updateCalEvent(ev, inlineDraft({ description: next }));
+			};
+			descInput.addEventListener("blur", saveDescription);
+			installRichTextContextMenu(this.plugin, descInput, saveDescription);
 		} else {
 			const d = stripMeetingBoilerplate(ev.description ?? "");
 			if (d) card.createDiv({ cls: "nya-card-desc", text: d.length > 280 ? d.slice(0, 280).trimEnd() + "..." : d });
@@ -16979,9 +17009,7 @@ class EventModal extends Modal {
 			richToolbar(this.app, descBar, () => this.descEl);
 			if (this.description) this.descEl.replaceChildren(...Array.from(sanitizeHTMLToDom(this.description).childNodes));
 			this.descEl.addEventListener("input", () => {
-				const hasWords = !!this.descEl.textContent?.trim();
-				const hasThings = !!this.descEl.querySelector("img, a, li, hr");
-				this.description = hasWords || hasThings ? this.descEl.innerHTML : "";
+				this.description = richEditorHtml(this.descEl);
 				this.saveDraft();
 			});
 		}

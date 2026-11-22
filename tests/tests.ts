@@ -1745,6 +1745,21 @@ const ics = (...lines: string[]) => ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-
 }
 
 {
+	let text = ics("BEGIN:VEVENT", "UID:rich-1", "DTSTART;VALUE=DATE:20260717", "SUMMARY:Rich", "END:VEVENT");
+	const description = "<div>第一行</div><div><s>删除线</s></div>";
+	text = upsertIcsEvent(text, {
+		uid: "rich-1",
+		title: "Rich",
+		startMs: msOfKey("2026-07-17"),
+		endMs: msOfKey("2026-07-18"),
+		allDay: true,
+		description,
+	});
+	const evs = parseIcsEvents(text, msOfKey("2026-07-16"), msOfKey("2026-07-19"), SRC);
+	eq(evs[0].description, description, "ics: rich descriptions and strikethrough round-trip");
+}
+
+{
 	const text = ics(
 		"BEGIN:VEVENT",
 		"UID:weekly-1",
