@@ -9996,7 +9996,11 @@ function makeDraggable(
 	anchor?: () => { x: number; y: number },
 	/** Ignore whatever is remembered and open at the fallback size, centered.
 	 *  For dialogs whose remembered geometry can go stale or garbage. */
-	reset = false
+	reset = false,
+	/** Keep resizing inside the visible app window instead of only clamping
+	 *  the starting size. The event peek uses this because its editor grows
+	 *  with the whole card. */
+	viewportBound = false
 ): () => void {
 	const store = app as unknown as { loadLocalStorage: (k: string) => unknown; saveLocalStorage: (k: string, v: unknown) => void };
 	el.addClass("nya-movable");
@@ -10012,6 +10016,15 @@ function makeDraggable(
 	const y = Math.min(Math.max(saved?.y ?? home.y, 0), Math.max(0, window.innerHeight - h));
 	el.style.left = `${x}px`;
 	el.style.top = `${y}px`;
+
+	const fitToViewport = () => {
+		if (!viewportBound || !el.isConnected) return;
+		const maxW = Math.max(380, window.innerWidth - Math.max(0, el.offsetLeft) - 8);
+		const maxH = Math.max(300, window.innerHeight - Math.max(0, el.offsetTop) - 8);
+		if (el.offsetWidth > maxW) el.style.width = `${maxW}px`;
+		if (el.offsetHeight > maxH) el.style.height = `${maxH}px`;
+	};
+	fitToViewport();
 
 	// Position is kept from the first time onwards, like a dialog: an anchor
 	// only decides where something lands when nothing has been remembered
@@ -10035,6 +10048,7 @@ function makeDraggable(
 		const move = (ev: MouseEvent) => {
 			el.style.left = `${Math.min(Math.max(ev.clientX - startX, 0), window.innerWidth - el.offsetWidth)}px`;
 			el.style.top = `${Math.min(Math.max(ev.clientY - startY, 0), window.innerHeight - el.offsetHeight)}px`;
+			fitToViewport();
 		};
 		const up = () => {
 			document.removeEventListener("mousemove", move);
@@ -10048,6 +10062,7 @@ function makeDraggable(
 	// the resize corner is the browser's own, so only the saving is ours
 	let last = `${el.offsetWidth}x${el.offsetHeight}`;
 	const watch = window.setInterval(() => {
+		fitToViewport();
 		const now = `${el.offsetWidth}x${el.offsetHeight}`;
 		if (now === last) return;
 		last = now;
@@ -16770,7 +16785,7 @@ class PowerCalendarView extends ItemView {
 				x: Math.max(8, Math.min(r.left, window.innerWidth - card.offsetWidth - 8)),
 				y: below + card.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - card.offsetHeight - 6) : below,
 			};
-		});
+		}, false, true);
 
 		const onDocDown = (e: MouseEvent) => {
 			if (e.target instanceof Node && (card.contains(e.target) || anchor.contains(e.target))) return;

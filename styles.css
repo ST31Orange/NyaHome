@@ -1705,14 +1705,31 @@ button.nya-card-more .svg-icon {
 
 .nya-card-desc-input {
 	width: 100%;
-	min-height: 220px;
-	max-height: min(360px, 46vh);
-	resize: vertical;
+	min-height: 120px;
+	max-height: none;
+	resize: none;
 	background: var(--background-modifier-form-field);
 	color: var(--text-normal);
 	padding: 10px 12px;
 	outline: none;
 	cursor: text;
+}
+
+/* The event peek owns the resize handle. Its description takes every pixel
+   left after the fixed header, actions, metadata and RSVP rows, so growing
+   the whole window is what makes the writing area grow. */
+.nya-card.nya-movable {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	box-sizing: border-box;
+}
+
+.nya-card.nya-movable .nya-card-desc-input {
+	flex: 1 1 0;
+	min-height: 120px;
+	max-height: none;
+	margin-bottom: 0;
 }
 
 .nya-card-desc-input:focus {
