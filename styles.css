@@ -1632,7 +1632,30 @@ button.nya-card-more .svg-icon {
 }
 
 .nya-card-headtext {
+	flex: 1 1 auto;
 	min-width: 0;
+}
+
+button.nya-card-close {
+	display: inline-grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	min-width: 28px;
+	min-height: 28px;
+	margin: 0 0 auto auto;
+	padding: 0;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-muted);
+	box-shadow: none;
+	flex: 0 0 28px;
+}
+
+button.nya-card-close:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
 }
 
 .nya-card-title {

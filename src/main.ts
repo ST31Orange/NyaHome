@@ -16567,6 +16567,14 @@ class PowerCalendarView extends ItemView {
 				if (next !== ev.title) void this.plugin.updateCalEvent(ev, inlineDraft({ title: next }));
 			});
 		} else ht.createDiv({ cls: "nya-card-title", text: ev.title });
+		const close = head.createEl("button", { cls: "nya-card-close", attr: { "aria-label": "关闭日程详情", title: "关闭日程详情" } });
+		setIcon(close, "x");
+		close.addEventListener("pointerdown", (e) => e.stopPropagation());
+		close.addEventListener("mousedown", (e) => e.stopPropagation());
+		close.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.closeCard();
+		});
 
 		const people = dedupePeople(ev.organizer, ev.attendees);
 
@@ -16788,14 +16796,21 @@ class PowerCalendarView extends ItemView {
 		}, false, true);
 
 		const onDocDown = (e: MouseEvent) => {
-			if (e.target instanceof Node && (card.contains(e.target) || anchor.contains(e.target))) return;
+			if (!(e.target instanceof Node)) return;
+			if (card.contains(e.target) || anchor.contains(e.target)) return;
+			// Menus are rendered in a portal outside the card. Treat their
+			// pointerdown as part of the card, or choosing Translate/Strikethrough
+			// closes the card before the menu action has a chance to run.
+			if (e.target instanceof Element && e.target.closest(".menu, .menu-container, [role='menu'], .suggestion-container")) return;
 			this.closeCard();
 		};
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") this.closeCard();
 		};
 		const onScroll = (e: Event) => {
-			if (e.target instanceof Node && card.contains(e.target)) return;
+			if (!(e.target instanceof Node)) return;
+			if (card.contains(e.target)) return;
+			if (e.target instanceof Element && e.target.closest(".menu, .menu-container, [role='menu'], .suggestion-container")) return;
 			this.closeCard();
 		};
 		document.addEventListener("pointerdown", onDocDown, true);
